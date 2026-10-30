@@ -8,7 +8,7 @@ import { ContractFunctionExecutionError, ContractFunctionRevertedError, encodeEr
 import { taskBoardAbi } from "./abi.js";
 import { submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
 import { fileStore, type Store } from "./state.js";
-import { createWork, MAX_RESULT_BYTES, printable, shellCommand, taskPrompt, type Command } from "./work.js";
+import { createWork, MAX_RESULT_BYTES, printable, shellCommand, stopper, taskPrompt, type Command } from "./work.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
 const dataURI = (text: string) => `data:application/json;base64,${Buffer.from(text).toString("base64")}`;
@@ -158,6 +158,18 @@ describe("work", () => {
     expect(lastLog(log)).toContain("no ETH");
   });
 
+  it("is busy only while a task is in hand", async () => {
+    const busy: boolean[] = [];
+    const { work } = setup(async () => {
+      busy.push(work.busy());
+      return "ok";
+    });
+    expect(work.busy()).toBe(false);
+    await work.round();
+    expect(busy).toEqual([true]);
+    expect(work.busy()).toBe(false);
+  });
+
   it("takes no new task once stopping", async () => {
     const { command, work } = setup(async () => "ok", { stopping: () => true });
     await work.round();
@@ -203,6 +215,52 @@ describe("work", () => {
     expect(prompt).toContain(`\n${fence}\n`);
     expect(prompt).toContain("21 backticks");
     expect(taskPrompt(task, JSON.parse(brief))).toContain(`${"`".repeat(12)}json\n`);
+  });
+});
+
+describe("stopper", () => {
+  afterEach(() => vi.useRealTimers());
+
+  function signals(busy: boolean) {
+    vi.useFakeTimers({ now: 0 });
+    const options = { busy: () => busy, kill: vi.fn(), log: vi.fn(), exit: vi.fn() };
+    return { ...options, stop: stopper(options) };
+  }
+
+  it("stops an idle worker at once", () => {
+    const { exit, kill, log, stop } = signals(false);
+    stop.signal("SIGINT");
+    expect(log).toHaveBeenCalledWith("Ctrl-C: stopping");
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("counts two signals within 1.5 seconds as one, and stops the command on a later one", () => {
+    const { exit, kill, log, stop } = signals(true);
+    stop.signal("SIGINT");
+    vi.advanceTimersByTime(5);
+    stop.signal("SIGINT");
+    vi.advanceTimersByTime(1_400);
+    stop.signal("SIGINT");
+    expect(stop.stopping()).toBe(true);
+    expect(log.mock.calls).toEqual([["Ctrl-C: stopping after the current task; press Ctrl-C again to stop now"]]);
+    expect(kill).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(100);
+    stop.signal("SIGINT");
+    expect(kill).toHaveBeenCalledOnce();
+    expect(log).toHaveBeenLastCalledWith("Ctrl-C again: stopping now");
+    expect(exit).toHaveBeenCalledWith(130);
+  });
+
+  it("names SIGTERM as it is", () => {
+    const { exit, log, stop } = signals(true);
+    stop.signal("SIGTERM");
+    expect(log).toHaveBeenLastCalledWith("SIGTERM: stopping after the current task; send SIGTERM again to stop now");
+    vi.advanceTimersByTime(2_000);
+    stop.signal("SIGTERM");
+    expect(exit).toHaveBeenCalledWith(143);
   });
 });
 
