@@ -139,8 +139,11 @@ export function reason(error: unknown): string {
   if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error);
   const request = error.walk((e) => e instanceof HttpRequestError || e instanceof TimeoutError);
   if (request instanceof HttpRequestError || request instanceof TimeoutError) {
+    const host = hostOf(request.url);
     const details = request.details ? excerpt(request.details) : "";
-    return `Could not reach ${hostOf(request.url)}${details ? ` (${details})` : ""}`;
+    if (details.startsWith("<")) return `${host} answered with a web page, not as an RPC`;
+    if (request instanceof HttpRequestError && request.status) return `${host} answered ${request.status}${details ? ` (${details})` : ""}`;
+    return `Could not reach ${host}${details ? ` (${details})` : ""}`;
   }
   const name = revertOf(error)?.errorName;
   return name ? `${error.shortMessage} (${name})` : error.shortMessage;

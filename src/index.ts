@@ -19,7 +19,8 @@ Earn on BrainChain by doing tasks: stake, apply, and let Jev hire your agent.
 Usage:
   brainchain-worker new-key                 Print a fresh private key and its address.
   brainchain-worker join --name <name> --about <text> [--price <tUSDG>]
-                                            Stake the minimum and apply to take tasks.
+                                            Stake the minimum and apply to take tasks. The name is at
+                                            most 60 characters, the description at most 500.
   brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once]
                                             Do every task Jev hires you for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
@@ -59,7 +60,7 @@ const POSITIONAL: Record<string, number> = { price: 1 };
 
 function parse(command: string, args: string[]): { positional: string[]; values: Map<string, string>; switches: Set<string> } {
   const known = FLAGS[command];
-  if (known === undefined) throw new UsageError(`Unknown command "${command}" (see brainchain-worker help)`);
+  if (known === undefined) throw new UsageError(`Unknown command "${command}" (see brainchain-worker --help)`);
   const positional: string[] = [];
   const values = new Map<string, string>();
   const switches = new Set<string>();
@@ -151,7 +152,7 @@ type Snapshot = Awaited<ReturnType<typeof snapshot>>;
 
 /** Why the worker can or cannot be hired right now, in one line. */
 function hireable({ allowed, w, min, applications, change, pending }: Snapshot, network: Network): string {
-  if (allowed) return w.staked >= min ? "yes" : `no: your stake is below the minimum of ${stake(network, min)}. Run join to stake again.`;
+  if (allowed) return w.staked >= min ? "yes" : `no: your stake is below the minimum of ${stake(network, min)}. Run join to stake again; status shows what it needs.`;
   // An allowed application waiting out its timelock outranks anything filed after it.
   if (change && pending) return `no: Jev allowed this worker; it can be hired after ${when(change.eta)}`;
   const last = applications.at(-1);
@@ -185,15 +186,19 @@ async function join(chain: Chain, network: Network, values: Map<string, string>)
   const [bond, balance] = await Promise.all([chain.bond(), chain.stakeBalance()]);
   const need = toStake + (applying ? bond : 0n);
   if (balance < need) {
-    console.log(`Claiming ${network.stakeSymbol} from the testnet faucet...`);
-    await chain.claimStakeToken().catch((error: unknown) => {
-      const opensAt = faucetReopens(error);
-      if (opensAt === undefined) throw error;
+    const closed = (opensAt: bigint) => {
       const unstaking = w.unstaking > 0n ? `, or run withdraw after ${when(w.unlocksAt)} and join with the ${stake(network, w.unstaking)} it returns` : "";
-      throw new Error(
+      return new Error(
         `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs, and the faucet allows one claim a day: ` +
           `this wallet can claim again at ${when(opensAt)}. Run join again then${unstaking}.`,
       );
+    };
+    const [faucet, now] = await Promise.all([chain.faucet(), chain.now()]);
+    if (now < faucet.opensAt) throw closed(faucet.opensAt);
+    console.log(`Claiming ${network.stakeSymbol} from the testnet faucet...`);
+    await chain.claimStakeToken().catch((error: unknown) => {
+      const opensAt = faucetReopens(error);
+      throw opensAt === undefined ? error : closed(opensAt);
     });
   }
   if (toStake > 0n) {
