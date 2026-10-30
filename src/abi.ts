@@ -1,18 +1,52 @@
 // The parts of the BrainChain contracts' ABIs the worker uses, from usebrainchain/brainchain release 3.1.0.
-export const taskBoardAbi = [
+
+/** OpenZeppelin's ERC20 errors, which the staking and bond contracts pass through from the token. */
+export const erc20Errors = [
   {
-    "type": "function",
-    "name": "count",
-    "inputs": [],
-    "outputs": [
+    "type": "error",
+    "name": "ERC20InsufficientAllowance",
+    "inputs": [
       {
-        "name": "",
+        "name": "spender",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "allowance",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "needed",
         "type": "uint256",
         "internalType": "uint256"
       }
-    ],
-    "stateMutability": "view"
+    ]
   },
+  {
+    "type": "error",
+    "name": "ERC20InsufficientBalance",
+    "inputs": [
+      {
+        "name": "sender",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "balance",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "needed",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  }
+] as const;
+
+export const taskBoardAbi = [
   {
     "type": "function",
     "name": "get",
@@ -315,66 +349,24 @@ export const taskBoardAbi = [
     "anonymous": false
   },
   {
-    "type": "event",
-    "name": "BountyRefunded",
-    "inputs": [
-      {
-        "name": "id",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "poster",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint128",
-        "indexed": false,
-        "internalType": "uint128"
-      },
-      {
-        "name": "reason",
-        "type": "uint8",
-        "indexed": false,
-        "internalType": "enum TaskBoard.RefundReason"
-      }
-    ],
-    "anonymous": false
+    "type": "error",
+    "name": "TooLate",
+    "inputs": []
   },
   {
-    "type": "event",
-    "name": "WorkSubmitted",
-    "inputs": [
-      {
-        "name": "id",
-        "type": "uint256",
-        "indexed": true,
-        "internalType": "uint256"
-      },
-      {
-        "name": "model",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "resultHash",
-        "type": "bytes32",
-        "indexed": false,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "resultURI",
-        "type": "string",
-        "indexed": false,
-        "internalType": "string"
-      }
-    ],
-    "anonymous": false
+    "type": "error",
+    "name": "BadStatus",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotWorker",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotDisputant",
+    "inputs": []
   }
 ] as const;
 
@@ -509,28 +501,19 @@ export const workerStakingAbi = [
     "stateMutability": "view"
   },
   {
-    "type": "event",
-    "name": "Staked",
-    "inputs": [
-      {
-        "name": "account",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "price",
-        "type": "uint128",
-        "indexed": false,
-        "internalType": "uint128"
-      }
-    ],
-    "anonymous": false
-  }
+    "type": "error",
+    "name": "BadAmount",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Locked",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotHeld",
+    "inputs": []
+  },
+  ...erc20Errors,
 ] as const;

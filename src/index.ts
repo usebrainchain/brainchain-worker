@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
+import { join as joinPath } from "node:path";
 
-import { BaseError, formatEther, formatUnits, HttpRequestError, parseUnits, type Hex, type PrivateKeyAccount } from "viem";
+import { formatEther, formatUnits, parseUnits, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
-import { ApplicationState, createChain, type Chain } from "./chain.js";
+import { ApplicationState, createChain, describe, type Chain } from "./chain.js";
 import { resolveNetwork, type Network } from "./network.js";
+import { fileStore, lock, stateDir } from "./state.js";
 import { createWork, shellCommand } from "./work.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -18,18 +20,26 @@ Usage:
   brainchain-worker new-key                 Print a fresh private key and its address.
   brainchain-worker join --name <name> --about <text> [--price <tUSDG>]
                                             Stake the minimum and apply to take tasks.
-  brainchain-worker run --exec "<command>" [--format prompt|json] [--once]
+  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once]
                                             Do every task Jev hires you for: the command reads the
-                                            task on stdin and prints the deliverable on stdout.
+                                            task on stdin and prints the deliverable on stdout, within
+                                            --timeout minutes (20 by default).
   brainchain-worker status                  Stake, application, record and earnings.
   brainchain-worker price <tUSDG>           Change your asking price per task.
   brainchain-worker leave                   Start unstaking (3-day cooldown).
   brainchain-worker withdraw                Withdraw stake once the cooldown has passed.
+  brainchain-worker --version               Print the version.
 
 Environment:
   BRAINCHAIN_WORKER_KEY   Private key of the worker's wallet, 64 hex characters with or without 0x.
   BRAINCHAIN_NETWORK      testnet (the default, and the only network open to outside workers today).
   BRAINCHAIN_RPC_URL      Overrides the network's RPC.
+  BRAINCHAIN_SERVICE_URL  Overrides the BrainChain service that keeps results: https, or http on
+                          localhost or 127.0.0.1.
+
+The command sees the worker's environment without any BRAINCHAIN_ variable, plus BRAINCHAIN_TASK_ID.
+run keeps unfinished work in ~/.config/brainchain-worker/<address>.json across restarts, and one
+run at a time works for each address.
 
 Docs: https://docs.usebrainchain.com/run-a-worker`;
 
@@ -38,7 +48,7 @@ class UsageError extends Error {}
 /** The flags each command takes; `true` marks a switch, which takes no value. */
 const FLAGS: Record<string, Record<string, boolean>> = {
   join: { name: false, about: false, price: false },
-  run: { exec: false, format: false, once: true },
+  run: { exec: false, format: false, timeout: false, once: true },
   status: {},
   price: {},
   leave: {},
@@ -73,17 +83,25 @@ function parse(command: string, args: string[]): { positional: string[]; values:
   return { positional, values, switches };
 }
 
-function account(): PrivateKeyAccount {
+interface Signer {
+  key: Hex;
+  account: PrivateKeyAccount;
+}
+
+function signer(): Signer {
   const raw = process.env.BRAINCHAIN_WORKER_KEY?.trim();
   if (!raw) throw new UsageError("Set BRAINCHAIN_WORKER_KEY to the worker's private key. `npx brainchain-worker new-key` makes one.");
   const hex = raw.startsWith("0x") ? raw.slice(2) : raw;
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new UsageError("BRAINCHAIN_WORKER_KEY must be 64 hex characters, with or without 0x");
+  const key: Hex = `0x${hex.toLowerCase()}`;
   try {
-    return privateKeyToAccount(`0x${hex}`);
+    return { key, account: privateKeyToAccount(key) };
   } catch {
     throw new UsageError("BRAINCHAIN_WORKER_KEY is not a valid private key. `npx brainchain-worker new-key` makes one.");
   }
 }
+
+const DEFAULT_PRICE = "0.20";
 
 /** A price in the bounty token, which has 6 decimals. */
 function price(value: string): bigint {
@@ -115,7 +133,11 @@ async function hireable(chain: Chain, network: Network): Promise<string> {
   if (last === undefined) return "no: run `npx brainchain-worker join` to apply";
   if (last.state === ApplicationState.Open) return `no: application ${last.id} is waiting for Jev`;
   if (last.state === ApplicationState.Burned) return `no: Jev did not allow application ${last.id}, and its bond was burned. Run join to apply again.`;
-  if (change?.vetoed) return `no: the guardian vetoed application ${last.id}`;
+  if (change?.vetoed) {
+    // A vetoed call can never be queued again, so the veto still stands for applications filed after it.
+    const vetoed = applications.find((a) => a.decisionId === change.decisionId);
+    return `no: the guardian vetoed ${vetoed ? `application ${vetoed.id}` : "allowing this worker"}`;
+  }
   return `no: application ${last.id} closed without a decision; its bond was returned. Run join to apply again.`;
 }
 
@@ -126,34 +148,38 @@ async function join(chain: Chain, network: Network, values: Map<string, string>)
   if (!about || about.length > 500) {
     throw new UsageError("--about is required, up to 500 characters: say what work your agent does. Jev reads it to decide, and refuses an empty application.");
   }
-  const asking = price(values.get("price") ?? "0.20");
+  const requested = values.has("price") ? price(values.get("price")!) : undefined;
 
   await needGas(chain, network);
-  if (await chain.allowed()) {
-    console.log("This worker can already be hired. Start it with `npx brainchain-worker run`.");
-    return;
-  }
-  const { applications, change } = await chain.applications();
-  if (change && !change.executed && !change.vetoed) {
-    console.log(`Jev already allowed this worker. It can be hired after ${when(change.eta)}; keep \`npx brainchain-worker run\` going until then.`);
-    return;
-  }
+  const [allowed, w, min, { applications, change }] = await Promise.all([chain.allowed(), chain.stake(), chain.minStake(), chain.applications()]);
+  const pending = change !== undefined && !change.executed && !change.vetoed;
   const open = applications.find((a) => a.state === ApplicationState.Open);
-
-  const [w, min, bond, balance] = await Promise.all([chain.stake(), chain.minStake(), chain.bond(), chain.stakeBalance()]);
+  const applying = !allowed && !pending && open === undefined;
+  // A worker that has staked keeps its price unless --price changes it.
+  const asking = requested ?? (w.registered ? w.price : price(DEFAULT_PRICE));
+  // Below the minimum after leave or a slash, an allowed worker cannot be hired until it stakes again.
   const toStake = w.staked >= min ? 0n : min - w.staked;
-  const needed = toStake + (open ? 0n : bond);
-  if (balance < needed) {
+
+  const [bond, balance] = await Promise.all([chain.bond(), chain.stakeBalance()]);
+  if (balance < toStake + (applying ? bond : 0n)) {
     console.log(`Claiming ${network.stakeSymbol} from the testnet faucet...`);
     await chain.claimStakeToken();
   }
   if (toStake > 0n) {
-    console.log(`Staking ${stake(network, toStake)} at ${usdg(network, asking)} per task...`);
+    console.log(`Staking ${stake(network, toStake)}${w.staked > 0n ? " more, up to the minimum," : ""} at ${usdg(network, asking)} per task...`);
     await chain.approve(network.contracts.stakeToken, network.contracts.staking, toStake);
     await chain.stakeTokens(toStake, asking);
   } else if (w.price !== asking) {
     console.log(`Setting your price to ${usdg(network, asking)} per task...`);
     await chain.setPrice(asking);
+  }
+  if (allowed) {
+    console.log(`${toStake > 0n ? "Staked back to the minimum, so this worker can be hired again." : "This worker can already be hired."} Start it with \`npx brainchain-worker run\`.`);
+    return;
+  }
+  if (pending) {
+    console.log(`Jev already allowed this worker. It can be hired after ${when(change.eta)}; keep \`npx brainchain-worker run\` going until then.`);
+    return;
   }
   if (open) {
     console.log(`Application ${open.id} is already waiting for Jev.`);
@@ -190,15 +216,52 @@ async function status(chain: Chain, network: Network): Promise<void> {
   Gas       ${formatEther(gas)} ETH`);
 }
 
-async function run(chain: Chain, network: Network, values: Map<string, string>, once: boolean): Promise<void> {
+async function run(network: Network, { key, account }: Signer, values: Map<string, string>, once: boolean): Promise<void> {
   const exec = values.get("exec");
   if (!exec) throw new UsageError(`--exec is required: the command that does the work, such as --exec 'claude -p --tools ""'`);
   const format = values.get("format") ?? "prompt";
   if (format !== "prompt" && format !== "json") throw new UsageError("--format is prompt or json");
-  const log = (message: string) => console.log(`${new Date().toISOString().slice(11, 19)} ${message}`);
-  const work = createWork({ chain, command: shellCommand(exec), format, log });
+  const minutes = values.get("timeout") ?? "20";
+  if (!/^\d{1,4}(\.\d+)?$/.test(minutes) || Number(minutes) <= 0 || Number(minutes) > 1440) {
+    throw new UsageError("--timeout is the most minutes the command may spend on one task: more than 0, at most 1440, and 20 by default");
+  }
 
-  log(`worker ${chain.account} on ${network.name}; hireable: ${await hireable(chain, network)}`);
+  const file = joinPath(stateDir(), account.address);
+  lock(`${file}.lock`);
+  const store = fileStore(`${file}.json`, network.contracts.taskBoard);
+  const chain = createChain(network, account, store);
+  const log = (message: string) => console.log(`${new Date().toISOString().slice(11, 19)} ${message}`);
+  await needGas(chain, network).catch((error: unknown) => {
+    if (error instanceof UsageError) throw error;
+    log(`could not read the wallet's ETH balance: ${describe(error)}`);
+  });
+
+  const command = shellCommand(exec);
+  let stopping = false;
+  const stop = (signal: NodeJS.Signals) => {
+    if (stopping) {
+      command.kill();
+      log(`${signal} again: stopped the command`);
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    }
+    stopping = true;
+    log(`${signal}: stopping after the current task; send ${signal} again to stop now`);
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+
+  const work = createWork({
+    chain,
+    command,
+    format,
+    log,
+    timeoutMs: Number(minutes) * 60_000,
+    secrets: [key, key.slice(2)],
+    store,
+    stopping: () => stopping,
+  });
+  const line = await hireable(chain, network).catch((error: unknown) => `could not check (${describe(error)})`);
+  log(`worker ${chain.account} on ${network.name}; hireable: ${line}`);
   if (once) {
     const result = await work.round();
     if (result.hired === 0) log("no task is hired to this worker right now");
@@ -206,11 +269,6 @@ async function run(chain: Chain, network: Network, values: Map<string, string>, 
     if (result.failed > 0) process.exitCode = 1;
     return;
   }
-  let stopping = false;
-  process.once("SIGINT", () => {
-    stopping = true;
-    log("stopping after the current task");
-  });
   log("waiting for tasks (Ctrl-C to stop)");
   while (!stopping) {
     await work.round().catch((error: unknown) => log(`round failed: ${describe(error)}`));
@@ -235,14 +293,14 @@ async function main(argv: string[]): Promise<void> {
   }
   const { positional, values, switches } = parse(command, rest);
   const network = resolveNetwork(process.env);
-  const chain = createChain(network, account());
+  const worker = signer();
+  if (command === "run") return run(network, worker, values, switches.has("once"));
+  const chain = createChain(network, worker.account);
   switch (command) {
     case "join":
       return join(chain, network, values);
     case "status":
       return status(chain, network);
-    case "run":
-      return run(chain, network, values, switches.has("once"));
     case "price": {
       if (positional[0] === undefined) throw new UsageError("Usage: brainchain-worker price <tUSDG>, such as price 0.25");
       const asking = price(positional[0]);
@@ -276,13 +334,6 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
   }
-}
-
-/** One readable line for an error, with the cause viem keeps apart from its summary. */
-function describe(error: unknown): string {
-  if (error instanceof HttpRequestError) return `Could not reach ${error.url}${error.details ? ` (${error.details})` : ""}`;
-  if (error instanceof BaseError) return error.shortMessage;
-  return error instanceof Error ? error.message : String(error);
 }
 
 main(process.argv.slice(2)).catch((error: unknown) => {

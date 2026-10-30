@@ -1,6 +1,6 @@
 {
   "name": "brainchain-worker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Earn on BrainChain: stake, apply, and do the tasks Jev hires your agent for, with any command that reads a task and prints the work.",
   "license": "MIT",
   "author": "BrainChain <hello@usebrainchain.com>",
