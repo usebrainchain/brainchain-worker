@@ -48,8 +48,18 @@ export function resolveNetwork(env: NodeJS.ProcessEnv): Network {
   return {
     ...TESTNET,
     ...(env.BRAINCHAIN_RPC_URL ? { rpc: env.BRAINCHAIN_RPC_URL } : {}),
-    ...(env.BRAINCHAIN_SERVICE_URL ? { service: env.BRAINCHAIN_SERVICE_URL.replace(/\/$/, "") } : {}),
+    ...(env.BRAINCHAIN_SERVICE_URL ? { service: serviceURL(env.BRAINCHAIN_SERVICE_URL.trim()) } : {}),
   };
+}
+
+/** The worker signs and sends its results to the service, so only https is accepted, or plain http to a service on this machine. */
+function serviceURL(value: string): string {
+  const url = URL.canParse(value) ? new URL(value) : undefined;
+  const local = url?.hostname === "localhost" || url?.hostname === "127.0.0.1";
+  if (url?.protocol !== "https:" && !(url?.protocol === "http:" && local)) {
+    throw new Error("BRAINCHAIN_SERVICE_URL must be an https URL, or http on localhost or 127.0.0.1");
+  }
+  return value.replace(/\/+$/, "");
 }
 
 export function chainOf(network: Network) {

@@ -1,18 +1,25 @@
+import { isIP } from "node:net";
+
 import {
+  BaseError,
+  ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
   encodeFunctionData,
   http,
+  HttpRequestError,
   keccak256,
   parseAbi,
+  TimeoutError,
   toBytes,
   type Address,
   type Hex,
   type PrivateKeyAccount,
 } from "viem";
 
-import { taskBoardAbi, workerStakingAbi } from "./abi.js";
+import { erc20Errors, taskBoardAbi, workerStakingAbi } from "./abi.js";
 import { chainOf, type Network } from "./network.js";
+import { memoryStore, type Store } from "./state.js";
 
 export const erc20Abi = parseAbi([
   "function balanceOf(address) view returns (uint256)",
@@ -22,12 +29,16 @@ export const erc20Abi = parseAbi([
   "error TooSoon(uint256 nextClaimAt)",
 ]);
 
-export const bondsAbi = parseAbi([
-  "event Proposed(uint256 indexed id, address indexed proposer, address indexed target, bytes data, uint128 bond, string uri)",
-  "function propose(address target, bytes data, string uri) returns (uint256)",
-  "function get(uint256 id) view returns ((address proposer, uint128 bond, uint64 createdAt, uint8 state, bytes32 subject))",
-  "function bond() view returns (uint128)",
-]);
+export const bondsAbi = [
+  ...parseAbi([
+    "event Proposed(uint256 indexed id, address indexed proposer, address indexed target, bytes data, uint128 bond, string uri)",
+    "event Settled(uint256 indexed id, uint256 indexed decisionId, bool adopted)",
+    "function propose(address target, bytes data, string uri) returns (uint256)",
+    "function get(uint256 id) view returns ((address proposer, uint128 bond, uint64 createdAt, uint8 state, bytes32 subject))",
+    "function bond() view returns (uint128)",
+  ]),
+  ...erc20Errors,
+] as const;
 
 export const executorAbi = parseAbi([
   "event Queued(uint256 indexed changeId, uint256 indexed decisionId, address indexed target, bytes data, uint64 eta)",
@@ -40,6 +51,9 @@ export const Status = { Open: 1, Hired: 2, Submitted: 3, Graded: 4, Disputed: 5,
 export const ApplicationState = { Open: 1, Returned: 2, Burned: 3 } as const;
 
 const LOG_RANGE = 50_000n;
+const MAX_BRIEF_BYTES = 256 * 1024;
+/** What the service answers when it will never take this result. */
+const REFUSED = [400, 403, 409, 413];
 
 export interface HiredTask {
   id: bigint;
@@ -48,18 +62,23 @@ export interface HiredTask {
   briefHash: Hex;
 }
 
+/** A failure that trying again cannot fix. */
+export class Permanent extends Error {}
+
 /** What the work loop needs from the chain and the service. */
 export interface WorkerChain {
   now(): Promise<bigint>;
+  /** Tasks hired to this worker that wait for its result. */
   hired(): Promise<HiredTask[]>;
+  ethBalance(): Promise<bigint>;
   /** Uploads a result to the service, which serves it once Jev accepts the work. */
   publish(id: bigint, text: string): Promise<{ uri: string; hash: Hex }>;
   submit(id: bigint, resultHash: Hex, resultURI: string): Promise<Hex>;
 }
 
-/** What the worker signs to upload a result: the task and the hash of exactly the bytes it uploads. */
-export function resultMessage(task: bigint, hash: Hex): string {
-  return `BrainChain result\ntask ${task}\nhash ${hash}`;
+/** What the worker signs to upload a result: the chain, the board, the task and the hash of exactly the bytes it uploads. */
+export function resultMessage(chainId: number, board: Address, task: bigint, hash: Hex): string {
+  return ["BrainChain result v2", `chain ${chainId}`, `board ${board.toLowerCase()}`, `task ${task}`, `hash ${hash}`].join("\n");
 }
 
 /** WorkerStaking.idOf: a worker's id is its account, left-padded to 32 bytes. */
@@ -71,7 +90,33 @@ export function applicationData(account: Address): Hex {
   return encodeFunctionData({ abi: taskBoardAbi, functionName: "setWorkerAllowed", args: [account, true] });
 }
 
-export function createChain(network: Network, account: PrivateKeyAccount) {
+/** The name of the contract error a call reverted with, when the ABI knows it. */
+function revertName(error: unknown): string | undefined {
+  const revert = error instanceof BaseError ? error.walk((e) => e instanceof ContractFunctionRevertedError) : null;
+  return revert instanceof ContractFunctionRevertedError ? revert.data?.errorName : undefined;
+}
+
+export function submitFailure(error: unknown): unknown {
+  const name = revertName(error);
+  if (name === "TooLate") return new Permanent("The deadline passed before the result could be submitted");
+  if (name === "BadStatus") return new Permanent("The task no longer waits for a result");
+  return error;
+}
+
+const hostOf = (url: string) => (URL.canParse(url) ? new URL(url).host : "the RPC");
+
+/** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
+export function describe(error: unknown): string {
+  if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error);
+  const request = error.walk((e) => e instanceof HttpRequestError || e instanceof TimeoutError);
+  if (request instanceof HttpRequestError || request instanceof TimeoutError) {
+    return `Could not reach ${hostOf(request.url)}${request.details ? ` (${request.details})` : ""}`;
+  }
+  const name = revertName(error);
+  return name ? `${error.shortMessage} (${name})` : error.shortMessage;
+}
+
+export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
   const chain = chainOf(network);
   const transport = http(network.rpc, { timeout: 20_000, retryCount: 3 });
   // BrainChain mines a block per transaction, so receipts are polled every second.
@@ -80,6 +125,7 @@ export function createChain(network: Network, account: PrivateKeyAccount) {
   const { taskBoard, staking, bonds, executor, stakeToken, bountyToken } = network.contracts;
   const id = workerId(account.address);
   const board = { address: taskBoard, abi: taskBoardAbi } as const;
+  const origin = new URL(network.service).origin;
 
   async function send(request: Parameters<typeof wallet.writeContract>[0]): Promise<Hex> {
     const hash = await wallet.writeContract(request);
@@ -88,33 +134,32 @@ export function createChain(network: Network, account: PrivateKeyAccount) {
     return hash;
   }
 
-  /** Every log of one event up to `latest`, in windows the RPC accepts. */
-  async function scan<T>(fetch: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>, upTo?: bigint): Promise<T[]> {
-    const latest = upTo ?? (await client.getBlockNumber());
+  /** Every log of one event from `from` to `to`, in windows the RPC accepts. */
+  async function scan<T>(fetch: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>, from: bigint, to: bigint): Promise<T[]> {
     const all: T[] = [];
-    for (let from = network.fromBlock; from <= latest; from += LOG_RANGE) {
-      const to = from + LOG_RANGE - 1n < latest ? from + LOG_RANGE - 1n : latest;
-      all.push(...(await fetch(from, to)));
+    for (let start = from; start <= to; start += LOG_RANGE) {
+      const end = start + LOG_RANGE - 1n < to ? start + LOG_RANGE - 1n : to;
+      all.push(...(await fetch(start, end)));
     }
     return all;
   }
 
-  const hiredIds = () =>
-    scan((fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "WorkerHired", args: { model: id }, fromBlock, toBlock })).then((logs) =>
-      logs.map((log) => log.args.id!),
-    );
+  const hiredLogs = (from: bigint, to: bigint) =>
+    scan((fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "WorkerHired", args: { model: id }, fromBlock, toBlock }), from, to);
 
   const briefs = new Map<bigint, string>();
-  async function briefURI(task: bigint): Promise<string> {
+  async function briefURI(task: bigint, latest: bigint): Promise<string> {
     const known = briefs.get(task);
     if (known !== undefined) return known;
-    const [posted] = await scan((fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "Posted", args: { id: task }, fromBlock, toBlock }));
+    const [posted] = await scan(
+      (fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "Posted", args: { id: task }, fromBlock, toBlock }),
+      network.fromBlock,
+      latest,
+    );
     if (posted === undefined) throw new Error(`Task ${task} has no Posted event`);
     briefs.set(task, posted.args.briefURI!);
     return posted.args.briefURI!;
   }
-
-  const settled = new Set<bigint>();
 
   const work: WorkerChain = {
     async now() {
@@ -124,43 +169,56 @@ export function createChain(network: Network, account: PrivateKeyAccount) {
       return block.timestamp > wall ? block.timestamp : wall;
     },
     async hired() {
-      const ids = (await hiredIds()).filter((t) => !settled.has(t));
-      const tasks: HiredTask[] = [];
-      for (const task of ids) {
-        const t = await client.readContract({ ...board, functionName: "get", args: [task] });
-        if (t.status !== Status.Hired || t.model.toLowerCase() !== id) {
-          if (t.status >= Status.Paid) settled.add(task);
-          continue;
-        }
-        tasks.push({ id: task, deadline: t.deadline, briefURI: await briefURI(task), briefHash: t.briefHash });
-      }
-      return tasks;
+      const latest = await client.getBlockNumber();
+      const known = store.state.hired;
+      const ids = new Set(known?.tasks);
+      for (const log of await hiredLogs(known ? BigInt(known.block) + 1n : network.fromBlock, latest)) ids.add(log.args.id!.toString());
+      const tasks = await Promise.all(
+        [...ids].map(async (key) => {
+          const task = BigInt(key);
+          const t = await client.readContract({ ...board, functionName: "get", args: [task] });
+          if (t.status === Status.Hired && t.model.toLowerCase() === id) {
+            return { id: task, deadline: t.deadline, briefURI: await briefURI(task, latest), briefHash: t.briefHash };
+          }
+          // A task never returns to Hired, the only state that waits on the worker.
+          briefs.delete(task);
+          return undefined;
+        }),
+      );
+      const hired = tasks.filter((t) => t !== undefined);
+      store.state.hired = { block: Number(latest), tasks: hired.map((t) => t.id.toString()) };
+      store.save();
+      return hired;
     },
+    ethBalance: () => client.getBalance({ address: account.address }),
     async publish(task, text) {
       const hash = keccak256(toBytes(text));
-      const signature = await account.signMessage({ message: resultMessage(task, hash) });
+      const signature = await account.signMessage({ message: resultMessage(network.chainId, taskBoard, task, hash) });
       const response = await fetch(`${network.service}/results`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ task: task.toString(), text, signature }),
         signal: AbortSignal.timeout(30_000),
+      }).catch(() => {
+        throw new Error(`Could not reach the BrainChain service at ${new URL(origin).host}`);
       });
       const body = (await response.json().catch(() => ({}))) as { uri?: string; hash?: Hex; error?: string };
-      if (!response.ok || !body.uri) throw new Error(`Uploading the result failed (${response.status}): ${body.error ?? "no reason given"}`);
-      if (body.hash?.toLowerCase() !== hash.toLowerCase()) throw new Error("The service stored different bytes than were sent");
+      const reason = `(${response.status}): ${body.error ?? "no reason given"}`;
+      if (REFUSED.includes(response.status)) throw new Permanent(`The service refused the result ${reason}`);
+      if (!response.ok || !body.uri) throw new Error(`Uploading the result failed ${reason}`);
+      if (body.hash?.toLowerCase() !== hash) throw new Error("The service stored different bytes than were sent");
+      if (!body.uri.startsWith(`${origin}/`)) throw new Error(`The service returned a result address outside ${origin}`);
       return { uri: body.uri, hash };
     },
-    submit: (task, resultHash, resultURI) => send({ ...board, functionName: "submit", args: [task, resultHash, resultURI] }),
+    submit: (task, resultHash, resultURI) =>
+      send({ ...board, functionName: "submit", args: [task, resultHash, resultURI] }).catch((error: unknown) => {
+        throw submitFailure(error);
+      }),
   };
 
   return {
     ...work,
     account: account.address,
-    id,
-    client,
-    send,
-    ethBalance: () => client.getBalance({ address: account.address }),
-    balance: (token: Address) => client.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     stakeBalance: () => client.readContract({ address: stakeToken, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     bountyBalance: () => client.readContract({ address: bountyToken, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     stake: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "get", args: [account.address] }),
@@ -181,31 +239,62 @@ export function createChain(network: Network, account: PrivateKeyAccount) {
     apply: (profileURI: string) =>
       send({ address: bonds, abi: bondsAbi, functionName: "propose", args: [taskBoard, applicationData(account.address), profileURI] }),
     /**
-     * This worker's applications, newest last, with their state, and the last
-     * change any of them queued. Everything is read at one block, so a bond
-     * settled just after its change was queued is never seen without the change.
+     * This worker's applications, newest last, with their state and the
+     * decision that settled each, and the last change any of them queued.
+     * Everything is read at one block, so a bond settled just after its change
+     * was queued is never seen without the change.
      */
     async applications() {
       const data = applicationData(account.address).toLowerCase();
       const blockNumber = await client.getBlockNumber();
-      const [proposed, queued] = await Promise.all([
-        scan((fromBlock, toBlock) => client.getContractEvents({ address: bonds, abi: bondsAbi, eventName: "Proposed", args: { proposer: account.address, target: taskBoard }, fromBlock, toBlock }), blockNumber),
-        scan((fromBlock, toBlock) => client.getContractEvents({ address: executor, abi: executorAbi, eventName: "Queued", args: { target: taskBoard }, fromBlock, toBlock }), blockNumber),
+      const proposed = (
+        await scan(
+          (fromBlock, toBlock) =>
+            client.getContractEvents({ address: bonds, abi: bondsAbi, eventName: "Proposed", args: { proposer: account.address, target: taskBoard }, fromBlock, toBlock }),
+          network.fromBlock,
+          blockNumber,
+        )
+      ).filter((log) => log.args.data!.toLowerCase() === data);
+      // Queued does not index the call, so its scan narrows to the board as target and to blocks from this worker's first application on.
+      const since = proposed[0]?.blockNumber ?? blockNumber + 1n;
+      const [settled, queued] = await Promise.all([
+        scan(
+          (fromBlock, toBlock) =>
+            client.getContractEvents({ address: bonds, abi: bondsAbi, eventName: "Settled", args: { id: proposed.map((log) => log.args.id!) }, fromBlock, toBlock }),
+          since,
+          blockNumber,
+        ),
+        scan(
+          (fromBlock, toBlock) => client.getContractEvents({ address: executor, abi: executorAbi, eventName: "Queued", args: { target: taskBoard }, fromBlock, toBlock }),
+          since,
+          blockNumber,
+        ),
       ]);
       const mine = queued.filter((log) => log.args.data!.toLowerCase() === data).at(-1);
-      const change = mine ? await client.readContract({ address: executor, abi: executorAbi, functionName: "getChange", args: [mine.args.changeId!], blockNumber }) : undefined;
+      const change = mine && {
+        ...(await client.readContract({ address: executor, abi: executorAbi, functionName: "getChange", args: [mine.args.changeId!], blockNumber })),
+        decisionId: mine.args.decisionId!,
+      };
+      const decided = new Map(settled.map((log) => [log.args.id!, log.args.decisionId!]));
       const applications = await Promise.all(
-        proposed
-          .filter((log) => log.args.data!.toLowerCase() === data)
-          .map(async (log) => ({ id: log.args.id!, state: (await client.readContract({ address: bonds, abi: bondsAbi, functionName: "get", args: [log.args.id!], blockNumber })).state })),
+        proposed.map(async (log) => ({
+          id: log.args.id!,
+          state: (await client.readContract({ address: bonds, abi: bondsAbi, functionName: "get", args: [log.args.id!], blockNumber })).state,
+          decisionId: decided.get(log.args.id!),
+        })),
       );
       return { applications, change };
     },
     /** Tasks this worker was hired for, by outcome, and what it was paid after fees. */
     async record() {
-      const ids = [...new Set(await hiredIds())];
+      const latest = await client.getBlockNumber();
+      const ids = [...new Set((await hiredLogs(network.fromBlock, latest)).map((log) => log.args.id!))];
       const tasks = await Promise.all(ids.map((task) => client.readContract({ ...board, functionName: "get", args: [task] })));
-      const paid = await scan((fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "BountyPaid", args: { account: account.address }, fromBlock, toBlock }));
+      const paid = await scan(
+        (fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "BountyPaid", args: { account: account.address }, fromBlock, toBlock }),
+        network.fromBlock,
+        latest,
+      );
       const count = (statuses: number[]) => tasks.filter((t) => statuses.includes(t.status)).length;
       return {
         accepted: count([Status.Paid]),
@@ -219,22 +308,50 @@ export function createChain(network: Network, account: PrivateKeyAccount) {
 
 export type Chain = ReturnType<typeof createChain>;
 
+/** Briefs come from strangers, so the worker fetches only public names, never an address or a local network's name. */
+function publicHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, "");
+  if (host.startsWith("[") || isIP(host) !== 0) return false;
+  return host.includes(".") && !/(^|\.)localhost$|\.local$|\.internal$/.test(host);
+}
+
+async function download(uri: string, fetcher: typeof fetch): Promise<Uint8Array> {
+  if (!URL.canParse(uri)) throw new Permanent("The brief's URL is not valid");
+  const url = new URL(uri);
+  if (!publicHost(url.hostname)) throw new Permanent(`The brief is on ${url.hostname}, which is not a public host`);
+  const stop = new AbortController();
+  const response = await fetcher(url, { redirect: "error", signal: AbortSignal.any([stop.signal, AbortSignal.timeout(15_000)]) });
+  if (!response.ok) throw new Error(`The brief answered ${response.status}`);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of response.body ?? []) {
+    size += chunk.byteLength;
+    if (size > MAX_BRIEF_BYTES) {
+      stop.abort();
+      throw new Permanent(`The brief is larger than ${MAX_BRIEF_BYTES / 1024} KB`);
+    }
+    chunks.push(chunk);
+  }
+  return Uint8Array.from(Buffer.concat(chunks));
+}
+
 /** Reads a brief and checks it against the hash on chain. Briefs are base64 data URIs or https URLs. */
 export async function fetchBrief(uri: string, expected: Hex, fetcher: typeof fetch = fetch): Promise<string> {
-  const MAX = 256 * 1024;
   let bytes: Uint8Array;
   if (uri.startsWith("data:")) {
     const comma = uri.indexOf(",");
-    if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new Error("The brief's data URI is not base64");
+    if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new Permanent("The brief's data URI is not base64");
     bytes = Uint8Array.from(Buffer.from(uri.slice(comma + 1), "base64"));
   } else if (uri.startsWith("https://")) {
-    const response = await fetcher(uri, { redirect: "error", signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) throw new Error(`The brief answered ${response.status}`);
-    bytes = new Uint8Array(await response.arrayBuffer());
+    bytes = await download(uri, fetcher);
   } else {
-    throw new Error("The brief is neither a data URI nor an https URL");
+    throw new Permanent("The brief is neither a data URI nor an https URL");
   }
-  if (bytes.byteLength > MAX) throw new Error("The brief is too large");
-  if (keccak256(bytes).toLowerCase() !== expected.toLowerCase()) throw new Error("The brief does not match its hash on chain");
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  if (bytes.byteLength > MAX_BRIEF_BYTES) throw new Permanent(`The brief is larger than ${MAX_BRIEF_BYTES / 1024} KB`);
+  if (keccak256(bytes).toLowerCase() !== expected.toLowerCase()) throw new Permanent("The brief does not match its hash on chain");
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Permanent("The brief is not UTF-8 text");
+  }
 }
