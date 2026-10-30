@@ -97,7 +97,7 @@ describe("chain helpers", () => {
 
   it("says the RPC answered when it did, and cuts the answer to one short line", () => {
     const line = reason(new HttpRequestError({ url: "https://rpc.example.com/v2/APIKEYSECRET123", details: JSON.stringify(`gateway\ttimeout ${"x".repeat(300)}`), status: 504 }));
-    expect(line).toMatch(/^rpc\.example\.com answered 504 \(gatewaytimeout x+…\)$/);
+    expect(line).toMatch(/^rpc\.example\.com answered 504 \(gateway timeout x+…\)$/);
     expect(line.length).toBe("rpc.example.com answered 504 ()".length + 160);
     expect(line).not.toMatch(/[\x00-\x1f]/);
     expect(line).not.toContain("APIKEYSECRET123");
