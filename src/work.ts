@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 
 import { toBytes } from "viem";
 
-import { describe, fetchBrief, Permanent, type HiredTask, type WorkerChain } from "./chain.js";
+import { fetchBrief, PermanentError, reason, type HiredTask, type WorkerChain } from "./chain.js";
 import { memoryStore, type Store, type TaskState } from "./state.js";
 
 /** The most the service accepts for one result. */
@@ -37,7 +37,7 @@ export function parseBrief(text: string): Brief {
   try {
     value = JSON.parse(text) as Partial<Brief> | null;
   } catch {
-    throw new Permanent("The brief is not JSON");
+    throw new PermanentError("The brief is not JSON");
   }
   if (
     typeof value !== "object" ||
@@ -49,7 +49,7 @@ export function parseBrief(text: string): Brief {
     typeof value.passIndex !== "number" ||
     value.levels[value.passIndex] === undefined
   ) {
-    throw new Permanent("The brief is not a BrainChain brief");
+    throw new PermanentError("The brief is not a BrainChain brief");
   }
   return value as Brief;
 }
@@ -124,9 +124,9 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
         let size = 0;
         let stopped: string | undefined;
         let force: NodeJS.Timeout | undefined;
-        const stop = (reason: string) => {
+        const stop = (why: string) => {
           if (stopped !== undefined || pid === undefined) return;
-          stopped = reason;
+          stopped = why;
           signalGroup(pid, "SIGTERM");
           force = setTimeout(() => {
             signalGroup(pid, "SIGKILL");
@@ -169,8 +169,39 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
   };
 }
 
-export interface Log {
-  (message: string): void;
+export type Log = (message: string) => void;
+
+/** Signals closer together than this are one: npm passes the terminal's Ctrl-C on to the worker, which gets its own too. */
+const ECHO_MS = 1_500;
+
+/**
+ * What Ctrl-C and SIGTERM do to `run`. An idle worker stops at once. A busy one
+ * takes no new task and stops after the current one, unless a second signal
+ * comes, which stops the command too.
+ */
+export function stopper(options: { busy: () => boolean; kill: () => void; log: Log; exit: (code: number) => void }) {
+  let stopping = false;
+  let counted = -Infinity;
+  return {
+    stopping: () => stopping,
+    signal(signal: NodeJS.Signals) {
+      const now = Date.now();
+      if (now - counted < ECHO_MS) return;
+      counted = now;
+      const name = signal === "SIGINT" ? "Ctrl-C" : signal;
+      if (stopping) {
+        options.kill();
+        options.log(`${name} again: stopping now`);
+        return options.exit(signal === "SIGINT" ? 130 : 143);
+      }
+      if (!options.busy()) {
+        options.log(`${name}: stopping`);
+        return options.exit(0);
+      }
+      stopping = true;
+      options.log(`${name}: stopping after the current task; ${signal === "SIGINT" ? "press Ctrl-C" : `send ${signal}`} again to stop now`);
+    },
+  };
 }
 
 /**
@@ -200,6 +231,7 @@ export function createWork(options: {
   const secrets = (options.secrets ?? []).filter((s) => s !== "").map((s) => s.toLowerCase());
   const log = (message: string) => options.log(printable(message));
   const wall = () => BigInt(Math.floor(Date.now() / 1000));
+  let busy = false;
 
   const finish = (key: string) => {
     delete state.tasks[key];
@@ -210,10 +242,12 @@ export function createWork(options: {
     if ((await chain.ethBalance()) === 0n) throw new Error("The wallet has no ETH to pay gas for the submit. Add some and the task is tried again");
   };
   const inTime = async (task: HiredTask) => {
-    if ((await chain.now()) >= task.deadline) throw new Permanent("The deadline passed before the result could be submitted");
+    if ((await chain.now()) >= task.deadline) throw new PermanentError("The deadline passed before the result could be submitted");
   };
 
   return {
+    /** True while a task is in hand, from running its command to submitting the result. */
+    busy: () => busy,
     async round(): Promise<{ hired: number; delivered: number; failed: number }> {
       const hired = (await chain.hired()).sort((a, b) => (a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0));
       const result = { hired: hired.length, delivered: 0, failed: 0 };
@@ -235,6 +269,7 @@ export function createWork(options: {
             log(`task ${task.id}: too close to the deadline to deliver; the poster is refunded`);
             continue;
           }
+          busy = true;
           if (attempt.result === undefined) {
             const brief = parseBrief(await read(task.briefURI, task.briefHash));
             await needGas();
@@ -245,7 +280,7 @@ export function createWork(options: {
             if (output === "") throw new Error("The command printed nothing");
             const lower = output.toLowerCase();
             if (secrets.some((secret) => lower.includes(secret))) {
-              throw new Permanent("The result contains the worker's private key, so it was not uploaded. Check what the command can read");
+              throw new PermanentError("The result contains the worker's private key, so it was not uploaded. Check what the command can read");
             }
             const bytes = toBytes(output).byteLength;
             if (bytes > MAX_RESULT_BYTES) throw new Error(`The result is ${bytes} bytes; at most ${MAX_RESULT_BYTES} are accepted`);
@@ -266,10 +301,10 @@ export function createWork(options: {
           log(`task ${task.id}: delivered (${toBytes(attempt.result).byteLength} bytes, ${tx}). Jev grades it next.`);
         } catch (error) {
           result.failed += 1;
-          const reason = describe(error);
-          if (error instanceof Permanent) {
+          const why = reason(error);
+          if (error instanceof PermanentError) {
             finish(key);
-            log(`task ${task.id}: failed (${reason}); no retry can fix that, so it is not tried again`);
+            log(`task ${task.id}: failed (${why}); no retry can fix that, so it is not tried again`);
             continue;
           }
           attempt.failures += 1;
@@ -278,13 +313,15 @@ export function createWork(options: {
           const now = await chain.now().catch(wall);
           if (now + wait + MARGIN_SEC >= task.deadline) {
             finish(key);
-            log(`task ${task.id}: failed (${reason}); no time left to retry, so the poster is refunded`);
+            log(`task ${task.id}: failed (${why}); no time left to retry, so the poster is refunded`);
             continue;
           }
           attempt.nextAt = Number(now + wait);
           state.tasks[key] = attempt;
           store.save();
-          log(`task ${task.id}: failed (${reason}); retrying in ${wait} seconds`);
+          log(`task ${task.id}: failed (${why}); retrying in ${wait} seconds`);
+        } finally {
+          busy = false;
         }
       }
       return result;

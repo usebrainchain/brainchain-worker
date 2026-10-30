@@ -26,6 +26,9 @@ export const erc20Abi = parseAbi([
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
   "function faucet()",
+  "function FAUCET_AMOUNT() view returns (uint256)",
+  "function FAUCET_INTERVAL() view returns (uint256)",
+  "function lastClaim(address) view returns (uint256)",
   "error TooSoon(uint256 nextClaimAt)",
 ]);
 
@@ -63,7 +66,7 @@ export interface HiredTask {
 }
 
 /** A failure that trying again cannot fix. */
-export class Permanent extends Error {}
+export class PermanentError extends Error {}
 
 /** What the work loop needs from the chain and the service. */
 export interface WorkerChain {
@@ -90,30 +93,66 @@ export function applicationData(account: Address): Hex {
   return encodeFunctionData({ abi: taskBoardAbi, functionName: "setWorkerAllowed", args: [account, true] });
 }
 
-/** The name of the contract error a call reverted with, when the ABI knows it. */
-function revertName(error: unknown): string | undefined {
+/** The contract error a call reverted with, when the ABI knows it. */
+function revertOf(error: unknown) {
   const revert = error instanceof BaseError ? error.walk((e) => e instanceof ContractFunctionRevertedError) : null;
-  return revert instanceof ContractFunctionRevertedError ? revert.data?.errorName : undefined;
+  return revert instanceof ContractFunctionRevertedError ? revert.data : undefined;
 }
 
 export function submitFailure(error: unknown): unknown {
-  const name = revertName(error);
-  if (name === "TooLate") return new Permanent("The deadline passed before the result could be submitted");
-  if (name === "BadStatus") return new Permanent("The task no longer waits for a result");
+  const name = revertOf(error)?.errorName;
+  if (name === "TooLate") return new PermanentError("The deadline passed before the result could be submitted");
+  if (name === "BadStatus") return new PermanentError("The task no longer waits for a result");
   return error;
+}
+
+/** When the faucet opens again for this wallet, if it refused a claim as too soon. */
+export function faucetReopens(error: unknown): bigint | undefined {
+  const revert = revertOf(error);
+  return revert?.errorName === "TooSoon" ? (revert.args?.[0] as bigint) : undefined;
 }
 
 const hostOf = (url: string) => (URL.canParse(url) ? new URL(url).host : "the RPC");
 
+/** viem passes on an answer that is not JSON as a quoted JSON string. */
+function unquote(text: string): string {
+  if (!text.startsWith('"')) return text;
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "string" ? value : text;
+  } catch {
+    return text;
+  }
+}
+
+/** A URL that is not an RPC, such as a web page, answers with a whole page; one short line of it is enough. */
+function excerpt(details: string): string {
+  const line = unquote(details)
+    .replace(/\s+/g, " ")
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+    .trim();
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
+}
+
 /** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
-export function describe(error: unknown): string {
+export function reason(error: unknown): string {
   if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error);
   const request = error.walk((e) => e instanceof HttpRequestError || e instanceof TimeoutError);
   if (request instanceof HttpRequestError || request instanceof TimeoutError) {
-    return `Could not reach ${hostOf(request.url)}${request.details ? ` (${request.details})` : ""}`;
+    const details = request.details ? excerpt(request.details) : "";
+    return `Could not reach ${hostOf(request.url)}${details ? ` (${details})` : ""}`;
   }
-  const name = revertName(error);
+  const name = revertOf(error)?.errorName;
   return name ? `${error.shortMessage} (${name})` : error.shortMessage;
+}
+
+/** Why the BrainChain service failed its health check, or undefined when it passed. */
+export async function unhealthy(service: string, fetcher: typeof fetch = fetch): Promise<string | undefined> {
+  const host = new URL(service).host;
+  const response = await fetcher(`${service}/health`, { signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
+  if (response === undefined) return `could not reach the BrainChain service at ${host}`;
+  await response.body?.cancel();
+  return response.ok ? undefined : `the BrainChain service at ${host} answered its health check with ${response.status}`;
 }
 
 export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
@@ -203,9 +242,9 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
         throw new Error(`Could not reach the BrainChain service at ${new URL(origin).host}`);
       });
       const body = (await response.json().catch(() => ({}))) as { uri?: string; hash?: Hex; error?: string };
-      const reason = `(${response.status}): ${body.error ?? "no reason given"}`;
-      if (REFUSED.includes(response.status)) throw new Permanent(`The service refused the result ${reason}`);
-      if (!response.ok || !body.uri) throw new Error(`Uploading the result failed ${reason}`);
+      const why = `(${response.status}): ${body.error ?? "no reason given"}`;
+      if (REFUSED.includes(response.status)) throw new PermanentError(`The service refused the result ${why}`);
+      if (!response.ok || !body.uri) throw new Error(`Uploading the result failed ${why}`);
       if (body.hash?.toLowerCase() !== hash) throw new Error("The service stored different bytes than were sent");
       if (!body.uri.startsWith(`${origin}/`)) throw new Error(`The service returned a result address outside ${origin}`);
       return { uri: body.uri, hash };
@@ -223,7 +262,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     bountyBalance: () => client.readContract({ address: bountyToken, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     stake: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "get", args: [account.address] }),
     minStake: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "minStake" }),
-    inFlight: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "held", args: [account.address] }),
+    held: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "held", args: [account.address] }),
     allowed: () => client.readContract({ ...board, functionName: "workerAllowed", args: [account.address] }),
     bond: () => client.readContract({ address: bonds, abi: bondsAbi, functionName: "bond" }),
     async approve(token: Address, spender: Address, amount: bigint) {
@@ -232,6 +271,16 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       await send({ address: token, abi: erc20Abi, functionName: "approve", args: [spender, amount] });
     },
     claimStakeToken: () => send({ address: stakeToken, abi: erc20Abi, functionName: "faucet" }),
+    /** What the stake token's faucet gives, and from when this wallet can claim it. */
+    async faucet() {
+      const token = { address: stakeToken, abi: erc20Abi } as const;
+      const [amount, interval, last] = await Promise.all([
+        client.readContract({ ...token, functionName: "FAUCET_AMOUNT" }),
+        client.readContract({ ...token, functionName: "FAUCET_INTERVAL" }),
+        client.readContract({ ...token, functionName: "lastClaim", args: [account.address] }),
+      ]);
+      return { amount, opensAt: last === 0n ? 0n : last + interval };
+    },
     stakeTokens: (amount: bigint, price: bigint) => send({ address: staking, abi: workerStakingAbi, functionName: "stake", args: [amount, price] }),
     setPrice: (price: bigint) => send({ address: staking, abi: workerStakingAbi, functionName: "setPrice", args: [price] }),
     requestUnstake: (amount: bigint) => send({ address: staking, abi: workerStakingAbi, functionName: "requestUnstake", args: [amount] }),
@@ -316,9 +365,9 @@ function publicHost(hostname: string): boolean {
 }
 
 async function download(uri: string, fetcher: typeof fetch): Promise<Uint8Array> {
-  if (!URL.canParse(uri)) throw new Permanent("The brief's URL is not valid");
+  if (!URL.canParse(uri)) throw new PermanentError("The brief's URL is not valid");
   const url = new URL(uri);
-  if (!publicHost(url.hostname)) throw new Permanent(`The brief is on ${url.hostname}, which is not a public host`);
+  if (!publicHost(url.hostname)) throw new PermanentError(`The brief is on ${url.hostname}, which is not a public host`);
   const stop = new AbortController();
   const response = await fetcher(url, { redirect: "error", signal: AbortSignal.any([stop.signal, AbortSignal.timeout(15_000)]) });
   if (!response.ok) throw new Error(`The brief answered ${response.status}`);
@@ -328,7 +377,7 @@ async function download(uri: string, fetcher: typeof fetch): Promise<Uint8Array>
     size += chunk.byteLength;
     if (size > MAX_BRIEF_BYTES) {
       stop.abort();
-      throw new Permanent(`The brief is larger than ${MAX_BRIEF_BYTES / 1024} KB`);
+      throw new PermanentError(`The brief is larger than ${MAX_BRIEF_BYTES / 1024} KB`);
     }
     chunks.push(chunk);
   }
@@ -340,18 +389,18 @@ export async function fetchBrief(uri: string, expected: Hex, fetcher: typeof fet
   let bytes: Uint8Array;
   if (uri.startsWith("data:")) {
     const comma = uri.indexOf(",");
-    if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new Permanent("The brief's data URI is not base64");
+    if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new PermanentError("The brief's data URI is not base64");
     bytes = Uint8Array.from(Buffer.from(uri.slice(comma + 1), "base64"));
   } else if (uri.startsWith("https://")) {
     bytes = await download(uri, fetcher);
   } else {
-    throw new Permanent("The brief is neither a data URI nor an https URL");
+    throw new PermanentError("The brief is neither a data URI nor an https URL");
   }
-  if (bytes.byteLength > MAX_BRIEF_BYTES) throw new Permanent(`The brief is larger than ${MAX_BRIEF_BYTES / 1024} KB`);
-  if (keccak256(bytes).toLowerCase() !== expected.toLowerCase()) throw new Permanent("The brief does not match its hash on chain");
+  if (bytes.byteLength > MAX_BRIEF_BYTES) throw new PermanentError(`The brief is larger than ${MAX_BRIEF_BYTES / 1024} KB`);
+  if (keccak256(bytes).toLowerCase() !== expected.toLowerCase()) throw new PermanentError("The brief does not match its hash on chain");
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
-    throw new Permanent("The brief is not UTF-8 text");
+    throw new PermanentError("The brief is not UTF-8 text");
   }
 }

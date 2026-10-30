@@ -47,9 +47,16 @@ export function resolveNetwork(env: NodeJS.ProcessEnv): Network {
   if (name !== "testnet") throw new Error(`BRAINCHAIN_NETWORK must be testnet, not "${env.BRAINCHAIN_NETWORK}"`);
   return {
     ...TESTNET,
-    ...(env.BRAINCHAIN_RPC_URL ? { rpc: env.BRAINCHAIN_RPC_URL } : {}),
+    ...(env.BRAINCHAIN_RPC_URL ? { rpc: rpcURL(env.BRAINCHAIN_RPC_URL.trim()) } : {}),
     ...(env.BRAINCHAIN_SERVICE_URL ? { service: serviceURL(env.BRAINCHAIN_SERVICE_URL.trim()) } : {}),
   };
+}
+
+/** The value is never echoed: an RPC URL can hold an API key, and a mistyped one still does. */
+function rpcURL(value: string): string {
+  const url = URL.canParse(value) ? new URL(value) : undefined;
+  if (url?.protocol !== "https:" && url?.protocol !== "http:") throw new Error("BRAINCHAIN_RPC_URL is not a valid URL: it must start with https:// or http://");
+  return value;
 }
 
 /** The worker signs and sends its results to the service, so only https is accepted, or plain http to a service on this machine. */
