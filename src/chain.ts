@@ -5,6 +5,7 @@ import {
   http,
   keccak256,
   parseAbi,
+  toBytes,
   type Address,
   type Hex,
   type PrivateKeyAccount,
@@ -47,11 +48,18 @@ export interface HiredTask {
   briefHash: Hex;
 }
 
-/** What the work loop needs from the chain. */
+/** What the work loop needs from the chain and the service. */
 export interface WorkerChain {
   now(): Promise<bigint>;
   hired(): Promise<HiredTask[]>;
+  /** Uploads a result to the service, which serves it once Jev accepts the work. */
+  publish(id: bigint, text: string): Promise<{ uri: string; hash: Hex }>;
   submit(id: bigint, resultHash: Hex, resultURI: string): Promise<Hex>;
+}
+
+/** What the worker signs to upload a result: the task and the hash of exactly the bytes it uploads. */
+export function resultMessage(task: bigint, hash: Hex): string {
+  return `BrainChain result\ntask ${task}\nhash ${hash}`;
 }
 
 /** WorkerStaking.idOf: a worker's id is its account, left-padded to 32 bytes. */
@@ -80,9 +88,9 @@ export function createChain(network: Network, account: PrivateKeyAccount) {
     return hash;
   }
 
-  /** Every log of one event, in windows the RPC accepts. */
-  async function scan<T>(fetch: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>): Promise<T[]> {
-    const latest = await client.getBlockNumber();
+  /** Every log of one event up to `latest`, in windows the RPC accepts. */
+  async function scan<T>(fetch: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>, upTo?: bigint): Promise<T[]> {
+    const latest = upTo ?? (await client.getBlockNumber());
     const all: T[] = [];
     for (let from = network.fromBlock; from <= latest; from += LOG_RANGE) {
       const to = from + LOG_RANGE - 1n < latest ? from + LOG_RANGE - 1n : latest;
@@ -128,6 +136,20 @@ export function createChain(network: Network, account: PrivateKeyAccount) {
       }
       return tasks;
     },
+    async publish(task, text) {
+      const hash = keccak256(toBytes(text));
+      const signature = await account.signMessage({ message: resultMessage(task, hash) });
+      const response = await fetch(`${network.service}/results`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task: task.toString(), text, signature }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const body = (await response.json().catch(() => ({}))) as { uri?: string; hash?: Hex; error?: string };
+      if (!response.ok || !body.uri) throw new Error(`Uploading the result failed (${response.status}): ${body.error ?? "no reason given"}`);
+      if (body.hash?.toLowerCase() !== hash.toLowerCase()) throw new Error("The service stored different bytes than were sent");
+      return { uri: body.uri, hash };
+    },
     submit: (task, resultHash, resultURI) => send({ ...board, functionName: "submit", args: [task, resultHash, resultURI] }),
   };
 
@@ -158,19 +180,24 @@ export function createChain(network: Network, account: PrivateKeyAccount) {
     withdraw: () => send({ address: staking, abi: workerStakingAbi, functionName: "withdraw" }),
     apply: (profileURI: string) =>
       send({ address: bonds, abi: bondsAbi, functionName: "propose", args: [taskBoard, applicationData(account.address), profileURI] }),
-    /** This worker's applications, newest last, with their state and any change they queued. */
+    /**
+     * This worker's applications, newest last, with their state, and the last
+     * change any of them queued. Everything is read at one block, so a bond
+     * settled just after its change was queued is never seen without the change.
+     */
     async applications() {
-      const data = applicationData(account.address);
+      const data = applicationData(account.address).toLowerCase();
+      const blockNumber = await client.getBlockNumber();
       const [proposed, queued] = await Promise.all([
-        scan((fromBlock, toBlock) => client.getContractEvents({ address: bonds, abi: bondsAbi, eventName: "Proposed", args: { proposer: account.address, target: taskBoard }, fromBlock, toBlock })),
-        scan((fromBlock, toBlock) => client.getContractEvents({ address: executor, abi: executorAbi, eventName: "Queued", args: { target: taskBoard }, fromBlock, toBlock })),
+        scan((fromBlock, toBlock) => client.getContractEvents({ address: bonds, abi: bondsAbi, eventName: "Proposed", args: { proposer: account.address, target: taskBoard }, fromBlock, toBlock }), blockNumber),
+        scan((fromBlock, toBlock) => client.getContractEvents({ address: executor, abi: executorAbi, eventName: "Queued", args: { target: taskBoard }, fromBlock, toBlock }), blockNumber),
       ]);
-      const mine = queued.filter((log) => log.args.data!.toLowerCase() === data.toLowerCase()).at(-1);
-      const change = mine ? await client.readContract({ address: executor, abi: executorAbi, functionName: "getChange", args: [mine.args.changeId!] }) : undefined;
+      const mine = queued.filter((log) => log.args.data!.toLowerCase() === data).at(-1);
+      const change = mine ? await client.readContract({ address: executor, abi: executorAbi, functionName: "getChange", args: [mine.args.changeId!], blockNumber }) : undefined;
       const applications = await Promise.all(
         proposed
-          .filter((log) => log.args.data!.toLowerCase() === data.toLowerCase())
-          .map(async (log) => ({ id: log.args.id!, state: (await client.readContract({ address: bonds, abi: bondsAbi, functionName: "get", args: [log.args.id!] })).state })),
+          .filter((log) => log.args.data!.toLowerCase() === data)
+          .map(async (log) => ({ id: log.args.id!, state: (await client.readContract({ address: bonds, abi: bondsAbi, functionName: "get", args: [log.args.id!], blockNumber })).state })),
       );
       return { applications, change };
     },

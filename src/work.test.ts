@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { keccak256, toBytes, type Hex } from "viem";
 
-import { fetchBrief, workerId, type HiredTask, type WorkerChain } from "./chain.js";
-import { createWork, MAX_RESULT_BYTES, resultURI, shellCommand, type Command } from "./work.js";
+import { fetchBrief, resultMessage, workerId, type HiredTask, type WorkerChain } from "./chain.js";
+import { createWork, MAX_RESULT_BYTES, shellCommand, type Command } from "./work.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
 const dataURI = (text: string) => `data:application/json;base64,${Buffer.from(text).toString("base64")}`;
@@ -14,6 +14,7 @@ function setup(output: () => Promise<string>, format: "prompt" | "json" = "promp
   const chain = {
     now: vi.fn(async () => now),
     hired: vi.fn(async () => hired),
+    publish: vi.fn(async (id: bigint, text: string) => ({ uri: `https://brain.example/records/${id}.txt`, hash: keccak256(toBytes(text)) })),
     submit: vi.fn(async (_id: bigint, _hash: Hex, _uri: string): Promise<Hex> => {
       hired = [];
       return "0xabc";
@@ -26,19 +27,16 @@ function setup(output: () => Promise<string>, format: "prompt" | "json" = "promp
 }
 
 describe("work", () => {
-  it("runs the command on the task and submits its output inline", async () => {
+  it("runs the command on the task, uploads its output and submits it", async () => {
     const { chain, command, work } = setup(async () => "Batches settle down\n");
-    expect(await work.round()).toEqual({ delivered: 1, failed: 0 });
+    expect(await work.round()).toEqual({ hired: 1, delivered: 1, failed: 0 });
     const [input, env] = vi.mocked(command.run).mock.calls[0]!;
     expect(input).toContain("Write a haiku about rollups");
     expect(input).toContain('"passLevel": "Fine"');
     expect(input).toContain("untrusted poster");
     expect(env).toEqual({ BRAINCHAIN_TASK_ID: "7" });
-    const [id, hash, uri] = chain.submit.mock.calls[0]!;
-    expect(id).toBe(7n);
-    expect(hash).toBe(keccak256(toBytes("Batches settle down")));
-    expect(Buffer.from(uri.split(",")[1]!, "base64").toString()).toBe("Batches settle down");
-    expect(uri.startsWith("data:text/plain;charset=utf-8;base64,")).toBe(true);
+    expect(chain.publish).toHaveBeenCalledWith(7n, "Batches settle down");
+    expect(chain.submit).toHaveBeenCalledWith(7n, keccak256(toBytes("Batches settle down")), "https://brain.example/records/7.txt");
   });
 
   it("gives a program the task as JSON when asked", async () => {
@@ -48,26 +46,30 @@ describe("work", () => {
     expect(input).toMatchObject({ task: "7", title: "Haiku", passLevel: "Fine", levels: ["Great", "Fine", "Poor"] });
   });
 
-  it("retries a failed run after a wait and keeps a finished result when only the submit failed", async () => {
+  it("retries a failed run after a wait and keeps a finished result when only the upload or submit failed", async () => {
     const { chain, command, work, at } = setup(async () => "");
-    expect(await work.round()).toEqual({ delivered: 0, failed: 1 });
+    expect(await work.round()).toEqual({ hired: 1, delivered: 0, failed: 1 });
     await work.round();
     expect(command.run).toHaveBeenCalledOnce();
 
     vi.mocked(command.run).mockResolvedValue("ok");
-    chain.submit.mockRejectedValueOnce(new Error("nonce too low"));
+    chain.publish.mockRejectedValueOnce(new Error("Uploading the result failed (503)"));
     at(1_100n);
     await work.round();
+    chain.submit.mockRejectedValueOnce(new Error("nonce too low"));
     at(1_400n);
+    await work.round();
+    at(2_400n);
     expect((await work.round()).delivered).toBe(1);
     expect(command.run).toHaveBeenCalledTimes(2);
+    expect(chain.publish).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses a result too large to fit on chain", async () => {
+  it("refuses a result larger than the service accepts", async () => {
     const { chain, log, work } = setup(async () => "x".repeat(MAX_RESULT_BYTES + 1));
     await work.round();
-    expect(chain.submit).not.toHaveBeenCalled();
-    expect(log.mock.calls.at(-1)![0]).toContain("fit on chain");
+    expect(chain.publish).not.toHaveBeenCalled();
+    expect(log.mock.calls.at(-1)![0]).toContain("at most 100000 are accepted");
   });
 
   it("leaves a task it can no longer deliver in time", async () => {
@@ -98,8 +100,8 @@ describe("chain helpers", () => {
     await expect(fetchBrief("http://example.com/brief.json", task.briefHash)).rejects.toThrow("neither");
   });
 
-  it("derives the staking id and the inline result", () => {
+  it("derives the staking id and the message a result upload signs", () => {
     expect(workerId("0x00000000000000000000000000000000000000C1")).toBe(`0x${"0".repeat(62)}c1`);
-    expect(resultURI("é").bytes).toBe(2);
+    expect(resultMessage(7n, `0x${"ab".repeat(32)}`)).toBe(`BrainChain result\ntask 7\nhash 0x${"ab".repeat(32)}`);
   });
 });

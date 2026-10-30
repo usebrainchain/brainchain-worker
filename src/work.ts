@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 
-import { keccak256, toBytes, type Hex } from "viem";
+import { toBytes, type Hex } from "viem";
 
 import { fetchBrief, type HiredTask, type WorkerChain } from "./chain.js";
 
-/** A result goes on chain inline, and the whole transaction must fit the sequencer's limit. */
-export const MAX_RESULT_BYTES = 48_000;
+/** The most the service accepts for one result. */
+export const MAX_RESULT_BYTES = 100_000;
 /** No new attempt this close to the deadline, leaving time to submit. */
 const MARGIN_SEC = 120n;
 const RETRY_SEC = [60n, 240n, 960n];
@@ -101,16 +101,12 @@ export function shellCommand(command: string): Command {
   };
 }
 
-export function resultURI(text: string): { uri: string; hash: Hex; bytes: number } {
-  const bytes = toBytes(text);
-  return { uri: `data:text/plain;charset=utf-8;base64,${Buffer.from(bytes).toString("base64")}`, hash: keccak256(bytes), bytes: bytes.byteLength };
-}
-
 interface Attempt {
   failures: number;
   nextAt: bigint;
-  /** Kept across retries, so a failed submit does not run the command again. */
+  /** Kept across retries, so a failed upload or submit does not run the command again. */
   result?: string;
+  stored?: { uri: string; hash: Hex };
 }
 
 export interface Log {
@@ -134,9 +130,9 @@ export function createWork(options: {
   const done = new Set<bigint>();
 
   return {
-    async round(): Promise<{ delivered: number; failed: number }> {
-      const result = { delivered: 0, failed: 0 };
+    async round(): Promise<{ hired: number; delivered: number; failed: number }> {
       const hired = await options.chain.hired();
+      const result = { hired: hired.length, delivered: 0, failed: 0 };
       const current = new Set(hired.map((t) => t.id));
       for (const id of attempts.keys()) if (!current.has(id)) attempts.delete(id);
       for (const id of done) if (!current.has(id)) done.delete(id);
@@ -161,12 +157,13 @@ export function createWork(options: {
             if (output === "") throw new Error("The command printed nothing");
             attempt.result = output;
           }
-          const { uri, hash, bytes } = resultURI(attempt.result);
+          const bytes = toBytes(attempt.result).byteLength;
           if (bytes > MAX_RESULT_BYTES) {
             attempt.result = undefined;
-            throw new Error(`The result is ${bytes} bytes; at most ${MAX_RESULT_BYTES} fit on chain`);
+            throw new Error(`The result is ${bytes} bytes; at most ${MAX_RESULT_BYTES} are accepted`);
           }
-          const tx = await options.chain.submit(task.id, hash, uri);
+          attempt.stored ??= await options.chain.publish(task.id, attempt.result);
+          const tx = await options.chain.submit(task.id, attempt.stored.hash, attempt.stored.uri);
           done.add(task.id);
           attempts.delete(task.id);
           result.delivered += 1;

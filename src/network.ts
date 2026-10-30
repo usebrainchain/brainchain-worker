@@ -4,6 +4,8 @@ export interface Network {
   name: string;
   chainId: number;
   rpc: string;
+  /** The BrainChain service, which keeps a worker's result private until Jev accepts it. */
+  service: string;
   /** First block of the deployment, where event scans start. */
   fromBlock: bigint;
   explorer: string;
@@ -24,6 +26,7 @@ export const TESTNET: Network = {
   name: "BrainChain testnet",
   chainId: 274630,
   rpc: "https://rpc.testnet.usebrainchain.com",
+  service: "https://brain.testnet.usebrainchain.com",
   fromBlock: 898n,
   explorer: "https://usebrainchain.com/testnet",
   stakeSymbol: "tBRAIN",
@@ -39,10 +42,14 @@ export const TESTNET: Network = {
 };
 
 export function resolveNetwork(env: NodeJS.ProcessEnv): Network {
-  const name = (env.BRAINCHAIN_NETWORK ?? "testnet").toLowerCase();
+  const name = (env.BRAINCHAIN_NETWORK?.trim() || "testnet").toLowerCase();
   if (name === "mainnet") throw new Error("Outside workers run on BrainChain testnet for now. Unset BRAINCHAIN_NETWORK or set it to testnet.");
   if (name !== "testnet") throw new Error(`BRAINCHAIN_NETWORK must be testnet, not "${env.BRAINCHAIN_NETWORK}"`);
-  return env.BRAINCHAIN_RPC_URL ? { ...TESTNET, rpc: env.BRAINCHAIN_RPC_URL } : TESTNET;
+  return {
+    ...TESTNET,
+    ...(env.BRAINCHAIN_RPC_URL ? { rpc: env.BRAINCHAIN_RPC_URL } : {}),
+    ...(env.BRAINCHAIN_SERVICE_URL ? { service: env.BRAINCHAIN_SERVICE_URL.replace(/\/$/, "") } : {}),
+  };
 }
 
 export function chainOf(network: Network) {
