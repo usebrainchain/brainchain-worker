@@ -88,11 +88,17 @@ describe("chain helpers", () => {
     expect(resolveNetwork({ BRAINCHAIN_RPC_URL: "https://rpc.example.com/v2/key\n" }).rpc).toBe("https://rpc.example.com/v2/key");
   });
 
-  it("cuts a web page the RPC answered with to one short line", () => {
+  it("names a web page the RPC answered with instead of quoting it", () => {
     const page = `<!doctype html>\n<html lang="en">\n\t<head><title>Example Domain</title></head>\x07\n${"<p>filler</p>\n".repeat(80)}</html>`;
-    const line = reason(new HttpRequestError({ url: "https://example.com/APIKEYSECRET123", details: JSON.stringify(page) }));
-    expect(line).toMatch(/^Could not reach example\.com \(<!doctype html> <html lang="en"> <head><title>Example Domain<\/title><\/head> <p>filler/);
-    expect(line.length).toBe("Could not reach example.com ()".length + 160);
+    const line = reason(new HttpRequestError({ url: "https://example.com/APIKEYSECRET123", details: JSON.stringify(page), status: 200 }));
+    expect(line).toBe("example.com answered with a web page, not as an RPC");
+    expect(line).not.toContain("APIKEYSECRET123");
+  });
+
+  it("says the RPC answered when it did, and cuts the answer to one short line", () => {
+    const line = reason(new HttpRequestError({ url: "https://rpc.example.com/v2/APIKEYSECRET123", details: JSON.stringify(`gateway\ttimeout ${"x".repeat(300)}`), status: 504 }));
+    expect(line).toMatch(/^rpc\.example\.com answered 504 \(gatewaytimeout x+…\)$/);
+    expect(line.length).toBe("rpc.example.com answered 504 ()".length + 160);
     expect(line).not.toMatch(/[\x00-\x1f]/);
     expect(line).not.toContain("APIKEYSECRET123");
   });
