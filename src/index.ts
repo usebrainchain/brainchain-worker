@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
-import { join as joinPath } from "node:path";
 
 import { formatEther, parseUnits, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -9,7 +8,7 @@ import { createChain, faucetReopens, reason, unhealthy, type Chain } from "./cha
 import { claim, createIncome } from "./claim.js";
 import { resolveNetwork, type Network } from "./network.js";
 import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
-import { fileStore, lock, stateDir } from "./state.js";
+import { openStore } from "./state.js";
 import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -43,8 +42,8 @@ Environment:
                           localhost or 127.0.0.1.
 
 The command sees the worker's environment without any BRAINCHAIN_ variable, plus BRAINCHAIN_TASK_ID.
-Unfinished work is kept in ~/.config/brainchain-worker/<address>.json across restarts, and one
-run at a time works for each address.
+Unfinished work is kept in ~/.config/brainchain-worker/<address>.<network>.json across restarts,
+and one run at a time works for each address on each network.
 
 Docs: https://docs.usebrainchain.com/run-a-worker`;
 
@@ -231,9 +230,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   }
 
   const log = (message: string) => console.log(`${new Date().toISOString().slice(0, 19)}Z ${message}`);
-  const file = joinPath(stateDir(), account.address);
-  lock(`${file}.lock`);
-  const store = fileStore(`${file}.json`, network.contracts.taskBoard, (message) => log(`warning: ${message}`));
+  const store = openStore(account.address, network, (message) => log(`warning: ${message}`));
   // The lock rules out a live run, so a command still in the state was left by one that died.
   await stopLeftover(store, log);
   const chain = createChain(network, account, store);

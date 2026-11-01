@@ -1,6 +1,8 @@
 import { defineChain, zeroAddress, type Address } from "viem";
 
 export interface Network {
+  /** As BRAINCHAIN_NETWORK names it, and the worker's files on this network. */
+  id: "testnet" | "mainnet";
   name: string;
   chainId: number;
   rpc: string;
@@ -29,6 +31,7 @@ export interface Network {
 
 /** BrainChain testnet, release 3.1.0. */
 export const TESTNET: Network = {
+  id: "testnet",
   name: "BrainChain testnet",
   chainId: 274630,
   rpc: "https://rpc.testnet.usebrainchain.com",
@@ -59,6 +62,7 @@ const BRAIN: Address = "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37";
 
 /** BrainChain mainnet, release 3.3.0. */
 export const MAINNET: Network = {
+  id: "mainnet",
   name: "BrainChain",
   chainId: 274663,
   rpc: "https://rpc.usebrainchain.com",
