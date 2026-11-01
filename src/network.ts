@@ -1,4 +1,4 @@
-import { defineChain, zeroAddress, type Address } from "viem";
+import { defineChain, fallback, http, zeroAddress, type Address } from "viem";
 
 export interface Network {
   /** As BRAINCHAIN_NETWORK names it, and the worker's files on this network. */
@@ -26,6 +26,8 @@ export interface Network {
     chainId: number;
     name: string;
     rpc: string;
+    /** Read in order when the RPC before fails to answer. */
+    rpcFallbacks?: string[];
     collection: Address;
     weth: Address;
     /** Set where the WETH has a faucet, as test WETH does. */
@@ -60,6 +62,7 @@ export const TESTNET: Network = {
     chainId: 46630,
     name: "Robinhood Chain testnet",
     rpc: "https://rpc.testnet.chain.robinhood.com",
+    rpcFallbacks: ["https://robinhood-sepolia-rpc.publicnode.com", "https://robinhood-testnet.drpc.org"],
     collection: "0x324B52EE2182641ec29652076ab541bc9F9907d2",
     weth: "0x1F852eF3Afa13156b807204d838BbB46B4b452eb",
     faucet: true,
@@ -103,6 +106,7 @@ export const MAINNET: Network = {
     chainId: 4663,
     name: "Robinhood Chain",
     rpc: "https://rpc.mainnet.chain.robinhood.com",
+    rpcFallbacks: ["https://rpc-robinhood.globalstake.io", "https://robinhood.api.pocket.network"],
     collection: "0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169",
     weth: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
     gas: "Send it a little ETH there for gas",
@@ -165,7 +169,13 @@ export function proofsChainOf(proofs: Network["proofs"]) {
     id: proofs.chainId,
     name: proofs.name,
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: { default: { http: [proofs.rpc] } },
+    rpcUrls: { default: { http: [proofs.rpc, ...(proofs.rpcFallbacks ?? [])] } },
     contracts: { multicall3: { address: MULTICALL3 } },
   });
+}
+
+/** The Proofs chain's RPCs in order; the next answers when one fails to, a revert being an answer. */
+export function proofsTransport(proofs: Network["proofs"]) {
+  const urls = [proofs.rpc, ...(proofs.rpcFallbacks ?? [])];
+  return fallback(urls.map((url) => http(url, { timeout: 20_000, retryCount: urls.length > 1 ? 1 : 3 })), { rank: false, retryCount: 0 });
 }

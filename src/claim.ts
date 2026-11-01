@@ -1,7 +1,7 @@
 import { createPublicClient, createWalletClient, formatEther, http, parseAbi, parseEventLogs, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { RECEIPT_MS } from "./chain.js";
-import { proofsChainOf, type Network } from "./network.js";
+import { proofsChainOf, proofsTransport, type Network } from "./network.js";
 
 export const proofsIncomeAbi = parseAbi([
   "function due(uint256 tokenId) view returns (uint256)",
@@ -25,7 +25,7 @@ export interface IncomeChain {
 
 export function createIncome(proofs: Network["proofs"], income: Address, account: PrivateKeyAccount): IncomeChain {
   const chain = proofsChainOf(proofs);
-  const transport = http(proofs.rpc, { timeout: 20_000, retryCount: 3 });
+  const transport = proofsTransport(proofs);
   const client = createPublicClient({ chain, transport, pollingInterval: 1_000 });
   const wallet = createWalletClient({ account, chain, transport });
   const router = { address: income, abi: proofsIncomeAbi } as const;
