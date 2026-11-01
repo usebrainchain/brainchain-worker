@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { fileStore, lock } from "./state.js";
+import { MAINNET, TESTNET } from "./network.js";
+import { fileStore, lock, openStore } from "./state.js";
 
 const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
 const dir = () => mkdtempSync(join(tmpdir(), "brainchain-worker-"));
@@ -102,5 +103,76 @@ describe("lock", () => {
     expect(readFileSync(file, "utf8")).toBe(String(process.pid));
     release();
     expect(existsSync(file)).toBe(false);
+  });
+});
+
+describe("openStore", () => {
+  const ADDRESS = "0x5B38Da6a701c568545dCfcB03FcB875f56beddC4";
+  const saved = (board: string, done: string[]) => JSON.stringify({ board: board.toLowerCase(), tasks: {}, done, hired: { block: 1_234, tasks: done } });
+  const held = (file: string, pid: number) => `Another run (pid ${pid}) is already working for this worker. Stop it before starting another; ${file} holds its lock.`;
+
+  it("moves state kept per address to the network whose board it holds, and drops its stale lock", () => {
+    const folder = dir();
+    const old = join(folder, ADDRESS);
+    writeFileSync(`${old}.json`, saved(TESTNET.contracts.taskBoard, ["5"]));
+    writeFileSync(`${old}.lock`, String(spawnSync("true").pid));
+    expect(openStore(ADDRESS, TESTNET, undefined, folder).state).toMatchObject({ done: ["5"], hired: { block: 1_234 } });
+    expect(readdirSync(folder).sort()).toEqual([`${ADDRESS}.testnet.json`, `${ADDRESS}.testnet.lock`]);
+    expect(readFileSync(`${old}.testnet.lock`, "utf8")).toBe(String(process.pid));
+  });
+
+  it("leaves state kept for the other board until a run on that network moves it", () => {
+    const folder = dir();
+    const old = join(folder, ADDRESS);
+    const text = saved(MAINNET.contracts.taskBoard, ["5"]);
+    writeFileSync(`${old}.json`, text);
+    expect(openStore(ADDRESS, TESTNET, undefined, folder).state.done).toEqual([]);
+    expect(readFileSync(`${old}.json`, "utf8")).toBe(text);
+    expect(existsSync(`${old}.testnet.json`)).toBe(false);
+    expect(openStore(ADDRESS, MAINNET, undefined, folder).state.done).toEqual(["5"]);
+    expect(existsSync(`${old}.json`)).toBe(false);
+  });
+
+  it("leaves old state alone once the network has its own", () => {
+    const folder = dir();
+    const old = join(folder, ADDRESS);
+    writeFileSync(`${old}.json`, saved(TESTNET.contracts.taskBoard, ["5"]));
+    writeFileSync(`${old}.testnet.json`, saved(TESTNET.contracts.taskBoard, ["9"]));
+    expect(openStore(ADDRESS, TESTNET, undefined, folder).state.done).toEqual(["9"]);
+    expect(existsSync(`${old}.json`)).toBe(true);
+  });
+
+  it("refuses while a run from before the move works on this network, and not on the other", () => {
+    const folder = dir();
+    const old = join(folder, ADDRESS);
+    writeFileSync(`${old}.json`, saved(MAINNET.contracts.taskBoard, ["5"]));
+    writeFileSync(`${old}.lock`, String(process.ppid));
+    expect(() => openStore(ADDRESS, MAINNET, undefined, folder)).toThrow(held(`${old}.lock`, process.ppid));
+    expect(existsSync(`${old}.json`)).toBe(true);
+    expect(openStore(ADDRESS, TESTNET, undefined, folder).state.done).toEqual([]);
+  });
+
+  it("runs one key on testnet and mainnet at once, each with its own lock and state", () => {
+    const folder = dir();
+    const testnet = openStore(ADDRESS, TESTNET, undefined, folder);
+    testnet.state.hired = { block: 1_234, tasks: ["7"] };
+    testnet.save();
+    // Held by a live process from here on, as a testnet run in another terminal would hold it.
+    writeFileSync(join(folder, `${ADDRESS}.testnet.lock`), String(process.ppid));
+
+    const mainnet = openStore(ADDRESS, MAINNET, undefined, folder);
+    expect(mainnet.state).toEqual({ board: MAINNET.contracts.taskBoard.toLowerCase(), tasks: {}, done: [] });
+    mainnet.state.hired = { block: 99, tasks: [] };
+    mainnet.save();
+    expect(readFileSync(join(folder, `${ADDRESS}.mainnet.lock`), "utf8")).toBe(String(process.pid));
+    expect(readFileSync(join(folder, `${ADDRESS}.testnet.lock`), "utf8")).toBe(String(process.ppid));
+    expect(fileStore(join(folder, `${ADDRESS}.testnet.json`), TESTNET.contracts.taskBoard).state.hired).toEqual({ block: 1_234, tasks: ["7"] });
+  });
+
+  it("names the network's lock file when another run holds it", () => {
+    const folder = dir();
+    const file = join(folder, `${ADDRESS}.testnet.lock`);
+    writeFileSync(file, String(process.ppid));
+    expect(() => openStore(ADDRESS, TESTNET, undefined, folder)).toThrow(held(file, process.ppid));
   });
 });
