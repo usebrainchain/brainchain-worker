@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
-import { toBytes } from "viem";
+import { toBytes, type Hex } from "viem";
 
-import { fetchBrief, PermanentError, reason, type HiredTask, type WorkerChain } from "./chain.js";
+import { fetchBrief, PermanentError, reason, RECEIPT_MS, type HiredTask, type WorkerChain } from "./chain.js";
 import { memoryStore, type Store, type TaskState } from "./state.js";
 
 /** The most the service accepts for one result. */
@@ -85,7 +85,8 @@ export function taskPrompt(task: HiredTask, brief: Brief): string {
 }
 
 export interface Command {
-  run(input: string, env: Record<string, string>, timeoutMs: number): Promise<string>;
+  /** Runs the command once; `started` gets its process group as soon as it starts. */
+  run(input: string, env: Record<string, string>, timeoutMs: number, started?: (pgid: number) => void): Promise<string>;
   /** Kills every command still running, at once. */
   kill(): void;
 }
@@ -105,21 +106,56 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/** When a process started, in ms since the epoch, or undefined when it is gone or ps cannot tell. */
+function startTime(pid: number): number | undefined {
+  const ps = spawnSync("ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8" });
+  const elapsed = /^\s*(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)\s*$/.exec(ps.stdout ?? "");
+  if (ps.status !== 0 || !elapsed) return undefined;
+  const [days, hours, minutes, seconds] = elapsed.slice(1).map((part) => Number(part ?? 0)) as [number, number, number, number];
+  return Date.now() - (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
+}
+
+/**
+ * Stops the command an earlier run left running when it died, such as on
+ * SIGKILL, so a restart never works on the same task twice at once.
+ */
+export function stopLeftover(store: Store, log: Log): void {
+  const left = store.state.command;
+  if (left === undefined) return;
+  delete store.state.command;
+  store.save();
+  // A pid is not reused while its process lives, so a live process with it that started when the command did is the command.
+  // Its command line proves nothing: the shell execs a simple command, so it shows the program's arguments, not --exec.
+  const started = startTime(left.pgid);
+  if (started === undefined || Math.abs(started - left.startedAt) > 5_000) return;
+  signalGroup(left.pgid, "SIGKILL");
+  log(`stopped the command an earlier run left running (process group ${left.pgid})`);
+}
+
 /**
  * Runs a shell command with the input on stdin and takes its stdout as the
- * deliverable. A command that does not stop on SIGTERM is killed `graceMs` later.
+ * deliverable. A command that does not stop on SIGTERM is killed `graceMs` later,
+ * and none outlives the worker's exit.
  */
 export function shellCommand(command: string, graceMs = 10_000): Command {
   const running = new Set<number>();
+  const kill = () => {
+    for (const pid of running) signalGroup(pid, "SIGKILL");
+  };
   return {
-    run(input, env, timeoutMs) {
+    run(input, env, timeoutMs, started) {
       return new Promise((resolve, reject) => {
         // Its own process group, so a stop reaches everything the command started, and Ctrl-C in the terminal reaches only the worker.
         // Stderr is forwarded rather than shared: a background group that touches the terminal is stopped by SIGTTOU.
         const child = spawn(command, { shell: true, detached: true, env: childEnv(env), stdio: ["pipe", "pipe", "pipe"] });
         child.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
         const pid = child.pid;
-        if (pid !== undefined) running.add(pid);
+        if (pid !== undefined) {
+          // Its own group would outlive the worker otherwise, still working on a task the next run takes up again.
+          if (running.size === 0) process.on("exit", kill);
+          running.add(pid);
+          started?.(pid);
+        }
         const chunks: Buffer[] = [];
         let size = 0;
         let stopped: string | undefined;
@@ -150,6 +186,7 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
           clearTimeout(timer);
           clearTimeout(force);
           if (pid !== undefined) running.delete(pid);
+          if (running.size === 0) process.off("exit", kill);
           if (stopped !== undefined) return reject(new Error(stopped));
           if (code !== 0) return reject(new Error(signal ? `The command was stopped by ${signal}` : `The command exited with code ${code}`));
           try {
@@ -163,31 +200,35 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
         child.stdin.end(input);
       });
     },
-    kill() {
-      for (const pid of running) signalGroup(pid, "SIGKILL");
-    },
+    kill,
   };
 }
 
 export type Log = (message: string) => void;
 
-/** Signals closer together than this are one: npm passes the terminal's Ctrl-C on to the worker, which gets its own too. */
-const ECHO_MS = 1_500;
+/** A repeat of one signal sooner than this is an echo: npm passes the terminal's Ctrl-C on to the worker, which gets its own too. */
+const ECHO_MS = 250;
 
 /**
  * What Ctrl-C and SIGTERM do to `run`. An idle worker stops at once. A busy one
  * takes no new task and stops after the current one, unless a second signal
- * comes, which stops the command too.
+ * comes, which stops the command too. SIGHUP stops both at once: the terminal
+ * or session that would see the task through is gone.
  */
 export function stopper(options: { busy: () => boolean; kill: () => void; log: Log; exit: (code: number) => void }) {
   let stopping = false;
-  let counted = -Infinity;
+  let last: { signal: NodeJS.Signals; at: number } | undefined;
   return {
     stopping: () => stopping,
     signal(signal: NodeJS.Signals) {
+      if (signal === "SIGHUP") {
+        options.kill();
+        options.log("SIGHUP: stopping now");
+        return options.exit(129);
+      }
       const now = Date.now();
-      if (now - counted < ECHO_MS) return;
-      counted = now;
+      if (last?.signal === signal && now - last.at < ECHO_MS) return;
+      last = { signal, at: now };
       const name = signal === "SIGINT" ? "Ctrl-C" : signal;
       if (stopping) {
         options.kill();
@@ -222,6 +263,8 @@ export function createWork(options: {
   store?: Store;
   /** True once the worker takes no new task. */
   stopping?: () => boolean;
+  /** Called as each task fails or is given up, before the round ends. */
+  failed?: () => void;
   fetchBrief?: typeof fetchBrief;
 }) {
   const { chain, command } = options;
@@ -244,6 +287,14 @@ export function createWork(options: {
   const inTime = async (task: HiredTask) => {
     if ((await chain.now()) >= task.deadline) throw new PermanentError("The deadline passed before the result could be submitted");
   };
+  const remember = (pgid: number) => {
+    state.command = { pgid, startedAt: Date.now() };
+    store.save();
+  };
+  const forget = () => {
+    delete state.command;
+    store.save();
+  };
 
   return {
     /** True while a task is in hand, from running its command to submitting the result. */
@@ -251,8 +302,23 @@ export function createWork(options: {
     async round(): Promise<{ hired: number; delivered: number; failed: number }> {
       const hired = (await chain.hired()).sort((a, b) => (a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0));
       const result = { hired: hired.length, delivered: 0, failed: 0 };
+      const fail = () => {
+        result.failed += 1;
+        options.failed?.();
+      };
+      const delivered = (key: string, text: string, tx: Hex) => {
+        result.delivered += 1;
+        log(`task ${key}: delivered (${toBytes(text).byteLength} bytes, ${tx}). Jev grades it next.`);
+      };
       const current = new Set(hired.map((t) => t.id.toString()));
-      for (const key of Object.keys(state.tasks)) if (!current.has(key)) delete state.tasks[key];
+      for (const [key, attempt] of Object.entries(state.tasks)) {
+        if (current.has(key)) continue;
+        delete state.tasks[key];
+        // A submit that landed after the run that sent it stopped waiting, or stopped.
+        if (attempt.tx !== undefined && attempt.result !== undefined && (await chain.landed(attempt.tx, 5_000).catch(() => false))) {
+          delivered(key, attempt.result, attempt.tx);
+        }
+      }
       state.done = state.done.filter((key) => current.has(key));
       store.save();
 
@@ -264,19 +330,32 @@ export function createWork(options: {
         try {
           const now = await chain.now();
           if (now < BigInt(attempt.nextAt)) continue;
+          busy = true;
+          if (attempt.tx !== undefined && attempt.result !== undefined) {
+            // Sent before a restart or a receipt timeout: it may still land, and sending the result again would then only revert.
+            if (await chain.landed(attempt.tx, RECEIPT_MS)) {
+              finish(key);
+              delivered(key, attempt.result, attempt.tx);
+              continue;
+            }
+            delete attempt.tx;
+            store.save();
+          }
           if (now + MARGIN_SEC >= task.deadline) {
             finish(key);
+            fail();
             log(`task ${task.id}: too close to the deadline to deliver; the poster is refunded`);
             continue;
           }
-          busy = true;
           if (attempt.result === undefined) {
             const brief = parseBrief(await read(task.briefURI, task.briefHash));
             await needGas();
+            // A stop asked for while the brief downloaded or the balance was read starts no command.
+            if (options.stopping?.()) continue;
             log(`task ${task.id}: working on "${brief.title}"`);
             const input = options.format === "json" ? JSON.stringify(taskInput(task, brief)) : taskPrompt(task, brief);
             const timeoutMs = Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, Number(task.deadline - MARGIN_SEC - now) * 1000);
-            const output = stripAnsi(await command.run(input, { BRAINCHAIN_TASK_ID: key }, timeoutMs)).trim();
+            const output = stripAnsi(await command.run(input, { BRAINCHAIN_TASK_ID: key }, timeoutMs, remember).finally(forget)).trim();
             if (output === "") throw new Error("The command printed nothing");
             const lower = output.toLowerCase();
             if (secrets.some((secret) => lower.includes(secret))) {
@@ -295,12 +374,14 @@ export function createWork(options: {
           }
           await needGas();
           await inTime(task);
-          const tx = await chain.submit(task.id, attempt.stored.hash, attempt.stored.uri);
+          const tx = await chain.submit(task.id, attempt.stored.hash, attempt.stored.uri, (sent) => {
+            attempt.tx = sent;
+            store.save();
+          });
           finish(key);
-          result.delivered += 1;
-          log(`task ${task.id}: delivered (${toBytes(attempt.result).byteLength} bytes, ${tx}). Jev grades it next.`);
+          delivered(key, attempt.result, tx);
         } catch (error) {
-          result.failed += 1;
+          fail();
           const why = reason(error);
           if (error instanceof PermanentError) {
             finish(key);

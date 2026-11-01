@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { fileStore, lock } from "./state.js";
 
@@ -29,10 +29,23 @@ describe("fileStore", () => {
     expect(fileStore(file, "0x0000000000000000000000000000000000000001").state.done).toEqual([]);
   });
 
-  it("refuses a file that is not JSON", () => {
-    const file = join(dir(), "worker.json");
-    writeFileSync(file, "{");
-    expect(() => fileStore(file, BOARD)).toThrow("not valid JSON");
+  it("moves a file that is not JSON aside and starts with no saved work", () => {
+    for (const text of ["{", "", "null"]) {
+      const folder = dir();
+      const file = join(folder, "worker.json");
+      writeFileSync(file, text);
+      const warn = vi.fn();
+      const store = fileStore(file, BOARD, warn);
+      expect(store.state).toEqual({ board: BOARD.toLowerCase(), tasks: {}, done: [] });
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]![0]).toMatch(/was not valid JSON, so it was moved to .*worker\.json\.corrupt-\d{8}T\d{6}Z and this run starts with no saved work$/);
+      const [aside] = readdirSync(folder).filter((name) => name.startsWith("worker.json.corrupt-"));
+      expect(readFileSync(join(folder, aside!), "utf8")).toBe(text);
+      expect(existsSync(file)).toBe(false);
+      store.save();
+      expect(fileStore(file, BOARD, warn).state.done).toEqual([]);
+      expect(warn).toHaveBeenCalledOnce();
+    }
   });
 });
 

@@ -2,13 +2,14 @@
 import { createRequire } from "node:module";
 import { join as joinPath } from "node:path";
 
-import { formatEther, formatUnits, parseUnits, type Hex, type PrivateKeyAccount } from "viem";
+import { formatEther, parseUnits, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
-import { ApplicationState, createChain, faucetReopens, reason, unhealthy, type Chain } from "./chain.js";
+import { createChain, faucetReopens, reason, unhealthy, type Chain } from "./chain.js";
 import { resolveNetwork, type Network } from "./network.js";
+import { hireable, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { fileStore, lock, stateDir } from "./state.js";
-import { createWork, shellCommand, stopper } from "./work.js";
+import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -72,7 +73,7 @@ function parse(command: string, args: string[]): { positional: string[]; values:
     }
     const [name, inline] = arg.slice(2).split(/=(.*)/s, 2) as [string, string | undefined];
     const isSwitch = known[name];
-    if (isSwitch === undefined) throw new UsageError(`The ${command} command has no --${name} flag (see brainchain-worker help)`);
+    if (isSwitch === undefined) throw new UsageError(`The ${command} command has no --${name} flag (see brainchain-worker --help)`);
     if (isSwitch) {
       switches.add(name);
       continue;
@@ -81,7 +82,7 @@ function parse(command: string, args: string[]): { positional: string[]; values:
     if (value === undefined || (inline === undefined && value.startsWith("--"))) throw new UsageError(`--${name} needs a value`);
     values.set(name, value);
   }
-  if (positional.length > (POSITIONAL[command] ?? 0)) throw new UsageError(`Unexpected "${positional.at(-1)}" (see brainchain-worker help)`);
+  if (positional.length > (POSITIONAL[command] ?? 0)) throw new UsageError(`Unexpected "${positional.at(-1)}" (see brainchain-worker --help)`);
   return { positional, values, switches };
 }
 
@@ -113,9 +114,6 @@ function price(value: string): bigint {
   return parseUnits(value, 6);
 }
 
-const stake = (network: Network, amount: bigint) => `${formatUnits(amount, 18)} ${network.stakeSymbol}`;
-const usdg = (network: Network, amount: bigint) => `${formatUnits(amount, 6)} ${network.bountySymbol}`;
-const when = (seconds: bigint) => new Date(Number(seconds) * 1000).toISOString().replace(".000Z", "Z");
 const RUN = '`npx brainchain-worker run --exec "<command>"`';
 
 function noGas(chain: Chain, network: Network): Error {
@@ -127,44 +125,6 @@ function noGas(chain: Chain, network: Network): Error {
 
 async function needGas(chain: Chain, network: Network): Promise<void> {
   if ((await chain.ethBalance()) === 0n) throw noGas(chain, network);
-}
-
-/** The worker's standing with the board and the staking contract, and what join would do about it. */
-async function snapshot(chain: Chain) {
-  const [allowed, w, min, { applications, change }] = await Promise.all([chain.allowed(), chain.stake(), chain.minStake(), chain.applications()]);
-  const pending = change !== undefined && !change.executed && !change.vetoed;
-  const open = applications.find((a) => a.state === ApplicationState.Open);
-  return {
-    allowed,
-    w,
-    min,
-    applications,
-    change,
-    pending,
-    open,
-    applying: !allowed && !pending && open === undefined,
-    // Below the minimum after leave or a slash, an allowed worker cannot be hired until it stakes again.
-    toStake: w.staked >= min ? 0n : min - w.staked,
-  };
-}
-
-type Snapshot = Awaited<ReturnType<typeof snapshot>>;
-
-/** Why the worker can or cannot be hired right now, in one line. */
-function hireable({ allowed, w, min, applications, change, pending }: Snapshot, network: Network): string {
-  if (allowed) return w.staked >= min ? "yes" : `no: your stake is below the minimum of ${stake(network, min)}. Run join to stake again; status shows what it needs.`;
-  // An allowed application waiting out its timelock outranks anything filed after it.
-  if (change && pending) return `no: Jev allowed this worker; it can be hired after ${when(change.eta)}`;
-  const last = applications.at(-1);
-  if (last === undefined) return "no: run `npx brainchain-worker join` to apply";
-  if (last.state === ApplicationState.Open) return `no: application ${last.id} is waiting for Jev`;
-  if (last.state === ApplicationState.Burned) return `no: Jev did not allow application ${last.id}, and its bond was burned. Run join to apply again.`;
-  if (change?.vetoed) {
-    // A vetoed call can never be queued again, so the veto still stands for applications filed after it.
-    const vetoed = applications.find((a) => a.decisionId === change.decisionId);
-    return `no: the guardian vetoed ${vetoed ? `application ${vetoed.id}` : "allowing this worker"}`;
-  }
-  return `no: application ${last.id} closed without a decision; its bond was returned. Run join to apply again.`;
 }
 
 async function join(chain: Chain, network: Network, values: Map<string, string>): Promise<void> {
@@ -186,14 +146,15 @@ async function join(chain: Chain, network: Network, values: Map<string, string>)
   const [bond, balance] = await Promise.all([chain.bond(), chain.stakeBalance()]);
   const need = toStake + (applying ? bond : 0n);
   if (balance < need) {
+    const [faucet, now] = await Promise.all([chain.faucet(), chain.now()]);
     const closed = (opensAt: bigint) => {
-      const unstaking = w.unstaking > 0n ? `, or run withdraw after ${when(w.unlocksAt)} and join with the ${stake(network, w.unstaking)} it returns` : "";
+      const withdraw = now >= w.unlocksAt ? "run withdraw now" : `run withdraw after ${when(w.unlocksAt)}`;
+      const unstaking = w.unstaking > 0n ? `, or ${withdraw} and join with the ${stake(network, w.unstaking)} it returns` : "";
       return new Error(
         `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs, and the faucet allows one claim a day: ` +
           `this wallet can claim again at ${when(opensAt)}. Run join again then${unstaking}.`,
       );
     };
-    const [faucet, now] = await Promise.all([chain.faucet(), chain.now()]);
     if (now < faucet.opensAt) throw closed(faucet.opensAt);
     console.log(`Claiming ${network.stakeSymbol} from the testnet faucet...`);
     await chain.claimStakeToken().catch((error: unknown) => {
@@ -232,18 +193,6 @@ async function join(chain: Chain, network: Network, values: Map<string, string>)
   );
 }
 
-/** The wallet's tBRAIN and, below the minimum stake, where join would find what it needs. */
-function wallet(network: Network, s: Snapshot, balance: bigint, bond: bigint, faucet: { amount: bigint; opensAt: bigint }, now: bigint): string {
-  const has = stake(network, balance);
-  if (s.toStake === 0n) return has;
-  const need = s.toStake + (s.applying ? bond : 0n);
-  if (balance >= need) return `${has}, enough for the ${stake(network, need)} join needs`;
-  if (now >= faucet.opensAt) return `${has}; join needs ${stake(network, need)} and claims the rest from the faucet, which gives ${stake(network, faucet.amount)} a day`;
-  const unstaking =
-    s.w.unstaking > 0n ? `, and the ${stake(network, s.w.unstaking)} unstaking can be withdrawn ${now >= s.w.unlocksAt ? "now" : `after ${when(s.w.unlocksAt)}`}` : "";
-  return `${has}; join needs ${stake(network, need)}. The faucet opens again for this wallet at ${when(faucet.opensAt)}${unstaking}`;
-}
-
 async function status(chain: Chain, network: Network): Promise<void> {
   const [gas, s, held, record, bountyBalance, stakeBalance, bond, faucet, now] = await Promise.all([
     chain.ethBalance(),
@@ -253,13 +202,14 @@ async function status(chain: Chain, network: Network): Promise<void> {
     chain.bountyBalance(),
     chain.stakeBalance(),
     chain.bond(),
-    chain.faucet(),
+    // A stake token without a faucet, as on mainnet, leaves out what the faucet would give.
+    chain.faucet().catch(() => undefined),
     chain.now(),
   ]);
   const { w, min } = s;
   const unstaking = w.unstaking > 0n ? `, ${stake(network, w.unstaking)} unstaking until ${when(w.unlocksAt)}` : "";
   console.log(`Worker ${chain.account} on ${network.name}
-  Hireable  ${hireable(s, network)}
+  Hireable  ${hireable(s, network, "status")}
   Stake     ${stake(network, w.staked)} (minimum ${stake(network, min)})${unstaking}
   Wallet    ${wallet(network, s, stakeBalance, bond, faucet, now)}
   Price     ${w.registered ? `${usdg(network, w.price)} per task` : "not set until you join"}
@@ -278,14 +228,17 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     throw new UsageError("--timeout is the most minutes the command may spend on one task: more than 0, at most 1440, and 20 by default");
   }
 
+  const log = (message: string) => console.log(`${new Date().toISOString().slice(0, 19)}Z ${message}`);
   const file = joinPath(stateDir(), account.address);
   lock(`${file}.lock`);
-  const store = fileStore(`${file}.json`, network.contracts.taskBoard);
+  const store = fileStore(`${file}.json`, network.contracts.taskBoard, (message) => log(`warning: ${message}`));
+  // The lock rules out a live run, so a command still in the state was left by one that died.
+  stopLeftover(store, log);
   const chain = createChain(network, account, store);
-  const log = (message: string) => console.log(`${new Date().toISOString().slice(11, 19)}Z ${message}`);
 
   const command = shellCommand(exec);
-  const stop = stopper({ busy: () => work.busy(), kill: command.kill, log, exit: (code) => process.exit(code) });
+  // An idle stop keeps the exit code of a task that failed earlier in a --once pass.
+  const stop = stopper({ busy: () => work.busy(), kill: command.kill, log, exit: (code) => process.exit(code || process.exitCode) });
   const work = createWork({
     chain,
     command,
@@ -295,9 +248,10 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     secrets: [key, key.slice(2)],
     store,
     stopping: stop.stopping,
+    // A cron job sees a failed task as a failed run.
+    failed: once ? () => void (process.exitCode = 1) : undefined,
   });
-  process.on("SIGINT", stop.signal);
-  process.on("SIGTERM", stop.signal);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop.signal);
 
   const gas = await chain.ethBalance().catch((error: unknown) => {
     log(`could not read the wallet's ETH balance: ${reason(error)}`);
@@ -306,18 +260,16 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   if (gas === 0n) throw noGas(chain, network);
   const [line, sick] = await Promise.all([
     snapshot(chain).then(
-      (s) => hireable(s, network),
+      (s) => hireable(s, network, "run"),
       (error: unknown) => `could not check (${reason(error)})`,
     ),
     unhealthy(network.service),
   ]);
   log(`worker ${chain.account} on ${network.name}; hireable: ${line}`);
-  if (sick) log(`warning: ${sick}; results are uploaded there, so none can be delivered until it answers`);
+  if (sick) log(`warning: ${sick}`);
   if (once) {
     const result = await work.round();
-    if (result.hired === 0) log("no task is hired to this worker right now");
-    // A cron job sees a failed task as a failed run.
-    if (result.failed > 0) process.exitCode = 1;
+    if (result.hired === 0 && result.delivered === 0) log("no task is hired to this worker right now");
     return;
   }
   log("waiting for tasks (Ctrl-C to stop)");

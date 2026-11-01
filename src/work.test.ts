@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,8 +8,8 @@ import { ContractFunctionExecutionError, ContractFunctionRevertedError, encodeEr
 
 import { taskBoardAbi } from "./abi.js";
 import { submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
-import { fileStore, type Store } from "./state.js";
-import { createWork, MAX_RESULT_BYTES, printable, shellCommand, stopper, taskPrompt, type Command } from "./work.js";
+import { fileStore, memoryStore, type Store } from "./state.js";
+import { createWork, MAX_RESULT_BYTES, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command } from "./work.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
 const dataURI = (text: string) => `data:application/json;base64,${Buffer.from(text).toString("base64")}`;
@@ -17,7 +18,10 @@ const task = hiredTask(7n);
 const KEY = `0x${"4f".repeat(32)}`;
 const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
 
-function setup(output: (at: (t: bigint) => void) => Promise<string>, options: { format?: "prompt" | "json"; tasks?: HiredTask[]; store?: Store; stopping?: () => boolean } = {}) {
+function setup(
+  output: (at: (t: bigint) => void) => Promise<string>,
+  options: { format?: "prompt" | "json"; tasks?: HiredTask[]; store?: Store; stopping?: () => boolean; failed?: () => void } = {},
+) {
   let now = 1_000n;
   const at = (t: bigint) => void (now = t);
   let hired = options.tasks ?? [task];
@@ -26,14 +30,28 @@ function setup(output: (at: (t: bigint) => void) => Promise<string>, options: { 
     hired: vi.fn(async () => hired),
     ethBalance: vi.fn(async () => 10n ** 15n),
     publish: vi.fn(async (id: bigint, text: string) => ({ uri: `https://brain.example/records/${id}.txt`, hash: keccak256(toBytes(text)) })),
-    submit: vi.fn(async (id: bigint, _hash: Hex, _uri: string): Promise<Hex> => {
+    submit: vi.fn(async (id: bigint, _hash: Hex, _uri: string, sent: (tx: Hex) => void): Promise<Hex> => {
+      sent("0xabc");
       hired = hired.filter((t) => t.id !== id);
       return "0xabc";
     }),
+    landed: vi.fn(async (_tx: Hex, _waitMs: number): Promise<boolean | undefined> => true),
   } satisfies WorkerChain;
-  const command = { run: vi.fn(async (_input: string, _env: Record<string, string>, _timeoutMs: number) => output(at)), kill: vi.fn() } satisfies Command;
+  const command = {
+    run: vi.fn(async (_input: string, _env: Record<string, string>, _timeoutMs: number, _started?: (pgid: number) => void) => output(at)),
+    kill: vi.fn(),
+  } satisfies Command;
   const log = vi.fn();
-  const work = createWork({ chain, command, format: options.format ?? "prompt", log, secrets: [KEY, KEY.slice(2)], store: options.store, stopping: options.stopping });
+  const work = createWork({
+    chain,
+    command,
+    format: options.format ?? "prompt",
+    log,
+    secrets: [KEY, KEY.slice(2)],
+    store: options.store,
+    stopping: options.stopping,
+    failed: options.failed,
+  });
   return { chain, command, log, work, at };
 }
 
@@ -50,7 +68,7 @@ describe("work", () => {
     expect(env).toEqual({ BRAINCHAIN_TASK_ID: "7" });
     expect(timeoutMs).toBe(20 * 60_000);
     expect(chain.publish).toHaveBeenCalledWith(7n, "Batches settle down");
-    expect(chain.submit).toHaveBeenCalledWith(7n, keccak256(toBytes("Batches settle down")), "https://brain.example/records/7.txt");
+    expect(chain.submit).toHaveBeenCalledWith(7n, keccak256(toBytes("Batches settle down")), "https://brain.example/records/7.txt", expect.any(Function));
   });
 
   it("gives a program the task as JSON when asked", async () => {
@@ -176,12 +194,91 @@ describe("work", () => {
     expect(command.run).not.toHaveBeenCalled();
   });
 
-  it("leaves a task it can no longer deliver in time", async () => {
-    const { command, log, work, at } = setup(async () => "late");
+  it("leaves a task it can no longer deliver in time, and counts it as failed", async () => {
+    const failed = vi.fn();
+    const { command, log, work, at } = setup(async () => "late", { failed });
     at(9_750n);
-    await work.round();
+    expect(await work.round()).toEqual({ hired: 1, delivered: 0, failed: 1 });
     expect(command.run).not.toHaveBeenCalled();
     expect(log.mock.calls[0]![0]).toContain("poster is refunded");
+    expect(failed).toHaveBeenCalledOnce();
+  });
+
+  it("reports each failure as it happens, before the round ends", async () => {
+    const failed = vi.fn();
+    const { work } = setup(async () => "", { failed, tasks: [hiredTask(7n, 9_000n), hiredTask(8n, 5_000n)] });
+    expect(await work.round()).toMatchObject({ failed: 2 });
+    expect(failed).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts no command when a stop comes while the brief downloads or the balance is read", async () => {
+    let stopping = false;
+    const { chain, command, log, work } = setup(async () => "ok", { stopping: () => stopping });
+    chain.ethBalance.mockImplementation(async () => {
+      stopping = true;
+      return 10n ** 15n;
+    });
+    expect(await work.round()).toEqual({ hired: 1, delivered: 0, failed: 0 });
+    expect(command.run).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("keeps the running command's process group in the state until it ends", async () => {
+    const store = memoryStore(BOARD);
+    const { command, work } = setup(async () => "ok", { store });
+    let seen: unknown;
+    command.run.mockImplementationOnce(async (_input, _env, _timeoutMs, started) => {
+      started!(4_242);
+      seen = { ...store.state.command };
+      return "ok";
+    });
+    await work.round();
+    expect(seen).toMatchObject({ pgid: 4_242, startedAt: expect.any(Number) });
+    expect(store.state.command).toBeUndefined();
+  });
+
+  it("waits on a submit already sent instead of sending the result again", async () => {
+    const { chain, log, work, at } = setup(async () => "paid work");
+    chain.submit.mockImplementationOnce(async (_id, _hash, _uri, sent) => {
+      sent("0xfeed");
+      throw new Error("Timed out while waiting for transaction with hash 0xfeed to be confirmed");
+    });
+    expect(await work.round()).toMatchObject({ delivered: 0, failed: 1 });
+    at(1_100n);
+    expect(await work.round()).toMatchObject({ delivered: 1, failed: 0 });
+    expect(chain.landed).toHaveBeenCalledWith("0xfeed", 90_000);
+    expect(chain.submit).toHaveBeenCalledOnce();
+    expect(lastLog(log)).toBe("task 7: delivered (9 bytes, 0xfeed). Jev grades it next.");
+  });
+
+  it("sends the result again when the submit it waited on never landed", async () => {
+    const { chain, work, at } = setup(async () => "paid work");
+    chain.submit.mockImplementationOnce(async (_id, _hash, _uri, sent) => {
+      sent("0xfeed");
+      throw new Error("Timed out while waiting for transaction with hash 0xfeed to be confirmed");
+    });
+    chain.landed.mockResolvedValueOnce(undefined);
+    await work.round();
+    at(1_100n);
+    expect(await work.round()).toMatchObject({ delivered: 1 });
+    expect(chain.submit).toHaveBeenCalledTimes(2);
+  });
+
+  it("says a submit sent before a restart was delivered once it landed", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "brainchain-worker-")), "worker.json");
+    const first = setup(async () => "paid work", { store: fileStore(file, BOARD) });
+    first.chain.submit.mockImplementationOnce(async (_id, _hash, _uri, sent) => {
+      sent("0xfeed");
+      throw new Error("The worker was killed here");
+    });
+    await first.work.round();
+
+    // The submit landed, so the task no longer waits on this worker.
+    const second = setup(async () => "different work", { store: fileStore(file, BOARD), tasks: [] });
+    expect(await second.work.round()).toEqual({ hired: 0, delivered: 1, failed: 0 });
+    expect(second.chain.landed).toHaveBeenCalledWith("0xfeed", 5_000);
+    expect(lastLog(second.log)).toBe("task 7: delivered (9 bytes, 0xfeed). Jev grades it next.");
+    expect(second.command.run).not.toHaveBeenCalled();
   });
 
   it("reuses an upload saved by an earlier process instead of running the command again", async () => {
@@ -196,7 +293,7 @@ describe("work", () => {
     expect((await second.work.round()).delivered).toBe(1);
     expect(second.command.run).not.toHaveBeenCalled();
     expect(second.chain.publish).not.toHaveBeenCalled();
-    expect(second.chain.submit).toHaveBeenCalledWith(7n, keccak256(toBytes("paid work")), "https://brain.example/records/7.txt");
+    expect(second.chain.submit).toHaveBeenCalledWith(7n, keccak256(toBytes("paid work")), "https://brain.example/records/7.txt", expect.any(Function));
   });
 
   it("logs poster text without control characters", async () => {
@@ -235,23 +332,42 @@ describe("stopper", () => {
     expect(kill).not.toHaveBeenCalled();
   });
 
-  it("counts two signals within 1.5 seconds as one, and stops the command on a later one", () => {
+  it("counts a repeat of one signal within 250 ms as an echo, and stops the command on a later one", () => {
     const { exit, kill, log, stop } = signals(true);
     stop.signal("SIGINT");
     vi.advanceTimersByTime(5);
     stop.signal("SIGINT");
-    vi.advanceTimersByTime(1_400);
+    vi.advanceTimersByTime(200);
     stop.signal("SIGINT");
     expect(stop.stopping()).toBe(true);
     expect(log.mock.calls).toEqual([["Ctrl-C: stopping after the current task; press Ctrl-C again to stop now"]]);
     expect(kill).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(100);
+    vi.advanceTimersByTime(50);
     stop.signal("SIGINT");
     expect(kill).toHaveBeenCalledOnce();
     expect(log).toHaveBeenLastCalledWith("Ctrl-C again: stopping now");
     expect(exit).toHaveBeenCalledWith(130);
+  });
+
+  it("counts a different signal at once", () => {
+    const { exit, kill, stop } = signals(true);
+    stop.signal("SIGINT");
+    vi.advanceTimersByTime(5);
+    stop.signal("SIGTERM");
+    expect(kill).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(143);
+  });
+
+  it("stops the command and the worker at once on SIGHUP", () => {
+    for (const busy of [true, false]) {
+      const { exit, kill, log, stop } = signals(busy);
+      stop.signal("SIGHUP");
+      expect(kill).toHaveBeenCalledOnce();
+      expect(log).toHaveBeenCalledWith("SIGHUP: stopping now");
+      expect(exit).toHaveBeenCalledWith(129);
+    }
   });
 
   it("names SIGTERM as it is", () => {
@@ -317,5 +433,57 @@ describe("shellCommand", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     command.kill();
     await expect(running).rejects.toThrow("SIGKILL");
+  });
+
+  it("kills a running command when the worker exits, and stops listening once none runs", async () => {
+    const before = process.listeners("exit");
+    const running = shellCommand("sleep 30").run("", {}, 60_000);
+    const added = process.listeners("exit").filter((listener) => !before.includes(listener));
+    expect(added).toHaveLength(1);
+    added[0]!(0);
+    await expect(running).rejects.toThrow("SIGKILL");
+    expect(process.listeners("exit")).toEqual(before);
+  });
+});
+
+describe("stopLeftover", () => {
+  const alive = (pid: number) => {
+    try {
+      process.kill(-pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it("stops the command a run left behind when it died", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "brainchain-worker-")), "worker.json");
+    const first = fileStore(file, BOARD);
+    let pgid = 0;
+    const running = shellCommand("sleep 30 | cat").run("", {}, 60_000, (started) => {
+      pgid = started;
+      first.state.command = { pgid: started, startedAt: Date.now() };
+      first.save();
+    });
+
+    const log = vi.fn();
+    const next = fileStore(file, BOARD);
+    stopLeftover(next, log);
+    await expect(running).rejects.toThrow("SIGKILL");
+    expect(alive(pgid)).toBe(false);
+    expect(log).toHaveBeenCalledWith(`stopped the command an earlier run left running (process group ${pgid})`);
+    expect(fileStore(file, BOARD).state.command).toBeUndefined();
+  });
+
+  it("leaves a process that started at another time, since its pid was reused", async () => {
+    const other = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    const store = memoryStore(BOARD);
+    store.state.command = { pgid: other.pid!, startedAt: Date.now() - 3_600_000 };
+    const log = vi.fn();
+    stopLeftover(store, log);
+    expect(alive(other.pid!)).toBe(true);
+    expect(log).not.toHaveBeenCalled();
+    expect(store.state.command).toBeUndefined();
+    process.kill(-other.pid!, "SIGKILL");
   });
 });
