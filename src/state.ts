@@ -40,10 +40,32 @@ export function memoryStore(board = ""): Store {
   return { state: empty(board), save: () => undefined };
 }
 
-function parse(text: string): Partial<State> | undefined {
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const isHash = (value: unknown) => typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value);
+const isIds = (value: unknown) => Array.isArray(value) && value.every((id) => typeof id === "string" && /^\d+$/.test(id));
+
+function isTask(value: unknown): value is TaskState {
+  if (!isObject(value) || !isCount(value.failures) || !isCount(value.nextAt)) return false;
+  if (value.result !== undefined && typeof value.result !== "string") return false;
+  if (value.tx !== undefined && !isHash(value.tx)) return false;
+  return value.stored === undefined || (isObject(value.stored) && typeof value.stored.uri === "string" && isHash(value.stored.hash));
+}
+
+/** Whether a parsed file is a state this worker can go on from; any other shape fails every round that reads it. */
+function isState(value: unknown): value is State {
+  if (!isObject(value) || typeof value.board !== "string" || !isObject(value.tasks) || !isIds(value.done)) return false;
+  if (!Object.values(value.tasks).every(isTask)) return false;
+  const { hired, command } = value;
+  if (hired !== undefined && !(isObject(hired) && isCount(hired.block) && isIds(hired.tasks))) return false;
+  // Group 0 is this process's own and -1 is every process, so only a real command's group is signalled.
+  return command === undefined || (isObject(command) && isCount(command.pgid) && command.pgid > 1 && isCount(command.startedAt));
+}
+
+function parse(text: string): State | undefined {
   try {
     const value: unknown = JSON.parse(text);
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Partial<State>) : undefined;
+    return isState(value) ? value : undefined;
   } catch {
     return undefined;
   }
@@ -59,12 +81,12 @@ export function fileStore(file: string, board: string, warn: (message: string) =
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const saved = text === undefined ? undefined : parse(text);
-  if (saved?.board === state.board) state = { ...state, ...saved, tasks: saved.tasks ?? {}, done: saved.done ?? [] };
+  if (saved?.board === state.board) state = saved;
   if (text !== undefined && saved === undefined) {
     // Refusing to start would turn one bad file into a crash loop under a supervisor.
     const aside = `${file}.corrupt-${new Date().toISOString().replace(/\.\d+Z$/, "Z").replace(/[-:]/g, "")}`;
     renameSync(file, aside);
-    warn(`${file} was not valid JSON, so it was moved to ${aside} and this run starts with no saved work`);
+    warn(`${file} could not be read as saved worker state, so it was moved to ${aside} and this run starts with no saved work`);
   }
   return {
     state,

@@ -132,17 +132,28 @@ function unquote(text: string): string {
   }
 }
 
-/** The parts of a URL long enough to be an API key: the path, the query and each of their segments. */
+/** The Basic credentials viem sends for a URL's user and password, which a server that echoes requests answers with. */
+function basicAuth(username: string, password: string): string[] {
+  if (!username) return [];
+  try {
+    return [btoa(`${decodeURIComponent(username)}:${decodeURIComponent(password)}`)];
+  } catch {
+    return [];
+  }
+}
+
+/** The parts of a URL long enough to be an API key: its credentials, the path, the query and each of their segments. */
 function secretParts(url: string): string[] {
   if (!URL.canParse(url)) return [];
-  const { pathname, search } = new URL(url);
-  return [pathname + search, pathname, search, ...`${pathname}${search}`.split(/[/?&=]/)].filter((part) => part.length >= 8);
+  const { pathname, search, username, password } = new URL(url);
+  const path = pathname + search;
+  return [...basicAuth(username, password), username, password, path, pathname, search, ...path.split(/[/?&=]/)].filter((part) => part.length >= 8);
 }
 
 /**
- * One short line of an answer, without the RPC URL's path or query: an answer
- * can echo the path, which can hold an API key, and a web page is far longer
- * than one line.
+ * One short line of an answer, without the RPC URL's credentials, path or
+ * query: an answer can echo them, and they can hold an API key. A web page is
+ * far longer than one line.
  */
 function excerpt(details: string, url: string): string {
   let line = unquote(details);
@@ -154,11 +165,38 @@ function excerpt(details: string, url: string): string {
   return line.length > 160 ? `${line.slice(0, 159)}…` : line;
 }
 
+/** A 2xx answer in JSON that is no JSON-RPC reply, such as a REST API's. */
+class NotRpcError extends Error {
+  /** One short line of the answer, without the URL's secrets. */
+  constructor(readonly excerpt: string) {
+    super("The answer is not a JSON-RPC reply");
+  }
+}
+
+const isReply = (value: unknown) =>
+  typeof value === "object" && value !== null && ("result" in value || ("error" in value && typeof value.error === "object" && value.error !== null));
+
+/** viem reads an answer without a result as an empty one, and fails later on whatever needed it, such as "Block could not be found." */
+async function checkReply(response: Response, url: string): Promise<void> {
+  if (!response.ok) return;
+  const text = await response.clone().text();
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    // viem names an answer that is not JSON itself.
+    return;
+  }
+  // The excerpt is cut here, where the URL still holds the credentials viem leaves out of its errors.
+  if (!(Array.isArray(value) ? value.every(isReply) : isReply(value))) throw new NotRpcError(excerpt(text, url));
+}
+
 /** A request that failed, named by the RPC's host and the status it answered with. */
 function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutError): string {
   const host = hostOf(request.url);
   // viem passes on a 2xx answer that does not parse as JSON as the parser's error.
   if (request.cause instanceof SyntaxError) return `${host} answered, but not as an RPC`;
+  if (request.cause instanceof NotRpcError) return `${host} answered, but not as an RPC (${request.cause.excerpt})`;
   const details = request.details ? excerpt(request.details, request.url) : "";
   const status = request instanceof TimeoutError ? undefined : request.status;
   if (status === undefined) return `Could not reach ${host}${details ? ` (${details})` : ""}`;
@@ -193,7 +231,7 @@ export async function unhealthy(service: string, fetcher: typeof fetch = fetch):
 
 export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
   const chain = chainOf(network);
-  const transport = http(network.rpc, { timeout: 20_000, retryCount: 3 });
+  const transport = http(network.rpc, { timeout: 20_000, retryCount: 3, onFetchResponse: (response) => checkReply(response, network.rpc) });
   // BrainChain mines a block per transaction, so receipts are polled every second.
   const client = createPublicClient({ chain, transport, pollingInterval: 1_000 });
   const wallet = createWalletClient({ account, chain, transport });

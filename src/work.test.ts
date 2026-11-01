@@ -16,6 +16,7 @@ const dataURI = (text: string) => `data:application/json;base64,${Buffer.from(te
 const hiredTask = (id: bigint, deadline = 10_000n): HiredTask => ({ id, deadline, briefURI: dataURI(brief), briefHash: keccak256(toBytes(brief)) });
 const task = hiredTask(7n);
 const KEY = `0x${"4f".repeat(32)}`;
+const TX: Hex = `0x${"fe".repeat(32)}`;
 const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
 
 function setup(
@@ -240,22 +241,22 @@ describe("work", () => {
   it("waits on a submit already sent instead of sending the result again", async () => {
     const { chain, log, work, at } = setup(async () => "paid work");
     chain.submit.mockImplementationOnce(async (_id, _hash, _uri, sent) => {
-      sent("0xfeed");
-      throw new Error("Timed out while waiting for transaction with hash 0xfeed to be confirmed");
+      sent(TX);
+      throw new Error(`Timed out while waiting for transaction with hash ${TX} to be confirmed`);
     });
     expect(await work.round()).toMatchObject({ delivered: 0, failed: 1 });
     at(1_100n);
     expect(await work.round()).toMatchObject({ delivered: 1, failed: 0 });
-    expect(chain.landed).toHaveBeenCalledWith("0xfeed", 90_000);
+    expect(chain.landed).toHaveBeenCalledWith(TX, 90_000);
     expect(chain.submit).toHaveBeenCalledOnce();
-    expect(lastLog(log)).toBe("task 7: delivered (9 bytes, 0xfeed). Jev grades it next.");
+    expect(lastLog(log)).toBe(`task 7: delivered (9 bytes, ${TX}). Jev grades it next.`);
   });
 
   it("sends the result again when the submit it waited on never landed", async () => {
     const { chain, work, at } = setup(async () => "paid work");
     chain.submit.mockImplementationOnce(async (_id, _hash, _uri, sent) => {
-      sent("0xfeed");
-      throw new Error("Timed out while waiting for transaction with hash 0xfeed to be confirmed");
+      sent(TX);
+      throw new Error(`Timed out while waiting for transaction with hash ${TX} to be confirmed`);
     });
     chain.landed.mockResolvedValueOnce(undefined);
     await work.round();
@@ -268,7 +269,7 @@ describe("work", () => {
     const file = join(mkdtempSync(join(tmpdir(), "brainchain-worker-")), "worker.json");
     const first = setup(async () => "paid work", { store: fileStore(file, BOARD) });
     first.chain.submit.mockImplementationOnce(async (_id, _hash, _uri, sent) => {
-      sent("0xfeed");
+      sent(TX);
       throw new Error("The worker was killed here");
     });
     await first.work.round();
@@ -276,8 +277,8 @@ describe("work", () => {
     // The submit landed, so the task no longer waits on this worker.
     const second = setup(async () => "different work", { store: fileStore(file, BOARD), tasks: [] });
     expect(await second.work.round()).toEqual({ hired: 0, delivered: 1, failed: 0 });
-    expect(second.chain.landed).toHaveBeenCalledWith("0xfeed", 5_000);
-    expect(lastLog(second.log)).toBe("task 7: delivered (9 bytes, 0xfeed). Jev grades it next.");
+    expect(second.chain.landed).toHaveBeenCalledWith(TX, 5_000);
+    expect(lastLog(second.log)).toBe(`task 7: delivered (9 bytes, ${TX}). Jev grades it next.`);
     expect(second.command.run).not.toHaveBeenCalled();
   });
 
@@ -351,13 +352,19 @@ describe("stopper", () => {
     expect(exit).toHaveBeenCalledWith(130);
   });
 
-  it("counts a different signal at once", () => {
-    const { exit, kill, stop } = signals(true);
-    stop.signal("SIGINT");
-    vi.advanceTimersByTime(5);
-    stop.signal("SIGTERM");
-    expect(kill).toHaveBeenCalledOnce();
-    expect(exit).toHaveBeenCalledWith(143);
+  it("counts a different signal at once, and does not call it a repeat", () => {
+    for (const [first, second, line, code] of [
+      ["SIGINT", "SIGTERM", "SIGTERM: stopping now", 143],
+      ["SIGTERM", "SIGINT", "Ctrl-C: stopping now", 130],
+    ] as const) {
+      const { exit, kill, log, stop } = signals(true);
+      stop.signal(first);
+      vi.advanceTimersByTime(5);
+      stop.signal(second);
+      expect(kill).toHaveBeenCalledOnce();
+      expect(log).toHaveBeenLastCalledWith(line);
+      expect(exit).toHaveBeenCalledWith(code);
+    }
   });
 
   it("stops the command and the worker at once on SIGHUP", () => {
@@ -376,6 +383,7 @@ describe("stopper", () => {
     expect(log).toHaveBeenLastCalledWith("SIGTERM: stopping after the current task; send SIGTERM again to stop now");
     vi.advanceTimersByTime(2_000);
     stop.signal("SIGTERM");
+    expect(log).toHaveBeenLastCalledWith("SIGTERM again: stopping now");
     expect(exit).toHaveBeenCalledWith(143);
   });
 });
@@ -468,8 +476,9 @@ describe("stopLeftover", () => {
 
     const log = vi.fn();
     const next = fileStore(file, BOARD);
-    stopLeftover(next, log);
-    await expect(running).rejects.toThrow("SIGKILL");
+    const stopped = expect(running).rejects.toThrow("stopped by SIGTERM");
+    await stopLeftover(next, log);
+    await stopped;
     expect(alive(pgid)).toBe(false);
     expect(log).toHaveBeenCalledWith(`stopped the command an earlier run left running (process group ${pgid})`);
     expect(fileStore(file, BOARD).state.command).toBeUndefined();
@@ -480,10 +489,38 @@ describe("stopLeftover", () => {
     const store = memoryStore(BOARD);
     store.state.command = { pgid: other.pid!, startedAt: Date.now() - 3_600_000 };
     const log = vi.fn();
-    stopLeftover(store, log);
+    await stopLeftover(store, log);
     expect(alive(other.pid!)).toBe(true);
     expect(log).not.toHaveBeenCalled();
     expect(store.state.command).toBeUndefined();
     process.kill(-other.pid!, "SIGKILL");
+  });
+
+  /** A command whose shell exited and left what it started running in its group. */
+  async function leaderless(script: string) {
+    const shell = spawn("sh", ["-c", `${script} & exit 0`], { detached: true, stdio: "ignore" });
+    await new Promise((resolve) => shell.once("exit", resolve));
+    const store = memoryStore(BOARD);
+    store.state.command = { pgid: shell.pid!, startedAt: Date.now() };
+    return { pgid: shell.pid!, store };
+  }
+
+  it("stops what a command started after its shell exited", async () => {
+    const { pgid, store } = await leaderless("sleep 30");
+    expect(alive(pgid)).toBe(true);
+    const log = vi.fn();
+    await stopLeftover(store, log);
+    expect(alive(pgid)).toBe(false);
+    expect(log).toHaveBeenCalledWith(`stopped the command an earlier run left running (process group ${pgid})`);
+  });
+
+  it("kills a leftover that ignores SIGTERM once the grace is up", async () => {
+    const { pgid, store } = await leaderless("trap '' TERM; sleep 30");
+    const started = Date.now();
+    await stopLeftover(store, vi.fn(), 300);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // A killed process shows until its new parent reaps it.
+    await vi.waitFor(() => expect(alive(pgid)).toBe(false), { timeout: 1_000, interval: 20 });
   });
 });
