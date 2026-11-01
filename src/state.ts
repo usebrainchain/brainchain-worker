@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -8,6 +8,8 @@ export interface TaskState {
   /** Kept across retries and restarts, so a failed upload or submit does not run the paid command again. */
   result?: string;
   stored?: { uri: string; hash: Hex };
+  /** The submit sent for the stored result, waited on before another is sent. */
+  tx?: Hex;
   failures: number;
   /** Chain time, in seconds, before which the task is not tried again. */
   nextAt: number;
@@ -21,6 +23,8 @@ export interface State {
   done: string[];
   /** The last block scanned for WorkerHired, and the tasks found that are still hired. */
   hired?: { block: number; tasks: string[] };
+  /** The command running for a task, so the next run can stop it if this one dies first. */
+  command?: { pgid: number; startedAt: number };
 }
 
 export interface Store {
@@ -36,8 +40,17 @@ export function memoryStore(board = ""): Store {
   return { state: empty(board), save: () => undefined };
 }
 
+function parse(text: string): Partial<State> | undefined {
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Partial<State>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** State in a 0600 JSON file, replaced whole on every save so a crash never leaves half a file. */
-export function fileStore(file: string, board: string): Store {
+export function fileStore(file: string, board: string, warn: (message: string) => void = console.warn): Store {
   let state = empty(board);
   let text: string | undefined;
   try {
@@ -45,21 +58,27 @@ export function fileStore(file: string, board: string): Store {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  if (text !== undefined) {
-    let saved: Partial<State>;
-    try {
-      saved = JSON.parse(text) as Partial<State>;
-    } catch {
-      throw new Error(`${file} is not valid JSON. Move it aside to start with no saved work.`);
-    }
-    if (saved.board === state.board) state = { ...state, ...saved, tasks: saved.tasks ?? {}, done: saved.done ?? [] };
+  const saved = text === undefined ? undefined : parse(text);
+  if (saved?.board === state.board) state = { ...state, ...saved, tasks: saved.tasks ?? {}, done: saved.done ?? [] };
+  if (text !== undefined && saved === undefined) {
+    // Refusing to start would turn one bad file into a crash loop under a supervisor.
+    const aside = `${file}.corrupt-${new Date().toISOString().replace(/\.\d+Z$/, "Z").replace(/[-:]/g, "")}`;
+    renameSync(file, aside);
+    warn(`${file} was not valid JSON, so it was moved to ${aside} and this run starts with no saved work`);
   }
   return {
     state,
     save() {
       mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
       const temp = `${file}.${process.pid}.tmp`;
-      writeFileSync(temp, JSON.stringify(state), { mode: 0o600 });
+      const fd = openSync(temp, "w", 0o600);
+      try {
+        writeFileSync(fd, JSON.stringify(state));
+        // On disk before the rename, so a power loss leaves the old file or the new one, never an empty one.
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
       renameSync(temp, file);
     },
   };

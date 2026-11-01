@@ -1,9 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
-import { BaseError, ContractFunctionExecutionError, ContractFunctionRevertedError, encodeErrorResult, HttpRequestError, keccak256, toBytes } from "viem";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  BaseError,
+  ContractFunctionExecutionError,
+  ContractFunctionRevertedError,
+  createPublicClient,
+  encodeErrorResult,
+  http,
+  HttpRequestError,
+  keccak256,
+  toBytes,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi, workerStakingAbi } from "./abi.js";
-import { erc20Abi, faucetReopens, fetchBrief, PermanentError, reason, resultMessage, submitFailure, unhealthy, workerId } from "./chain.js";
-import { resolveNetwork } from "./network.js";
+import { createChain, erc20Abi, faucetReopens, fetchBrief, PermanentError, reason, resultMessage, submitFailure, unhealthy, workerId } from "./chain.js";
+import { resolveNetwork, TESTNET } from "./network.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
 const briefHash = keccak256(toBytes(brief));
@@ -86,13 +100,7 @@ describe("chain helpers", () => {
       expect(() => resolveNetwork({ BRAINCHAIN_RPC_URL: rpc })).not.toThrow("APIKEYSECRET123");
     }
     expect(resolveNetwork({ BRAINCHAIN_RPC_URL: "https://rpc.example.com/v2/key\n" }).rpc).toBe("https://rpc.example.com/v2/key");
-  });
-
-  it("names a web page the RPC answered with instead of quoting it", () => {
-    const page = `<!doctype html>\n<html lang="en">\n\t<head><title>Example Domain</title></head>\x07\n${"<p>filler</p>\n".repeat(80)}</html>`;
-    const line = reason(new HttpRequestError({ url: "https://example.com/APIKEYSECRET123", details: JSON.stringify(page), status: 200 }));
-    expect(line).toBe("example.com answered with a web page, not as an RPC");
-    expect(line).not.toContain("APIKEYSECRET123");
+    expect(resolveNetwork({ BRAINCHAIN_RPC_URL: " \n", BRAINCHAIN_SERVICE_URL: " " })).toMatchObject({ rpc: TESTNET.rpc, service: TESTNET.service });
   });
 
   it("says the RPC answered when it did, and cuts the answer to one short line", () => {
@@ -110,18 +118,99 @@ describe("chain helpers", () => {
     expect(() => resolveNetwork({ BRAINCHAIN_SERVICE_URL: "http://brain.example.com" })).toThrow("https");
   });
 
-  it("names the service's host when it fails its health check", async () => {
+  it("names the service's host when it fails its health check, and tells a late service from a down one", async () => {
     const service = "https://brain.example.com/v1";
     const ok = vi.fn<typeof fetch>(async () => new Response('{"ok":true}'));
     expect(await unhealthy(service, ok)).toBeUndefined();
     expect(ok.mock.calls[0]![0]).toBe("https://brain.example.com/v1/health");
-    expect(await unhealthy(service, async () => new Response("down", { status: 503 }))).toBe(
-      "the BrainChain service at brain.example.com answered its health check with 503",
+    expect(await unhealthy(service, async () => new Response('{"ok":false}', { status: 503 }))).toBe(
+      "the BrainChain service at brain.example.com reports it is behind (503); results still upload, and grading may be late",
+    );
+    expect(await unhealthy(service, async () => new Response("bad gateway", { status: 502 }))).toBe(
+      "the BrainChain service at brain.example.com answered its health check with 502; results are uploaded there, so delivery can fail until it recovers",
     );
     expect(
       await unhealthy("http://localhost:1", async () => {
         throw new TypeError("fetch failed");
       }),
-    ).toBe("could not reach the BrainChain service at localhost:1");
+    ).toBe("could not reach the BrainChain service at localhost:1; results are uploaded there, so none can be delivered until it answers");
+  });
+});
+
+describe("answers from a real server", () => {
+  const page = (title: string) => `<!doctype html>\n<html lang="en">\n\t<head><title>${title}</title></head>\x07\n${"<p>filler</p>\n".repeat(80)}</html>`;
+  const json = (status: number, body: unknown) => (res: ServerResponse) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+  const html = (status: number) => (res: ServerResponse) => {
+    res.writeHead(status, { "content-type": "text/html" });
+    res.end(page(`${status}`));
+  };
+  const routes: Record<string, (res: ServerResponse, req: IncomingMessage) => void> = {
+    "/page200": html(200),
+    "/page404": html(404),
+    "/page502": html(502),
+    "/page429": html(429),
+    "/echo": (res, req) => {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end(`Cannot POST ${req.url}`);
+    },
+    "/auth": json(401, { jsonrpc: "2.0", id: 1, error: { code: -32600, message: "Must be authenticated!" } }),
+    "/limit": json(429, { jsonrpc: "2.0", id: 1, error: { code: 429, message: "Your app has exceeded its compute units per second capacity" } }),
+    "/results/html403": html(403),
+    "/results/refused": json(403, { error: "Only the hired worker can upload a result" }),
+  };
+  const server = createServer((req, res) => {
+    const route = Object.keys(routes).find((path) => req.url!.startsWith(path));
+    req.resume();
+    req.on("end", () => routes[route!]!(res, req));
+  });
+  let host = "";
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+
+  const rpc = async (path: string) => {
+    const client = createPublicClient({ transport: http(`http://${host}${path}`, { retryCount: 0 }) });
+    return reason(await client.getBlockNumber().catch((error: unknown) => error));
+  };
+
+  it("says a web page that answered 200, 404 or 405 is not an RPC", async () => {
+    expect(await rpc("/page200/APIKEYSECRET123")).toBe(`${host} answered, but not as an RPC`);
+    expect(await rpc("/page404/APIKEYSECRET123")).toBe(`${host} answered 404 with a web page, not as an RPC`);
+  });
+
+  it("keeps the status of an error page from a proxy in front of the RPC", async () => {
+    expect(await rpc("/page502/APIKEYSECRET123")).toBe(`${host} answered 502 with a web page`);
+    expect(await rpc("/page429")).toBe(`${host} answered 429 with a web page`);
+  });
+
+  it("names the host, the status and the provider's message when it refuses the request", async () => {
+    expect(await rpc("/auth/APIKEYSECRET123")).toBe(`${host} answered 401 (Must be authenticated!)`);
+    expect(await rpc("/limit")).toBe(`${host} answered 429 (Your app has exceeded its compute units per second capacity)`);
+  });
+
+  it("never prints the URL's path when an answer echoes it", async () => {
+    const line = await rpc("/echo/v2/APIKEYSECRET123?key=QUERYSECRET456");
+    expect(line).toBe(`${host} answered 404 (Cannot POST …)`);
+    expect(await rpc("/echo/APIKEYSECRET123")).not.toContain("APIKEYSECRET123");
+  });
+
+  it("gives up on a result only when the service itself refuses it", async () => {
+    const network = { ...TESTNET, service: `http://${host}/results/html403` };
+    const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+    const edge = createChain(network, account).publish(7n, "work");
+    await expect(edge).rejects.toThrow("Uploading the result failed (403): no reason given");
+    await expect(edge).rejects.not.toBeInstanceOf(PermanentError);
+    const refused = createChain({ ...network, service: `http://${host}/results/refused` }, account).publish(7n, "work");
+    await expect(refused).rejects.toThrow(new PermanentError("The service refused the result (403): Only the hired worker can upload a result"));
+    await expect(refused).rejects.toBeInstanceOf(PermanentError);
   });
 });

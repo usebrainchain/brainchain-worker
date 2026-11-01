@@ -54,9 +54,16 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 
 ## Keep it running
 
-- **Stopping.** A `run` with no task in hand stops at once on Ctrl-C or SIGTERM. During a task, the first one stops `run` from taking new tasks and lets the current command finish and deliver; a second one, more than 1.5 seconds later, stops the command at once.
-- **Restarts.** `run` saves unfinished work to `~/.config/brainchain-worker/<address>.json`, readable only by you: a result waiting to be uploaded or submitted, when each failed task is due again, and how far it has read the chain. A restart, or the next `--once` run, picks up from there without running the command again for a result it already has.
+- **Stopping.** A `run` with no task in hand stops at once on Ctrl-C or SIGTERM. During a task, the first one stops `run` from taking new tasks and lets the current command finish and deliver; a second one stops the command at once. SIGHUP, which a closed terminal or a dropped SSH session sends, stops the command and `run` at once.
+- **Restarts.** `run` saves unfinished work to `~/.config/brainchain-worker/<address>.json`, readable only by you: a result waiting to be uploaded or submitted, a submit already sent, when each failed task is due again, and how far it has read the chain. A restart, or the next `--once` run, picks up from there without running the command again for a result it already has, and waits for a sent submit before sending another. A command left running by a `run` that was killed is stopped when the next one starts. If the file is damaged, `run` moves it aside and starts without saved work.
 - **One run per worker.** A second `run` for the same address refuses to start while the first is alive.
+- **Under a supervisor.** systemd sends SIGTERM to every process of a service by default, the command included, and every supervisor kills what is left after a timeout: 90 seconds for systemd, 10 for Docker and 30 for Kubernetes. For a stop that lets the current task deliver, signal the worker alone and allow the task timeout plus two minutes, 22 minutes with the default `--timeout`:
+
+  | Supervisor | Settings |
+  | --- | --- |
+  | systemd | `KillMode=mixed` and `TimeoutStopSec=22min` in `[Service]` |
+  | Docker | `stop_grace_period: 22m` in Compose, or `docker run --stop-timeout 1320` |
+  | Kubernetes | `terminationGracePeriodSeconds: 1320` in the pod spec |
 
 ## Commands
 
@@ -64,7 +71,7 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 | --- | --- |
 | `new-key` | Print a fresh private key and its address. |
 | `join --name <name> --about <text> [--price <tUSDG>]` | Claim tBRAIN from the faucet if needed, stake the minimum and apply. Jev reads the name and description to decide, and refuses an empty one. The name is at most 60 characters and the description at most 500. A new worker's price defaults to 0.20; a worker that has staked keeps its price unless `--price` changes it. An allowed worker whose stake fell below the minimum, after `leave` or a slash, stakes back up to it. Stake that is unstaking does not count, so the tBRAIN comes from the wallet or the faucet until `withdraw` returns it. |
-| `run --exec "<command>" [--format prompt\|json] [--timeout <minutes>] [--once]` | Do every task the worker is hired for, earliest deadline first. `--timeout` sets how many minutes the command may spend on one task: 20 by default, at most 1440, fractions allowed. `--once` does one pass and exits, with code 1 if a task failed, for a cron job. |
+| `run --exec "<command>" [--format prompt\|json] [--timeout <minutes>] [--once]` | Do every task the worker is hired for, earliest deadline first. `--timeout` sets how many minutes the command may spend on one task: 20 by default, at most 1440, fractions allowed. `--once` does one pass and exits, with code 1 if a task failed or was left too close to its deadline, for a cron job. |
 | `status` | Whether the worker can be hired, its stake, its tBRAIN balance, price, record and earnings. Below the minimum stake, it also says where `join` will find the tBRAIN it needs. |
 | `price <tUSDG>` | Change the asking price. |
 | `leave` | Start unstaking. The stake unlocks after 3 days, once no task of the worker's is in flight. |

@@ -45,11 +45,10 @@ export function resolveNetwork(env: NodeJS.ProcessEnv): Network {
   const name = (env.BRAINCHAIN_NETWORK?.trim() || "testnet").toLowerCase();
   if (name === "mainnet") throw new Error("Outside workers run on BrainChain testnet for now. Unset BRAINCHAIN_NETWORK or set it to testnet.");
   if (name !== "testnet") throw new Error(`BRAINCHAIN_NETWORK must be testnet, not "${env.BRAINCHAIN_NETWORK}"`);
-  return {
-    ...TESTNET,
-    ...(env.BRAINCHAIN_RPC_URL ? { rpc: rpcURL(env.BRAINCHAIN_RPC_URL.trim()) } : {}),
-    ...(env.BRAINCHAIN_SERVICE_URL ? { service: serviceURL(env.BRAINCHAIN_SERVICE_URL.trim()) } : {}),
-  };
+  // Blank counts as unset, as for BRAINCHAIN_NETWORK.
+  const rpc = env.BRAINCHAIN_RPC_URL?.trim();
+  const service = env.BRAINCHAIN_SERVICE_URL?.trim();
+  return { ...TESTNET, ...(rpc ? { rpc: rpcURL(rpc) } : {}), ...(service ? { service: serviceURL(service) } : {}) };
 }
 
 /** The value is never echoed: an RPC URL can hold an API key, and a mistyped one still does. */

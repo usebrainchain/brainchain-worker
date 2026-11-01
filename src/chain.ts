@@ -10,8 +10,10 @@ import {
   HttpRequestError,
   keccak256,
   parseAbi,
+  RpcRequestError,
   TimeoutError,
   toBytes,
+  WaitForTransactionReceiptTimeoutError,
   type Address,
   type Hex,
   type PrivateKeyAccount,
@@ -55,8 +57,10 @@ export const ApplicationState = { Open: 1, Returned: 2, Burned: 3 } as const;
 
 const LOG_RANGE = 50_000n;
 const MAX_BRIEF_BYTES = 256 * 1024;
-/** What the service answers when it will never take this result. */
+/** What the service answers, with its own JSON error, when it will never take this result. */
 const REFUSED = [400, 403, 409, 413];
+/** How long a transaction's receipt is waited for. */
+export const RECEIPT_MS = 90_000;
 
 export interface HiredTask {
   id: bigint;
@@ -76,7 +80,10 @@ export interface WorkerChain {
   ethBalance(): Promise<bigint>;
   /** Uploads a result to the service, which serves it once Jev accepts the work. */
   publish(id: bigint, text: string): Promise<{ uri: string; hash: Hex }>;
-  submit(id: bigint, resultHash: Hex, resultURI: string): Promise<Hex>;
+  /** Sends the submit, hands its hash to `sent` before waiting for the receipt, and returns the hash once it succeeds. */
+  submit(id: bigint, resultHash: Hex, resultURI: string, sent: (tx: Hex) => void): Promise<Hex>;
+  /** Whether a transaction already sent succeeded, waiting up to `waitMs` for it; undefined when it did not land in that time. */
+  landed(tx: Hex, waitMs: number): Promise<boolean | undefined>;
 }
 
 /** What the worker signs to upload a result: the chain, the board, the task and the hash of exactly the bytes it uploads. */
@@ -125,26 +132,49 @@ function unquote(text: string): string {
   }
 }
 
-/** A URL that is not an RPC, such as a web page, answers with a whole page; one short line of it is enough. */
-function excerpt(details: string): string {
-  const line = unquote(details)
+/** The parts of a URL long enough to be an API key: the path, the query and each of their segments. */
+function secretParts(url: string): string[] {
+  if (!URL.canParse(url)) return [];
+  const { pathname, search } = new URL(url);
+  return [pathname + search, pathname, search, ...`${pathname}${search}`.split(/[/?&=]/)].filter((part) => part.length >= 8);
+}
+
+/**
+ * One short line of an answer, without the RPC URL's path or query: an answer
+ * can echo the path, which can hold an API key, and a web page is far longer
+ * than one line.
+ */
+function excerpt(details: string, url: string): string {
+  let line = unquote(details);
+  for (const part of secretParts(url)) line = line.replaceAll(part, "…");
+  line = line
     .replace(/\s+/g, " ")
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
     .trim();
   return line.length > 160 ? `${line.slice(0, 159)}…` : line;
 }
 
+/** A request that failed, named by the RPC's host and the status it answered with. */
+function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutError): string {
+  const host = hostOf(request.url);
+  // viem passes on a 2xx answer that does not parse as JSON as the parser's error.
+  if (request.cause instanceof SyntaxError) return `${host} answered, but not as an RPC`;
+  const details = request.details ? excerpt(request.details, request.url) : "";
+  const status = request instanceof TimeoutError ? undefined : request.status;
+  if (status === undefined) return `Could not reach ${host}${details ? ` (${details})` : ""}`;
+  // A proxy or CDN in front of the RPC answers an outage or a rate limit with its own page.
+  if (details.startsWith("<")) return `${host} answered ${status} with a web page${status === 404 || status === 405 ? ", not as an RPC" : ""}`;
+  return `${host} answered ${status}${details ? ` (${details})` : ""}`;
+}
+
 /** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
 export function reason(error: unknown): string {
   if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error);
-  const request = error.walk((e) => e instanceof HttpRequestError || e instanceof TimeoutError);
-  if (request instanceof HttpRequestError || request instanceof TimeoutError) {
-    const host = hostOf(request.url);
-    const details = request.details ? excerpt(request.details) : "";
-    if (details.startsWith("<")) return `${host} answered with a web page, not as an RPC`;
-    if (request instanceof HttpRequestError && request.status) return `${host} answered ${request.status}${details ? ` (${details})` : ""}`;
-    return `Could not reach ${host}${details ? ` (${details})` : ""}`;
-  }
+  // An RPC error with an HTTP status is a provider refusing the request, such as a bad key or a rate limit.
+  const request = error.walk(
+    (e) => e instanceof HttpRequestError || e instanceof TimeoutError || (e instanceof RpcRequestError && e.status !== undefined),
+  );
+  if (request instanceof HttpRequestError || request instanceof RpcRequestError || request instanceof TimeoutError) return requestFailure(request);
   const name = revertOf(error)?.errorName;
   return name ? `${error.shortMessage} (${name})` : error.shortMessage;
 }
@@ -153,9 +183,12 @@ export function reason(error: unknown): string {
 export async function unhealthy(service: string, fetcher: typeof fetch = fetch): Promise<string | undefined> {
   const host = new URL(service).host;
   const response = await fetcher(`${service}/health`, { signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
-  if (response === undefined) return `could not reach the BrainChain service at ${host}`;
+  if (response === undefined) return `could not reach the BrainChain service at ${host}; results are uploaded there, so none can be delivered until it answers`;
   await response.body?.cancel();
-  return response.ok ? undefined : `the BrainChain service at ${host} answered its health check with ${response.status}`;
+  if (response.ok) return undefined;
+  // The service answers 503 while its review rounds are late, which does not stop it taking results.
+  if (response.status === 503) return `the BrainChain service at ${host} reports it is behind (503); results still upload, and grading may be late`;
+  return `the BrainChain service at ${host} answered its health check with ${response.status}; results are uploaded there, so delivery can fail until it recovers`;
 }
 
 export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
@@ -169,9 +202,10 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
   const board = { address: taskBoard, abi: taskBoardAbi } as const;
   const origin = new URL(network.service).origin;
 
-  async function send(request: Parameters<typeof wallet.writeContract>[0]): Promise<Hex> {
+  async function send(request: Parameters<typeof wallet.writeContract>[0], sent?: (hash: Hex) => void): Promise<Hex> {
     const hash = await wallet.writeContract(request);
-    const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 });
+    sent?.(hash);
+    const receipt = await client.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
     if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted`);
     return hash;
   }
@@ -244,18 +278,28 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       }).catch(() => {
         throw new Error(`Could not reach the BrainChain service at ${new URL(origin).host}`);
       });
-      const body = (await response.json().catch(() => ({}))) as { uri?: string; hash?: Hex; error?: string };
-      const why = `(${response.status}): ${body.error ?? "no reason given"}`;
-      if (REFUSED.includes(response.status)) throw new PermanentError(`The service refused the result ${why}`);
-      if (!response.ok || !body.uri) throw new Error(`Uploading the result failed ${why}`);
+      const body = (await response.json().catch(() => undefined)) as { uri?: string; hash?: Hex; error?: unknown } | null | undefined;
+      // Only the service's own JSON error is a refusal: a CDN or firewall page with the same status is retried.
+      const said = typeof body?.error === "string" ? body.error : undefined;
+      const why = `(${response.status}): ${said ?? "no reason given"}`;
+      if (REFUSED.includes(response.status) && said !== undefined) throw new PermanentError(`The service refused the result ${why}`);
+      if (!response.ok || !body?.uri) throw new Error(`Uploading the result failed ${why}`);
       if (body.hash?.toLowerCase() !== hash) throw new Error("The service stored different bytes than were sent");
       if (!body.uri.startsWith(`${origin}/`)) throw new Error(`The service returned a result address outside ${origin}`);
       return { uri: body.uri, hash };
     },
-    submit: (task, resultHash, resultURI) =>
-      send({ ...board, functionName: "submit", args: [task, resultHash, resultURI] }).catch((error: unknown) => {
+    submit: (task, resultHash, resultURI, sent) =>
+      send({ ...board, functionName: "submit", args: [task, resultHash, resultURI] }, sent).catch((error: unknown) => {
         throw submitFailure(error);
       }),
+    async landed(tx, waitMs) {
+      // Without replacement checks a receipt is only ever this transaction's, never another sent with its nonce.
+      const receipt = await client.waitForTransactionReceipt({ hash: tx, timeout: waitMs, checkReplacement: false }).catch((error: unknown) => {
+        if (error instanceof WaitForTransactionReceiptTimeoutError) return undefined;
+        throw error;
+      });
+      return receipt && receipt.status === "success";
+    },
   };
 
   return {
