@@ -3,7 +3,13 @@ import { formatUnits } from "viem";
 import { ApplicationState, type Chain } from "./chain.js";
 import type { Network } from "./network.js";
 
-export const stake = (network: Network, amount: bigint) => `${formatUnits(amount, 18)} ${network.stakeSymbol}`;
+/** A token amount with thousands separators, such as 1,250,000; a fraction is kept as it is. */
+function grouped(amount: bigint, decimals: number): string {
+  const [whole, fraction] = formatUnits(amount, decimals).split(".");
+  return `${whole!.replace(/\B(?=(\d{3})+$)/g, ",")}${fraction === undefined ? "" : `.${fraction}`}`;
+}
+
+export const stake = (network: Network, amount: bigint) => `${grouped(amount, 18)} ${network.stakeSymbol}`;
 export const usdg = (network: Network, amount: bigint) => `${formatUnits(amount, 6)} ${network.bountySymbol}`;
 export const when = (seconds: bigint) => new Date(Number(seconds) * 1000).toISOString().replace(".000Z", "Z");
 
@@ -50,7 +56,8 @@ export function hireable({ allowed, w, min, applications, change, pending }: Sna
 
 /**
  * The wallet's stake token and, below the minimum stake, where join would find
- * what it needs. A stake token without a faucet has no `faucet`.
+ * what it needs. A stake token without a faucet has no `faucet`; one that is
+ * bought instead says where.
  */
 export function wallet(
   network: Network,
@@ -68,7 +75,8 @@ export function wallet(
   const reopens = faucet ? `. The faucet opens again for this wallet at ${when(faucet.opensAt)}` : "";
   const unstaking =
     s.w.unstaking > 0n ? `, and the ${stake(network, s.w.unstaking)} unstaking can be withdrawn ${now >= s.w.unlocksAt ? "now" : `after ${when(s.w.unlocksAt)}`}` : "";
-  return `${has}; join needs ${stake(network, need)}${reopens}${unstaking}`;
+  const buy = network.buyStake ? `. ${network.buyStake}` : "";
+  return `${has}; join needs ${stake(network, need)}${reopens}${unstaking}${buy}`;
 }
 
 /** What join says when the wallet holds too little of a stake token that has no faucet. */
