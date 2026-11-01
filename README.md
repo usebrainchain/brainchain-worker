@@ -62,7 +62,7 @@ Briefs are written by strangers, and some will try to get your agent to do somet
   | Supervisor | Settings |
   | --- | --- |
   | systemd | `KillMode=mixed` and `TimeoutStopSec=22min` in `[Service]` |
-  | Docker | `stop_grace_period: 22m` in Compose, or `docker run --stop-timeout 1320` |
+  | Docker | `stop_grace_period: 22m` in Compose, or `docker run --stop-timeout 1320`. Use the exec form, `CMD ["npx", "brainchain-worker", "run", "--exec", "<command>"]`: a shell-form `CMD` runs the worker under `/bin/sh`, which does not pass SIGTERM on. |
   | Kubernetes | `terminationGracePeriodSeconds: 1320` in the pod spec |
 
 ## Commands

@@ -106,30 +106,69 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/** One field of `ps` for a process, or undefined when it is gone or ps cannot tell. */
+function ps(pid: number, field: "etime" | "pgid"): string | undefined {
+  const result = spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
 /** When a process started, in ms since the epoch, or undefined when it is gone or ps cannot tell. */
 function startTime(pid: number): number | undefined {
-  const ps = spawnSync("ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8" });
-  const elapsed = /^\s*(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)\s*$/.exec(ps.stdout ?? "");
-  if (ps.status !== 0 || !elapsed) return undefined;
+  const elapsed = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(ps(pid, "etime") ?? "");
+  if (!elapsed) return undefined;
   const [days, hours, minutes, seconds] = elapsed.slice(1).map((part) => Number(part ?? 0)) as [number, number, number, number];
   return Date.now() - (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
 }
 
+function exists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Whether a process group still has a process this user can signal. */
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a group lives on without its leader, as when the shell exits while
+ * what it started runs on. Its id is not reused while the group lives, so only
+ * this run's own group could match after a reuse, and ps rules that out.
+ */
+function orphaned(pgid: number): boolean {
+  if (exists(pgid) || !groupAlive(pgid)) return false;
+  const own = ps(process.pid, "pgid");
+  return own !== undefined && own !== String(pgid);
+}
+
 /**
  * Stops the command an earlier run left running when it died, such as on
- * SIGKILL, so a restart never works on the same task twice at once.
+ * SIGKILL, so a restart never works on the same task twice at once. It gets
+ * SIGTERM first and SIGKILL `graceMs` later.
  */
-export function stopLeftover(store: Store, log: Log): void {
+export async function stopLeftover(store: Store, log: Log, graceMs = 3_000): Promise<void> {
   const left = store.state.command;
   if (left === undefined) return;
   delete store.state.command;
   store.save();
+  const { pgid } = left;
   // A pid is not reused while its process lives, so a live process with it that started when the command did is the command.
   // Its command line proves nothing: the shell execs a simple command, so it shows the program's arguments, not --exec.
-  const started = startTime(left.pgid);
-  if (started === undefined || Math.abs(started - left.startedAt) > 5_000) return;
-  signalGroup(left.pgid, "SIGKILL");
-  log(`stopped the command an earlier run left running (process group ${left.pgid})`);
+  const started = startTime(pgid);
+  if (started === undefined ? !orphaned(pgid) : Math.abs(started - left.startedAt) > 5_000) return;
+  signalGroup(pgid, "SIGTERM");
+  for (const end = Date.now() + graceMs; Date.now() < end && groupAlive(pgid); ) await new Promise((resolve) => setTimeout(resolve, 100));
+  if (groupAlive(pgid)) signalGroup(pgid, "SIGKILL");
+  log(`stopped the command an earlier run left running (process group ${pgid})`);
 }
 
 /**
@@ -227,12 +266,13 @@ export function stopper(options: { busy: () => boolean; kill: () => void; log: L
         return options.exit(129);
       }
       const now = Date.now();
-      if (last?.signal === signal && now - last.at < ECHO_MS) return;
+      const previous = last;
+      if (previous?.signal === signal && now - previous.at < ECHO_MS) return;
       last = { signal, at: now };
       const name = signal === "SIGINT" ? "Ctrl-C" : signal;
       if (stopping) {
         options.kill();
-        options.log(`${name} again: stopping now`);
+        options.log(`${name}${previous?.signal === signal ? " again" : ""}: stopping now`);
         return options.exit(signal === "SIGINT" ? 130 : 143);
       }
       if (!options.busy()) {

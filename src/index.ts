@@ -233,7 +233,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   lock(`${file}.lock`);
   const store = fileStore(`${file}.json`, network.contracts.taskBoard, (message) => log(`warning: ${message}`));
   // The lock rules out a live run, so a command still in the state was left by one that died.
-  stopLeftover(store, log);
+  await stopLeftover(store, log);
   const chain = createChain(network, account, store);
 
   const command = shellCommand(exec);
@@ -253,10 +253,18 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop.signal);
 
-  const gas = await chain.ethBalance().catch((error: unknown) => {
+  let gas: bigint | undefined;
+  try {
+    gas = await chain.ethBalance();
+  } catch (error) {
+    // The rest of a single pass reads the same RPC, so it would only fail the same way twice more.
+    if (once) {
+      log(`could not read the chain: ${reason(error)}`);
+      process.exitCode = 1;
+      return;
+    }
     log(`could not read the wallet's ETH balance: ${reason(error)}`);
-    return undefined;
-  });
+  }
   if (gas === 0n) throw noGas(chain, network);
   const [line, sick] = await Promise.all([
     snapshot(chain).then(
@@ -268,8 +276,12 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   log(`worker ${chain.account} on ${network.name}; hireable: ${line}`);
   if (sick) log(`warning: ${sick}`);
   if (once) {
-    const result = await work.round();
-    if (result.hired === 0 && result.delivered === 0) log("no task is hired to this worker right now");
+    const result = await work.round().catch((error: unknown) => {
+      log(`round failed: ${reason(error)}`);
+      process.exitCode = 1;
+      return undefined;
+    });
+    if (result?.hired === 0 && result.delivered === 0) log("no task is hired to this worker right now");
     return;
   }
   log("waiting for tasks (Ctrl-C to stop)");

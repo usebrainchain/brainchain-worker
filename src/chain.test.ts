@@ -158,6 +158,9 @@ describe("answers from a real server", () => {
     },
     "/auth": json(401, { jsonrpc: "2.0", id: 1, error: { code: -32600, message: "Must be authenticated!" } }),
     "/limit": json(429, { jsonrpc: "2.0", id: 1, error: { code: 429, message: "Your app has exceeded its compute units per second capacity" } }),
+    "/rest": (res, req) => json(200, { args: {}, headers: { Authorization: req.headers.authorization }, url: `http://rest.example${req.url}` })(res),
+    "/missing": json(200, { error: "Not Found" }),
+    "/rpc": json(200, { jsonrpc: "2.0", id: 1, result: "0x10" }),
     "/results/html403": html(403),
     "/results/refused": json(403, { error: "Only the hired worker can upload a result" }),
   };
@@ -185,6 +188,16 @@ describe("answers from a real server", () => {
   it("says a web page that answered 200, 404 or 405 is not an RPC", async () => {
     expect(await rpc("/page200/APIKEYSECRET123")).toBe(`${host} answered, but not as an RPC`);
     expect(await rpc("/page404/APIKEYSECRET123")).toBe(`${host} answered 404 with a web page, not as an RPC`);
+  });
+
+  it("names the host when JSON that is no RPC reply answers 200, without the URL's path or credentials", async () => {
+    const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+    const now = (path: string) => createChain({ ...TESTNET, rpc: `http://${host}${path}` }, account).now().catch((error: unknown) => reason(error));
+    expect(await now("/rest/APIKEYSECRET123")).toBe(`${host} answered, but not as an RPC ({"args":{},"headers":{},"url":"http://rest.example…"})`);
+    const echoed = await createChain({ ...TESTNET, rpc: `http://user:PASSWORDSECRET9@${host}/rest` }, account).now().catch((error: unknown) => reason(error));
+    expect(echoed).toBe(`${host} answered, but not as an RPC ({"args":{},"headers":{"Authorization":"Basic …"},"url":"http://rest.example/rest"})`);
+    expect(await now("/missing")).toBe(`${host} answered, but not as an RPC ({"error":"Not Found"})`);
+    expect(await createChain({ ...TESTNET, rpc: `http://${host}/rpc` }, account).ethBalance()).toBe(16n);
   });
 
   it("keeps the status of an error page from a proxy in front of the RPC", async () => {
