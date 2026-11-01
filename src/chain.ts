@@ -48,6 +48,7 @@ export const bondsAbi = [
 export const executorAbi = parseAbi([
   "event Queued(uint256 indexed changeId, uint256 indexed decisionId, address indexed target, bytes data, uint64 eta)",
   "function getChange(uint256 changeId) view returns ((address target, bytes data, uint64 eta, bool executed, bool vetoed))",
+  "function timelock() view returns (uint64)",
 ]);
 
 /** Mirrors TaskBoard.Status. */
@@ -350,6 +351,8 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     held: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "held", args: [account.address] }),
     allowed: () => client.readContract({ ...board, functionName: "workerAllowed", args: [account.address] }),
     bond: () => client.readContract({ address: bonds, abi: bondsAbi, functionName: "bond" }),
+    /** Seconds between Jev allowing a worker and the worker being hireable. */
+    timelock: () => client.readContract({ address: executor, abi: executorAbi, functionName: "timelock" }),
     async approve(token: Address, spender: Address, amount: bigint) {
       const current = await client.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] });
       if (current >= amount) return;
