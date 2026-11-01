@@ -116,14 +116,18 @@ describe("openStore", () => {
   const saved = (board: string, done: string[]) => JSON.stringify({ board: board.toLowerCase(), tasks: {}, done, hired: { block: 1_234, tasks: done } });
   const held = (file: string, pid: number) => `Another run (pid ${pid}) is already working for this worker. Stop it before starting another; ${file} holds its lock.`;
 
-  it("moves state kept per address to the network whose board it holds, and drops its stale lock", () => {
+  it("moves state kept per address to the network whose board it holds, says so once, and drops its stale lock", () => {
     const folder = dir();
     const old = join(folder, ADDRESS);
     writeFileSync(`${old}.json`, saved(TESTNET.contracts.taskBoard, ["5"]));
     writeFileSync(`${old}.lock`, String(spawnSync("true").pid));
-    expect(openStore(ADDRESS, TESTNET, undefined, folder).state).toMatchObject({ done: ["5"], hired: { block: 1_234 } });
+    const log = vi.fn();
+    expect(openStore(ADDRESS, TESTNET, log, folder).state).toMatchObject({ done: ["5"], hired: { block: 1_234 } });
+    expect(log.mock.calls).toEqual([[`moved ${old}.json to ${old}.testnet.json`]]);
     expect(readdirSync(folder).sort()).toEqual([`${ADDRESS}.testnet.json`, `${ADDRESS}.testnet.lock`]);
     expect(readFileSync(`${old}.testnet.lock`, "utf8")).toBe(String(process.pid));
+    openStore(ADDRESS, TESTNET, log, folder);
+    expect(log).toHaveBeenCalledOnce();
   });
 
   it("leaves state kept for the other board until a run on that network moves it", () => {
@@ -131,10 +135,13 @@ describe("openStore", () => {
     const old = join(folder, ADDRESS);
     const text = saved(MAINNET.contracts.taskBoard, ["5"]);
     writeFileSync(`${old}.json`, text);
-    expect(openStore(ADDRESS, TESTNET, undefined, folder).state.done).toEqual([]);
+    const log = vi.fn();
+    expect(openStore(ADDRESS, TESTNET, log, folder).state.done).toEqual([]);
+    expect(log).not.toHaveBeenCalled();
     expect(readFileSync(`${old}.json`, "utf8")).toBe(text);
     expect(existsSync(`${old}.testnet.json`)).toBe(false);
-    expect(openStore(ADDRESS, MAINNET, undefined, folder).state.done).toEqual(["5"]);
+    expect(openStore(ADDRESS, MAINNET, log, folder).state.done).toEqual(["5"]);
+    expect(log.mock.calls).toEqual([[`moved ${old}.json to ${old}.mainnet.json`]]);
     expect(existsSync(`${old}.json`)).toBe(false);
   });
 
@@ -143,7 +150,9 @@ describe("openStore", () => {
     const old = join(folder, ADDRESS);
     writeFileSync(`${old}.json`, saved(TESTNET.contracts.taskBoard, ["5"]));
     writeFileSync(`${old}.testnet.json`, saved(TESTNET.contracts.taskBoard, ["9"]));
-    expect(openStore(ADDRESS, TESTNET, undefined, folder).state.done).toEqual(["9"]);
+    const log = vi.fn();
+    expect(openStore(ADDRESS, TESTNET, log, folder).state.done).toEqual(["9"]);
+    expect(log).not.toHaveBeenCalled();
     expect(existsSync(`${old}.json`)).toBe(true);
   });
 

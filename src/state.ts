@@ -166,25 +166,26 @@ export function lock(file: string): () => void {
 
 /**
  * Moves the state 0.3.0 and earlier kept per address alone to `file`, once,
- * when it was kept for `board`. State for the other network stays where it is
- * until a run there moves it.
+ * when it was kept for `board`, and says whether it did. State for the other
+ * network stays where it is until a run there moves it.
  */
-function migrate(old: string, file: string, board: string): void {
+function migrate(old: string, file: string, board: string): boolean {
   let text: string;
   try {
     text = readFileSync(`${old}.json`, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-  if (parse(text)?.board !== board.toLowerCase()) return;
+  if (parse(text)?.board !== board.toLowerCase()) return false;
   // A run from before the move may still be working on this network's tasks from the old file.
   const pid = holder(`${old}.lock`);
   if (alive(pid)) throw held(pid, `${old}.lock`);
-  if (existsSync(`${file}.json`)) return;
+  if (existsSync(`${file}.json`)) return false;
   // Removed rather than moved: this run already holds the new lock.
   rmSync(`${old}.lock`, { force: true });
   renameSync(`${old}.json`, `${file}.json`);
+  return true;
 }
 
 /**
@@ -192,10 +193,10 @@ function migrate(old: string, file: string, board: string): void {
  * network has its own `<address>.<network>.json` and `.lock`, so one key can
  * run on testnet and mainnet at once without sharing cursors or tasks.
  */
-export function openStore(address: string, network: Network, warn?: (message: string) => void, dir = stateDir()): Store {
+export function openStore(address: string, network: Network, log: (line: string) => void = console.log, dir = stateDir()): Store {
   const old = join(dir, address);
   const file = `${old}.${network.id}`;
   lock(`${file}.lock`);
-  migrate(old, file, network.contracts.taskBoard);
-  return fileStore(`${file}.json`, network.contracts.taskBoard, warn);
+  if (migrate(old, file, network.contracts.taskBoard)) log(`moved ${old}.json to ${file}.json`);
+  return fileStore(`${file}.json`, network.contracts.taskBoard, (message) => log(`warning: ${message}`));
 }

@@ -85,7 +85,7 @@ export async function claim(
   const { log } = options;
   const { income, name } = network.proofs;
   if (income === undefined) {
-    return log(`Proofs on ${network.name} earn no income, so there is nothing to claim. Mainnet Proofs are claimed with BRAINCHAIN_NETWORK=mainnet.`);
+    return log(`Proofs on ${name} earn no income, so there is nothing to claim. Mainnet Proofs are claimed with BRAINCHAIN_NETWORK=mainnet.`);
   }
   const chain = connect(income);
   const ids = await ownedProofs(network, chain.account, options.fetcher);

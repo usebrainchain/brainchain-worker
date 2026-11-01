@@ -71,7 +71,7 @@ describe("claim", () => {
     const { lines, connect } = await run(fakeChain({}), fetcher, { network: TESTNET });
     expect(connect).not.toHaveBeenCalled();
     expect(fetcher).not.toHaveBeenCalled();
-    expect(lines).toEqual(["Proofs on BrainChain testnet earn no income, so there is nothing to claim. Mainnet Proofs are claimed with BRAINCHAIN_NETWORK=mainnet."]);
+    expect(lines).toEqual(["Proofs on Robinhood Chain testnet earn no income, so there is nothing to claim. Mainnet Proofs are claimed with BRAINCHAIN_NETWORK=mainnet."]);
   });
 
   it("says the wallet needs ETH on Robinhood Chain for gas", async () => {
