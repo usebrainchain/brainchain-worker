@@ -17,8 +17,23 @@ export interface Network {
   gas: string;
   /** Where to get the stake token when it has no faucet. */
   buyStake?: string;
-  /** The chain the Proofs live on, and the router that pays their income where there is one. */
-  proofs: { chainId: number; name: string; rpc: string; income?: Address };
+  /**
+   * The chain the Proofs live on: the collection every paid task becomes a
+   * piece of, the WETH a piece is paid for in, and the router that pays the
+   * pieces' income where there is one.
+   */
+  proofs: {
+    chainId: number;
+    name: string;
+    rpc: string;
+    collection: Address;
+    weth: Address;
+    /** Set where the WETH has a faucet, as test WETH does. */
+    faucet?: true;
+    /** How the wallet gets ETH there for gas, said after what it holds there. */
+    gas: string;
+    income?: Address;
+  };
   contracts: {
     taskBoard: Address;
     staking: Address;
@@ -41,7 +56,15 @@ export const TESTNET: Network = {
   stakeSymbol: "tBRAIN",
   bountySymbol: "tUSDG",
   gas: "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com and bridge some at https://usebrainchain.com/testnet",
-  proofs: { chainId: 46630, name: "Robinhood Chain testnet", rpc: "https://rpc.testnet.chain.robinhood.com" },
+  proofs: {
+    chainId: 46630,
+    name: "Robinhood Chain testnet",
+    rpc: "https://rpc.testnet.chain.robinhood.com",
+    collection: "0x324B52EE2182641ec29652076ab541bc9F9907d2",
+    weth: "0x1F852eF3Afa13156b807204d838BbB46B4b452eb",
+    faucet: true,
+    gas: "Get Robinhood Chain testnet ETH for gas at https://faucet.testnet.chain.robinhood.com",
+  },
   contracts: {
     taskBoard: "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6",
     staking: "0xbdC08799D865DA79FE44a469de1FeaE84bb45059",
@@ -76,7 +99,15 @@ export const MAINNET: Network = {
     "Buy BRAIN on ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and bridge it to BrainChain through the " +
     "Robinhood Chain gateway router 0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96 (docs: https://docs.usebrainchain.com/bridging); " +
     `the stake token on BrainChain is ${BRAIN}.`,
-  proofs: { chainId: 4663, name: "Robinhood Chain", rpc: "https://rpc.mainnet.chain.robinhood.com", income: "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7" },
+  proofs: {
+    chainId: 4663,
+    name: "Robinhood Chain",
+    rpc: "https://rpc.mainnet.chain.robinhood.com",
+    collection: "0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169",
+    weth: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    gas: "Send it a little ETH there for gas",
+    income: "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
+  },
   contracts: {
     taskBoard: MAINNET_TASK_BOARD,
     staking: MAINNET_WORKER_STAKING,
@@ -124,5 +155,17 @@ export function chainOf(network: Network) {
     name: network.name,
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: [network.rpc] } },
+  });
+}
+
+const MULTICALL3: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
+
+export function proofsChainOf(proofs: Network["proofs"]) {
+  return defineChain({
+    id: proofs.chainId,
+    name: proofs.name,
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: [proofs.rpc] } },
+    contracts: { multicall3: { address: MULTICALL3 } },
   });
 }

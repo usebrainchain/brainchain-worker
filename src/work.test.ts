@@ -21,7 +21,7 @@ const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
 
 function setup(
   output: (at: (t: bigint) => void) => Promise<string>,
-  options: { format?: "prompt" | "json"; tasks?: HiredTask[]; store?: Store; stopping?: () => boolean; failed?: () => void } = {},
+  options: { format?: "prompt" | "json"; tasks?: HiredTask[]; store?: Store; stopping?: () => boolean; failed?: () => void; delivered?: (task: bigint) => void } = {},
 ) {
   let now = 1_000n;
   const at = (t: bigint) => void (now = t);
@@ -52,6 +52,7 @@ function setup(
     store: options.store,
     stopping: options.stopping,
     failed: options.failed,
+    delivered: options.delivered,
   });
   return { chain, command, log, work, at };
 }
@@ -70,6 +71,13 @@ describe("work", () => {
     expect(timeoutMs).toBe(20 * 60_000);
     expect(chain.publish).toHaveBeenCalledWith(7n, "Batches settle down");
     expect(chain.submit).toHaveBeenCalledWith(7n, keccak256(toBytes("Batches settle down")), "https://brain.example/records/7.txt", expect.any(Function));
+  });
+
+  it("tells run each task it delivers, so the worker can mint its Proof once it is paid", async () => {
+    const delivered = vi.fn();
+    const { work } = setup(async () => "done", { tasks: [hiredTask(7n), hiredTask(8n)], delivered });
+    await work.round();
+    expect(delivered.mock.calls).toEqual([[7n], [8n]]);
   });
 
   it("gives a program the task as JSON when asked", async () => {

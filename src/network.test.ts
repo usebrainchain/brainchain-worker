@@ -35,6 +35,9 @@ describe("resolveNetwork", () => {
       chainId: 4663,
       name: "Robinhood Chain",
       rpc: "https://rpc.mainnet.chain.robinhood.com",
+      collection: "0xE6E6B7DBF1a66dFB25c6F6A87a916B3186113169",
+      weth: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+      gas: "Send it a little ETH there for gas",
       income: "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
     });
     expect(resolveNetwork({ BRAINCHAIN_NETWORK: "MAINNET" })).toEqual(MAINNET);
@@ -60,6 +63,8 @@ describe("resolveNetwork", () => {
   it("gives testnet a faucet and mainnet a place to buy the stake token", () => {
     expect(TESTNET.buyStake).toBeUndefined();
     expect(TESTNET.proofs.income).toBeUndefined();
+    expect(TESTNET.proofs).toMatchObject({ chainId: 46630, collection: "0x324B52EE2182641ec29652076ab541bc9F9907d2", weth: "0x1F852eF3Afa13156b807204d838BbB46B4b452eb", faucet: true });
+    expect(MAINNET.proofs.faucet).toBeUndefined();
     expect(MAINNET.buyStake).toContain("https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7");
   });
 });

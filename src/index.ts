@@ -6,6 +6,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { createChain, faucetReopens, reason, unhealthy, type Chain } from "./chain.js";
 import { claim, createIncome } from "./claim.js";
+import { createProofMinter, createProofsChain, MAX_MINT, mint } from "./mint.js";
 import { resolveNetwork, type Network } from "./network.js";
 import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore } from "./state.js";
@@ -22,12 +23,16 @@ Usage:
   brainchain-worker join --name <name> --about <text> [--price <USDG>]
                                             Stake the minimum and apply to take tasks. The name is at
                                             most 60 characters, the description at most 500.
-  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once]
+  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--no-mint]
                                             Do every task Jev hires you for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
-                                            --timeout minutes (20 by default, at most 1440).
+                                            --timeout minutes (20 by default, at most 1440). The worker
+                                            mints the Proof of each task it is paid for, unless --no-mint.
   brainchain-worker status                  Stake, wallet, application, record and earnings.
   brainchain-worker price <USDG>            Change your asking price per task.
+  brainchain-worker mint [--count <n>] [--dry]
+                                            Mint a Proof for each paid task waiting for one, up to 10 or
+                                            --count, at 0.001 WETH each on Robinhood Chain. --dry sends nothing.
   brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
                                             --dry lists what is due and sends nothing.
   brainchain-worker leave                   Start unstaking (3-day cooldown).
@@ -53,12 +58,13 @@ class UsageError extends Error {}
 /** The flags each command takes; `true` marks a switch, which takes no value. */
 const FLAGS: Record<string, Record<string, boolean>> = {
   join: { name: false, about: false, price: false },
-  run: { exec: false, format: false, timeout: false, once: true },
+  run: { exec: false, format: false, timeout: false, once: true, "no-mint": true },
   status: {},
   price: {},
   leave: {},
   withdraw: {},
   claim: { dry: true },
+  mint: { count: false, dry: true },
 };
 const POSITIONAL: Record<string, number> = { price: 1 };
 
@@ -219,7 +225,7 @@ async function status(chain: Chain, network: Network): Promise<void> {
   Gas       ${formatEther(gas)} ETH`);
 }
 
-async function run(network: Network, { key, account }: Signer, values: Map<string, string>, once: boolean): Promise<void> {
+async function run(network: Network, { key, account }: Signer, values: Map<string, string>, once: boolean, mints: boolean): Promise<void> {
   const exec = values.get("exec");
   if (!exec) throw new UsageError(`--exec is required: the command that does the work, such as --exec 'claude -p --tools ""'`);
   const format = values.get("format") ?? "prompt";
@@ -234,6 +240,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   // The lock rules out a live run, so a command still in the state was left by one that died.
   await stopLeftover(store, log);
   const chain = createChain(network, account, store);
+  const proofs = createProofMinter({ network, chain: createProofsChain(network.proofs, account), settled: chain.settled, store, log, enabled: mints });
 
   const command = shellCommand(exec);
   // An idle stop keeps the exit code of a task that failed earlier in a --once pass.
@@ -249,6 +256,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     stopping: stop.stopping,
     // A cron job sees a failed task as a failed run.
     failed: once ? () => void (process.exitCode = 1) : undefined,
+    delivered: proofs.track,
   });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop.signal);
 
@@ -281,13 +289,21 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
       return undefined;
     });
     if (result?.hired === 0 && result.delivered === 0) log("no task is hired to this worker right now");
+    await proofs.round().catch((error: unknown) => log(`proofs round failed: ${reason(error)}`));
     return;
   }
   log("waiting for tasks (Ctrl-C to stop)");
+  // Minting waits on receipts from another chain, so it runs beside the work, one round at a time.
+  let minting: Promise<void> | undefined;
   while (!stop.stopping()) {
     await work.round().catch((error: unknown) => log(`round failed: ${reason(error)}`));
+    minting ??= proofs
+      .round()
+      .catch((error: unknown) => log(`proofs round failed: ${reason(error)}`))
+      .finally(() => (minting = undefined));
     for (let i = 0; i < 15 && !stop.stopping(); i++) await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
+  await minting;
   log("stopped");
 }
 
@@ -311,8 +327,15 @@ async function main(argv: string[]): Promise<void> {
   if (command === "claim") {
     return claim(network, (income) => createIncome(network.proofs, income, signer().account), { dry: switches.has("dry"), log: console.log });
   }
+  if (command === "mint") {
+    const count = values.get("count");
+    if (count !== undefined && !(/^\d{1,2}$/.test(count) && Number(count) >= 1 && Number(count) <= MAX_MINT)) {
+      throw new UsageError(`--count is how many Proofs to mint: 1 to ${MAX_MINT}`);
+    }
+    return mint(network, createProofsChain(network.proofs, signer().account), { count: count === undefined ? undefined : Number(count), dry: switches.has("dry"), log: console.log });
+  }
   const worker = signer();
-  if (command === "run") return run(network, worker, values, switches.has("once"));
+  if (command === "run") return run(network, worker, values, switches.has("once"), !switches.has("no-mint"));
   const chain = createChain(network, worker.account);
   switch (command) {
     case "join":

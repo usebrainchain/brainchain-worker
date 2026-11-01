@@ -305,6 +305,8 @@ export function createWork(options: {
   stopping?: () => boolean;
   /** Called as each task fails or is given up, before the round ends. */
   failed?: () => void;
+  /** Called as each result is delivered. */
+  delivered?: (task: bigint) => void;
   fetchBrief?: typeof fetchBrief;
 }) {
   const { chain, command } = options;
@@ -349,6 +351,7 @@ export function createWork(options: {
       const delivered = (key: string, text: string, tx: Hex) => {
         result.delivered += 1;
         log(`task ${key}: delivered (${toBytes(text).byteLength} bytes, ${tx}). Jev grades it next.`);
+        options.delivered?.(BigInt(key));
       };
       const current = new Set(hired.map((t) => t.id.toString()));
       for (const [key, attempt] of Object.entries(state.tasks)) {
