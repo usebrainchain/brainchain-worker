@@ -1,7 +1,7 @@
-import { createPublicClient, createWalletClient, defineChain, formatEther, http, parseAbi, parseEventLogs, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { createPublicClient, createWalletClient, formatEther, http, parseAbi, parseEventLogs, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { RECEIPT_MS } from "./chain.js";
-import type { Network } from "./network.js";
+import { proofsChainOf, type Network } from "./network.js";
 
 export const proofsIncomeAbi = parseAbi([
   "function due(uint256 tokenId) view returns (uint256)",
@@ -14,8 +14,6 @@ export const proofsIncomeAbi = parseAbi([
 /** The most Proofs one claim pays for, which keeps the transaction far inside a block. */
 export const MAX_CLAIM = 200;
 
-const MULTICALL3: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
-
 /** What claim needs from the chain the Proofs live on. */
 export interface IncomeChain {
   account: Address;
@@ -26,13 +24,7 @@ export interface IncomeChain {
 }
 
 export function createIncome(proofs: Network["proofs"], income: Address, account: PrivateKeyAccount): IncomeChain {
-  const chain = defineChain({
-    id: proofs.chainId,
-    name: proofs.name,
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: { default: { http: [proofs.rpc] } },
-    contracts: { multicall3: { address: MULTICALL3 } },
-  });
+  const chain = proofsChainOf(proofs);
   const transport = http(proofs.rpc, { timeout: 20_000, retryCount: 3 });
   const client = createPublicClient({ chain, transport, pollingInterval: 1_000 });
   const wallet = createWalletClient({ account, chain, transport });

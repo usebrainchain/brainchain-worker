@@ -422,6 +422,11 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       );
       return { applications, change };
     },
+    /** How a task settled, or undefined while it has not. */
+    async settled(task: bigint): Promise<"paid" | "refunded" | undefined> {
+      const { status } = await client.readContract({ ...board, functionName: "get", args: [task] });
+      return status === Status.Paid ? "paid" : status === Status.Refunded ? "refunded" : undefined;
+    },
     /** Tasks this worker was hired for, by outcome, and what it was paid after fees. */
     async record() {
       const latest = await client.getBlockNumber();

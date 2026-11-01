@@ -17,6 +17,16 @@ export interface TaskState {
   nextAt: number;
 }
 
+/** A delivered task waiting for its Proof: watched until it settles, then minted for at most once an hour. */
+export interface ProofTask {
+  /** Wall-clock seconds when the result was delivered. */
+  deliveredAt: number;
+  /** When the task was first seen paid. */
+  paidAt?: number;
+  /** Wall-clock seconds before which the task is not looked at again. */
+  nextAt: number;
+}
+
 export interface State {
   /** The task board the rest belongs to; state kept for another board is dropped. */
   board: string;
@@ -27,6 +37,8 @@ export interface State {
   hired?: { block: number; tasks: string[] };
   /** The command running for a task, so the next run can stop it if this one dies first. */
   command?: { pgid: number; startedAt: number };
+  /** Delivered tasks waiting for the worker to mint their Proof, by task id. */
+  proofs?: Record<string, ProofTask>;
 }
 
 export interface Store {
@@ -54,12 +66,18 @@ function isTask(value: unknown): value is TaskState {
   return value.stored === undefined || (isObject(value.stored) && typeof value.stored.uri === "string" && isHash(value.stored.hash));
 }
 
+function isProofs(value: unknown): boolean {
+  if (!isObject(value) || !isIds(Object.keys(value))) return false;
+  return Object.values(value).every((p) => isObject(p) && isCount(p.deliveredAt) && isCount(p.nextAt) && (p.paidAt === undefined || isCount(p.paidAt)));
+}
+
 /** Whether a parsed file is a state this worker can go on from; any other shape fails every round that reads it. */
 function isState(value: unknown): value is State {
   if (!isObject(value) || typeof value.board !== "string" || !isObject(value.tasks) || !isIds(value.done)) return false;
   if (!Object.values(value.tasks).every(isTask)) return false;
-  const { hired, command } = value;
+  const { hired, command, proofs } = value;
   if (hired !== undefined && !(isObject(hired) && isCount(hired.block) && isIds(hired.tasks))) return false;
+  if (proofs !== undefined && !isProofs(proofs)) return false;
   // Group 0 is this process's own and -1 is every process, so only a real command's group is signalled.
   return command === undefined || (isObject(command) && isCount(command.pgid) && command.pgid > 1 && isCount(command.startedAt));
 }
