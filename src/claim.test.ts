@@ -6,7 +6,7 @@ import { MAINNET, TESTNET } from "./network.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
 const TX: Hex = `0x${"fe".repeat(32)}`;
-const OWNED = `https://brain.usebrainchain.com/proofs/4663/owned/${ACCOUNT}`;
+const OWNED = `https://brain.usebrainchain.com/proofs/274663/owned/${ACCOUNT}`;
 
 function fakeChain(dues: Record<string, bigint>, gas = parseEther("0.001")) {
   return {
