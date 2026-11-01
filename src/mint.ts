@@ -13,7 +13,7 @@ import {
 } from "viem";
 
 import { reason, RECEIPT_MS } from "./chain.js";
-import { proofsChainOf, type Network } from "./network.js";
+import { proofsChainOf, proofsTransport, type Network } from "./network.js";
 import type { ProofTask, Store } from "./state.js";
 import { when } from "./standing.js";
 
@@ -76,7 +76,7 @@ export function mintedToken(logs: ReceiptLog[], collection: Address, to: Address
 
 export function createProofsChain(proofs: Network["proofs"], account: PrivateKeyAccount): ProofsChain {
   const chain = proofsChainOf(proofs);
-  const transport = http(proofs.rpc, { timeout: 20_000, retryCount: 3 });
+  const transport = proofsTransport(proofs);
   const client = createPublicClient({ chain, transport, pollingInterval: 1_000 });
   const wallet = createWalletClient({ account, chain, transport });
   const weth = { address: proofs.weth, abi: wethAbi } as const;
