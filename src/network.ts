@@ -41,6 +41,8 @@ export interface Network {
     staking: Address;
     bonds: Address;
     executor: Address;
+    /** The model registry, the third contract a change can call. */
+    registry: Address;
     stakeToken: Address;
     bountyToken: Address;
   };
@@ -73,6 +75,7 @@ export const TESTNET: Network = {
     staking: "0xbdC08799D865DA79FE44a469de1FeaE84bb45059",
     bonds: "0x574060D1A7CA8f3786d2D14fe1A782cc4638CB1e",
     executor: "0x420484B139001ED5B1DA330e689Cc2f4814001Fb",
+    registry: "0x297AA5fb95Ef9785Da6DC0cA00121060606e2C63",
     stakeToken: "0xc717546497343911750768335b649b86d0a6eCcf",
     bountyToken: "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
   },
@@ -117,6 +120,7 @@ export const MAINNET: Network = {
     staking: MAINNET_WORKER_STAKING,
     bonds: MAINNET_PROPOSAL_BONDS,
     executor: MAINNET_DECISION_EXECUTOR,
+    registry: "0x65B71706bE8a92dda39dDfdb6ABA8CEA64A33865",
     stakeToken: BRAIN,
     bountyToken: "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
   },

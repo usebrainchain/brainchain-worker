@@ -70,6 +70,21 @@ BRAINCHAIN_NETWORK=mainnet npx brainchain-worker claim         # pays it in one 
 
 `claim` asks the BrainChain service which Proofs the wallet holds, reads what each is due and claims every one with income due in a single transaction, up to 200 at a time. Income always goes to the Proof's current holder. The transaction is sent from the worker's key on Robinhood Chain, so the wallet needs a little ETH there for gas. Testnet Proofs earn no income.
 
+## Propose a change
+
+Any wallet can propose a change to BrainChain's settings: the task board's thresholds, windows, minimum bounty and fee, the model registry, or the executor's own limits and treasury. `propose` bonds the stake token (250,000 BRAIN on mainnet, 100 tBRAIN on testnet) and puts the exact contract call to Jev with your case for it:
+
+```sh
+BRAINCHAIN_NETWORK=mainnet npx brainchain-worker propose --target board --call setFee \
+  --args '[200, "0xdFeFbdBF680568e8DC44abbbd657c0701964cC8c"]' \
+  --title "Lower the fee to 2%" --rationale "Why the change is better, in up to 1,500 characters." --dry
+```
+
+- **The call.** `--target` is `board`, `executor` or `registry`, `--call` the function and `--args` its arguments as a JSON array, with a struct as an object that names every field. `--data` takes raw calldata instead. The board takes `setConfig`, `setFee`, `setPaused` and `setWorkerAllowed`; the executor `setParameters` and `transfer`; the registry `setModel`.
+- **The case.** Jev reads `--title` (up to 120 characters) and `--rationale` (up to 1,500), and `--current` and `--proposed` (up to 300 each) if given. `--proposed` defaults to the call itself.
+- **Checks first.** Before any bond moves, `propose` runs the call as the executor would and refuses it if it would revert, if the guardian vetoed it before, or if it is a call the executor never makes, such as `setGuardian`. `--dry` stops after the checks.
+- **Outcome.** Jev decides within 7 days. If it adopts the change with at least the change threshold's confidence (60% on mainnet), the bond comes back and the call runs after the timelock: 48 hours on mainnet, 2 on testnet. Otherwise the bond is burned. `proposal <id>` shows where a proposal stands.
+
 ## Your command
 
 `run --exec "<command>"` runs the command through the shell once per task.
@@ -115,6 +130,8 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 | `price <USDG>` | Change the asking price, in tUSDG on testnet and USDG on mainnet. |
 | `mint [--count <n>] [--dry]` | Mint the Proof of each paid task waiting for one, up to 10 at a time or `--count`, at 0.001 WETH each on Robinhood Chain plus gas. `--dry` lists the tasks and what the wallet lacks without sending anything. |
 | `claim [--dry]` | Claim the ETH due on the worker's Proofs on Robinhood Chain, in one transaction. `--dry` lists each Proof and what it is due without sending anything. |
+| `propose --target <contract> --call <function> --args <JSON> --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--data <hex>] [--dry]` | Bond the stake token and propose a change for Jev to decide. See [Propose a change](#propose-a-change). |
+| `proposal <id>` | Where a proposal stands: waiting for Jev and until when, adopted and when its change runs, or kept with the bond burned. Needs no key. |
 | `leave` | Start unstaking. The stake unlocks after 3 days, once no task of the worker's is in flight. |
 | `withdraw` | Withdraw the unlocked stake. |
 | `--version` | Print the version. |
