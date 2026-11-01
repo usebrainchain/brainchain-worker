@@ -7,6 +7,7 @@ import { createChain, faucetReopens, reason, unhealthy, type Chain } from "./cha
 import { claim, createIncome } from "./claim.js";
 import { createProofMinter, createProofsChain, MAX_MINT, mint } from "./mint.js";
 import { resolveNetwork, type Network } from "./network.js";
+import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
 import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore } from "./state.js";
 import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
@@ -34,6 +35,12 @@ Usage:
                                             --count, at 0.001 WETH each on Robinhood Chain. --dry sends nothing.
   brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
                                             --dry lists what is due and sends nothing.
+  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
+                            --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry]
+                                            Bond the stake token and propose a change to BrainChain for Jev to
+                                            decide. --data <hex> gives the call as raw calldata instead of
+                                            --call and --args. --dry checks the call and sends nothing.
+  brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.
   brainchain-worker leave                   Start unstaking (3-day cooldown).
   brainchain-worker withdraw                Withdraw stake once the cooldown has passed.
   brainchain-worker --version               Print the version.
@@ -64,8 +71,10 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   withdraw: {},
   claim: { dry: true },
   mint: { count: false, dry: true },
+  propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true },
+  proposal: {},
 };
-const POSITIONAL: Record<string, number> = { price: 1 };
+const POSITIONAL: Record<string, number> = { price: 1, proposal: 1 };
 
 export function parse(command: string, args: string[]): { positional: string[]; values: Map<string, string>; switches: Set<string> } {
   const known = FLAGS[command];
@@ -341,7 +350,25 @@ export async function main(argv: string[]): Promise<void> {
     }
     return mint(network, createProofsChain(network.proofs, signer().account), { count: count === undefined ? undefined : Number(count), dry: switches.has("dry"), log: console.log });
   }
+  if (command === "proposal") {
+    const id = positional[0];
+    if (id === undefined || !/^\d{1,18}$/.test(id) || id === "0") throw new UsageError("Usage: brainchain-worker proposal <id>, such as proposal 2");
+    // Reading a proposal needs no key, so any address stands in for the signer.
+    const reader = process.env.BRAINCHAIN_WORKER_KEY?.trim() ? signer().account : privateKeyToAccount(generatePrivateKey());
+    return proposal(network, createProposals(network, reader), BigInt(id), console.log);
+  }
   const worker = signer();
+  if (command === "propose") {
+    if (!values.has("target")) throw new UsageError("--target is required: board, executor or registry");
+    const call = buildCall(network, worker.account.address, {
+      target: values.get("target")!,
+      call: values.get("call"),
+      args: values.get("args"),
+      data: values.get("data"),
+    });
+    const uri = caseURI(call, { title: values.get("title") ?? "", rationale: values.get("rationale") ?? "", current: values.get("current"), proposed: values.get("proposed") });
+    return propose(network, createProposals(network, worker.account), call, uri, { dry: switches.has("dry"), log: console.log });
+  }
   if (command === "run") return run(network, worker, values, switches.has("once"), !switches.has("no-mint"));
   const chain = createChain(network, worker.account);
   switch (command) {

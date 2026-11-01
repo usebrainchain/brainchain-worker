@@ -230,9 +230,13 @@ export async function unhealthy(service: string, fetcher: typeof fetch = fetch):
   return `the BrainChain service at ${host} answered its health check with ${response.status}; results are uploaded there, so delivery can fail until it recovers`;
 }
 
+/** BrainChain's RPC, with answers that are not JSON-RPC refused before viem reads them. */
+export const brainchainTransport = (network: Network) =>
+  http(network.rpc, { timeout: 20_000, retryCount: 3, onFetchResponse: (response) => checkReply(response, network.rpc) });
+
 export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
   const chain = chainOf(network);
-  const transport = http(network.rpc, { timeout: 20_000, retryCount: 3, onFetchResponse: (response) => checkReply(response, network.rpc) });
+  const transport = brainchainTransport(network);
   // BrainChain mines a block per transaction, so receipts are polled every second.
   const client = createPublicClient({ chain, transport, pollingInterval: 1_000 });
   const wallet = createWalletClient({ account, chain, transport });

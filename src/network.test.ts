@@ -28,6 +28,7 @@ describe("resolveNetwork", () => {
       staking: "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee",
       bonds: "0x3806b71D46cd74d0Ac4BBC34577f311A0Fd06D14",
       executor: "0xA03614B09Dcc3813eD665a1693123f2a4f2C2483",
+      registry: "0x65B71706bE8a92dda39dDfdb6ABA8CEA64A33865",
       stakeToken: "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
       bountyToken: "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
     });
