@@ -6,8 +6,9 @@ import { formatEther, parseUnits, type Hex, type PrivateKeyAccount } from "viem"
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { createChain, faucetReopens, reason, unhealthy, type Chain } from "./chain.js";
+import { claim, createIncome } from "./claim.js";
 import { resolveNetwork, type Network } from "./network.js";
-import { hireable, snapshot, stake, usdg, wallet, when } from "./standing.js";
+import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { fileStore, lock, stateDir } from "./state.js";
 import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
 
@@ -19,22 +20,24 @@ Earn on BrainChain by doing tasks: stake, apply, and let Jev hire your agent.
 
 Usage:
   brainchain-worker new-key                 Print a fresh private key and its address.
-  brainchain-worker join --name <name> --about <text> [--price <tUSDG>]
+  brainchain-worker join --name <name> --about <text> [--price <USDG>]
                                             Stake the minimum and apply to take tasks. The name is at
                                             most 60 characters, the description at most 500.
   brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once]
                                             Do every task Jev hires you for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
                                             --timeout minutes (20 by default, at most 1440).
-  brainchain-worker status                  Stake, tBRAIN balance, application, record and earnings.
-  brainchain-worker price <tUSDG>           Change your asking price per task.
+  brainchain-worker status                  Stake, wallet, application, record and earnings.
+  brainchain-worker price <USDG>            Change your asking price per task.
+  brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
+                                            --dry lists what is due and sends nothing.
   brainchain-worker leave                   Start unstaking (3-day cooldown).
   brainchain-worker withdraw                Withdraw stake once the cooldown has passed.
   brainchain-worker --version               Print the version.
 
 Environment:
   BRAINCHAIN_WORKER_KEY   Private key of the worker's wallet, 64 hex characters with or without 0x.
-  BRAINCHAIN_NETWORK      testnet (the default, and the only network open to outside workers today).
+  BRAINCHAIN_NETWORK      testnet (the default) or mainnet.
   BRAINCHAIN_RPC_URL      Overrides the network's RPC.
   BRAINCHAIN_SERVICE_URL  Overrides the BrainChain service that keeps results: https, or http on
                           localhost or 127.0.0.1.
@@ -56,6 +59,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   price: {},
   leave: {},
   withdraw: {},
+  claim: { dry: true },
 };
 const POSITIONAL: Record<string, number> = { price: 1 };
 
@@ -117,10 +121,7 @@ function price(value: string): bigint {
 const RUN = '`npx brainchain-worker run --exec "<command>"`';
 
 function noGas(chain: Chain, network: Network): Error {
-  return new Error(
-    `${chain.account} has no ETH on ${network.name} for gas. Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com ` +
-      `and bridge some at ${network.explorer}; 0.001 ETH is plenty.`,
-  );
+  return new Error(`${chain.account} has no ETH on ${network.name} for gas. ${network.gas}; 0.001 ETH is plenty.`);
 }
 
 async function needGas(chain: Chain, network: Network): Promise<void> {
@@ -143,9 +144,10 @@ async function join(chain: Chain, network: Network, values: Map<string, string>)
   // A worker that has staked keeps its price unless --price changes it.
   const asking = requested ?? (w.registered ? w.price : price(DEFAULT_PRICE));
 
-  const [bond, balance] = await Promise.all([chain.bond(), chain.stakeBalance()]);
+  const [bond, balance, timelock] = await Promise.all([chain.bond(), chain.stakeBalance(), chain.timelock()]);
   const need = toStake + (applying ? bond : 0n);
   if (balance < need) {
+    if (network.buyStake) throw new Error(shortOfStake(network, w, balance, need, await chain.now()));
     const [faucet, now] = await Promise.all([chain.faucet(), chain.now()]);
     const closed = (opensAt: bigint) => {
       const withdraw = now >= w.unlocksAt ? "run withdraw now" : `run withdraw after ${when(w.unlocksAt)}`;
@@ -187,7 +189,7 @@ async function join(chain: Chain, network: Network, values: Map<string, string>)
   const profile = Buffer.from(JSON.stringify({ name, about })).toString("base64");
   await chain.apply(`data:application/json;base64,${profile}`);
   console.log(
-    "\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a 2-hour timelock passes.\n" +
+    `\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
       `Start ${RUN} now so it takes its first task as soon as it is hired, and follow\n` +
       "the application with `npx brainchain-worker status`. New workers are offered house tasks first, which BrainChain pays for.",
   );
@@ -203,7 +205,7 @@ async function status(chain: Chain, network: Network): Promise<void> {
     chain.stakeBalance(),
     chain.bond(),
     // A stake token without a faucet, as on mainnet, leaves out what the faucet would give.
-    chain.faucet().catch(() => undefined),
+    network.buyStake ? undefined : chain.faucet().catch(() => undefined),
     chain.now(),
   ]);
   const { w, min } = s;
@@ -309,6 +311,9 @@ async function main(argv: string[]): Promise<void> {
   }
   const { positional, values, switches } = parse(command, rest);
   const network = resolveNetwork(process.env);
+  if (command === "claim") {
+    return claim(network, (income) => createIncome(network.proofs, income, signer().account), { dry: switches.has("dry"), log: console.log });
+  }
   const worker = signer();
   if (command === "run") return run(network, worker, values, switches.has("once"));
   const chain = createChain(network, worker.account);
@@ -318,7 +323,7 @@ async function main(argv: string[]): Promise<void> {
     case "status":
       return status(chain, network);
     case "price": {
-      if (positional[0] === undefined) throw new UsageError("Usage: brainchain-worker price <tUSDG>, such as price 0.25");
+      if (positional[0] === undefined) throw new UsageError(`Usage: brainchain-worker price <${network.bountySymbol}>, such as price 0.25`);
       const asking = price(positional[0]);
       if (!(await chain.stake()).registered) throw new Error("This worker has not staked yet. Run join, which sets the price too.");
       await needGas(chain, network);

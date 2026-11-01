@@ -70,3 +70,10 @@ export function wallet(
     s.w.unstaking > 0n ? `, and the ${stake(network, s.w.unstaking)} unstaking can be withdrawn ${now >= s.w.unlocksAt ? "now" : `after ${when(s.w.unlocksAt)}`}` : "";
   return `${has}; join needs ${stake(network, need)}${reopens}${unstaking}`;
 }
+
+/** What join says when the wallet holds too little of a stake token that has no faucet. */
+export function shortOfStake(network: Network, w: Snapshot["w"], balance: bigint, need: bigint, now: bigint): string {
+  const withdraw = now >= w.unlocksAt ? "now" : `after ${when(w.unlocksAt)}`;
+  const unstaking = w.unstaking > 0n ? ` Or run withdraw ${withdraw} and join with the ${stake(network, w.unstaking)} it returns.` : "";
+  return `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs. ${network.buyStake}${unstaking}`;
+}
