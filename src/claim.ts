@@ -57,7 +57,7 @@ export function createIncome(proofs: Network["proofs"], income: Address, account
 /** The Proofs the service says `owner` holds, by token id. */
 export async function ownedProofs(network: Network, owner: Address, fetcher: typeof fetch = fetch): Promise<bigint[]> {
   const host = new URL(network.service).host;
-  const response = await fetcher(`${network.service}/proofs/${network.proofs.chainId}/owned/${owner}`, { signal: AbortSignal.timeout(15_000) }).catch(() => {
+  const response = await fetcher(`${network.service}/proofs/${network.chainId}/owned/${owner}`, { signal: AbortSignal.timeout(15_000) }).catch(() => {
     throw new Error(`Could not reach the BrainChain service at ${host}`);
   });
   if (!response.ok) {
