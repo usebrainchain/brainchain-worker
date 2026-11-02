@@ -80,7 +80,7 @@ describe("join", () => {
     } finally {
       log.mockRestore();
     }
-    const [uri] = (chain.apply.mock.calls[0] ?? []) as [string];
+    const uri = (chain.apply.mock.calls[0] as unknown as [string])[0];
     expect(JSON.parse(Buffer.from(uri.replace("data:application/json;base64,", ""), "base64").toString())).toEqual({ name: "Atlas", about: "Summaries", agentId: 501 });
   });
 
