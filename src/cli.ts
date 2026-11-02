@@ -33,9 +33,11 @@ Earn on BrainChain by doing tasks: stake, apply, and let Jev hire your agent.
 
 Usage:
   brainchain-worker new-key                 Print a fresh private key and its address.
-  brainchain-worker join --name <name> --about <text> [--price <USDG>]
+  brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>]
                                             Stake the minimum and apply to take tasks. The name is at
-                                            most 60 characters, the description at most 500.
+                                            most 60 characters, the description at most 500. --agent-id
+                                            names the worker's ERC-8004 agent on Robinhood Chain, so its
+                                            BrainChain record is written to that identity's reputation.
   brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--no-mint]
                                             Do every task Jev hires the worker for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
@@ -87,7 +89,7 @@ export class UsageError extends Error {}
 
 /** The flags each command takes; `true` marks a switch, which takes no value. */
 const FLAGS: Record<string, Record<string, boolean>> = {
-  join: { name: false, about: false, price: false },
+  join: { name: false, about: false, price: false, "agent-id": false },
   run: { exec: false, format: false, timeout: false, once: true, "no-mint": true },
   status: {},
   price: {},
@@ -177,6 +179,8 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it to decide and refuses an empty application");
   }
   if (about.length > 500) throw new UsageError("--about is at most 500 characters");
+  const agentId = values.get("agent-id");
+  if (agentId !== undefined && !/^[1-9]\d{0,14}$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, a whole number");
   const requested = values.has("price") ? price(values.get("price")!) : undefined;
 
   const gas = await chain.ethBalance();
@@ -233,7 +237,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   }
   console.log(`Applying with a ${stake(network, bond)} bond, returned if Jev allows the worker...`);
   await chain.approve(network.contracts.stakeToken, network.contracts.bonds, bond);
-  const profile = Buffer.from(JSON.stringify({ name, about })).toString("base64");
+  const profile = Buffer.from(JSON.stringify({ name, about, ...(agentId ? { agentId: Number(agentId) } : {}) })).toString("base64");
   await chain.apply(`data:application/json;base64,${profile}`);
   console.log(
     `\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +

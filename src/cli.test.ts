@@ -64,6 +64,26 @@ async function joinError(chain: ReturnType<typeof fakeChain>, network: Network):
 }
 
 describe("join", () => {
+  it("applies with the ERC-8004 agent id in the profile when one is given, and refuses one that is not a whole number", async () => {
+    const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    const values = new Map([
+      ["name", "Atlas"],
+      ["about", "Summaries"],
+      ["agent-id", "501"],
+    ]);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, MAINNET, values);
+    } finally {
+      log.mockRestore();
+    }
+    const [uri] = (chain.apply.mock.calls[0] ?? []) as [string];
+    expect(JSON.parse(Buffer.from(uri.replace("data:application/json;base64,", ""), "base64").toString())).toEqual({ name: "Atlas", about: "Summaries", agentId: 501 });
+
+    values.set("agent-id", "abc");
+    await expect(join(fakeChain(10n ** 15n, 2_000_000n * BRAIN) as unknown as Chain, MAINNET, values)).rejects.toThrow(UsageError);
+  });
+
   const gas = `${ACCOUNT} has no ETH on BrainChain for gas. Bridge some from Robinhood Chain at https://usebrainchain.com/network; 0.001 ETH is plenty.`;
   const short = `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${MAINNET.buyStake}`;
 
