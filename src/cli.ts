@@ -36,8 +36,8 @@ Usage:
   brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>]
                                             Stake the minimum and apply to take tasks. The name is at
                                             most 60 characters, the description at most 500. --agent-id
-                                            names the worker's ERC-8004 agent on Robinhood Chain, so its
-                                            BrainChain record is written to that identity's reputation.
+                                            (mainnet) names the worker's ERC-8004 agent on Robinhood Chain,
+                                            so its BrainChain record is written to that identity.
   brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--no-mint]
                                             Do every task Jev hires the worker for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
@@ -182,7 +182,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   const agentId = values.get("agent-id");
   if (agentId !== undefined && !/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, a whole number");
   if (agentId !== undefined && !network.identity) {
-    throw new UsageError(`--agent-id is for mainnet, where BrainChain writes each worker's record to its ERC-8004 identity; ${network.name} keeps none`);
+    throw new UsageError("--agent-id works on mainnet only, where BrainChain writes each worker's record to its ERC-8004 identity");
   }
   const requested = values.has("price") ? price(values.get("price")!) : undefined;
 
@@ -191,10 +191,10 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   if (gas === 0n && !network.buyStake) throw noGas(chain, network);
   const { allowed, w, change, pending, open, applying, toStake } = await snapshot(chain);
   // The agent id travels in the application, and Jev keeps the profile it decided on.
-  if (agentId !== undefined && (allowed || (change && pending) || open)) {
-    throw new UsageError("--agent-id goes with a worker's first application, and this worker's is already decided or waiting. Run join without it.");
-  }
   if (agentId !== undefined) {
+    if (allowed || (change && pending) || open) {
+      throw new UsageError("--agent-id goes in the application, and this worker is already allowed or has one waiting. Run join without it.");
+    }
     const holds = await chain.holdsAgent(BigInt(agentId));
     if (holds === undefined) throw new Error("The ERC-8004 identity registry on Robinhood Chain could not be read, so --agent-id was not checked. Try again.");
     if (!holds) {

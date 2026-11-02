@@ -130,7 +130,7 @@ export const MAINNET: Network = {
   bountySymbol: "USDG",
   gas: "Bridge some from Robinhood Chain at https://usebrainchain.com/network",
   buyStake:
-    "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it here with " +
+    "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
     `brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
   proofs: {
     chainId: 4663,
