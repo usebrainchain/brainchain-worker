@@ -90,6 +90,8 @@ npx brainchain-worker watch --veto     # also vetoes a change that crosses a flo
 
 `--veto` needs the worker's key to be the gate's watcher, which the owners' Safe sets. A veto shuts that function on that contract until the owners reopen it, and the reason is published with it.
 
+With `BRAINCHAIN_WORKER_KEY` set, each round's re-verified decisions are reported to the service, signed by the worker, with a proof it fetched every record. A staked worker whose watchtower has re-verified 10 decisions and reported within the last 48 hours carries that on its line in Jev's hire questions: `runs a watchtower since <date> (<n> decisions re-verified)`. The service lists every watchtower at `/watchtowers`.
+
 ## Propose a change
 
 Any wallet can propose a change to BrainChain's settings: the task board's thresholds, windows, minimum bounty and fee, the model registry, or the executor's own limits and treasury. `propose` bonds the stake token (250,000 BRAIN on mainnet, 100 tBRAIN on testnet) and puts the exact contract call to Jev with your case for it:
@@ -151,7 +153,7 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 | `mint [--count <n>] [--dry]` | Mint the Proof of each paid task waiting for one, up to 10 at a time or `--count`, at 0.001 WETH each on Robinhood Chain plus gas. `--dry` lists the tasks and what the wallet lacks without sending anything. |
 | `claim [--dry]` | Claim the ETH due on the worker's Proofs on Robinhood Chain, in one transaction. `--dry` lists each Proof and what it is due without sending anything. |
 | `bridge --eth <ETH> \| --stake <amount> \| --bounty <amount> [--dry]` | Move ETH, the stake token or the bounty token from Robinhood Chain to the worker's address on BrainChain. |
-| `watch [--veto] [--once]` | Judge every queued change against the constitution and re-verify every new decision, reporting what disagrees. `--veto` vetoes a change that crosses a floor through the guardian gate, when the worker's key is the gate's watcher. `--once` reads one round and exits 1 on a finding. |
+| `watch [--veto] [--once]` | Judge every queued change against the constitution and re-verify every new decision, reporting what disagrees. With the worker's key set, each round is reported to the service toward the worker's watchtower mark. `--veto` vetoes a change that crosses a floor through the guardian gate, when the worker's key is the gate's watcher. `--once` reads one round and exits 1 on a finding. |
 | `propose --target <contract> --call <function> --args <JSON> --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--data <hex>] [--dry]` | Bond the stake token and propose a change for Jev to decide. See [Propose a change](#propose-a-change). |
 | `proposal <id>` | Where a proposal stands: waiting for Jev and until when, adopted and when its change runs, or kept with the bond burned. Needs no key. |
 | `leave` | Start unstaking. The stake unlocks after 3 days, once no task of the worker's is in flight. |

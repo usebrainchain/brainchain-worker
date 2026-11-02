@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { concat, createPublicClient, createWalletClient, keccak256, parseAbi, toBytes, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { brainchainTransport, executorAbi, reason } from "./chain.js";
 import { chainOf, type Network } from "./network.js";
@@ -123,8 +123,53 @@ export function createWatchChain(network: Network, account: PrivateKeyAccount): 
   };
 }
 
-/** Re-checks one decision against the chain and the published record; the findings are what disagreed. */
-export type Verify = (id: bigint) => Promise<{ findings: string[] }>;
+/**
+ * Re-checks one decision against the chain and the published record; the
+ * findings are what disagreed. A decision that verified comes with the record's
+ * bytes as served, when the worker reports its rounds.
+ */
+export type Verify = (id: bigint) => Promise<{ findings: string[]; record?: Uint8Array }>;
+
+/** The service's prefix on a report; the worker signs the prefix and the report's JSON text. */
+export const REPORT_PREFIX = "BrainChain watchtower report\n";
+/** A report lists at most this many decisions checked. */
+export const MAX_CHECKED = 200;
+
+/** The proof a record was fetched: the hash of its bytes followed by the worker's address, which nothing on chain gives away. */
+export const fetchProof = (bytes: Uint8Array, worker: Address): Hex => keccak256(concat([bytes, toBytes(worker)]));
+
+export type Report = (checked: { id: bigint; proof: Hex }[], findings: { id: bigint; checks: string[] }[]) => Promise<string>;
+
+/**
+ * Sends a round's re-verified decisions to the service, signed by the worker,
+ * so a staked worker's watchtower counts toward its mark in hire questions.
+ * Resolves to the line to log.
+ */
+export function createReporter(network: Network, account: PrivateKeyAccount, fetcher: typeof fetch = fetch): Report {
+  return async (checked, findings) => {
+    const report = {
+      worker: account.address,
+      chainId: network.chainId,
+      log: network.contracts.log,
+      at: Math.floor(Date.now() / 1000),
+      checked: checked.slice(0, MAX_CHECKED).map((c) => ({ id: Number(c.id), proof: c.proof })),
+      findings: findings.slice(0, 50).map((f) => ({ id: Number(f.id), checks: f.checks.slice(0, 20).map((c) => c.slice(0, 400)) })),
+    };
+    const text = JSON.stringify(report);
+    const signature = await account.signMessage({ message: `${REPORT_PREFIX}${text}` });
+    const response = await fetcher(`${network.service}/watchtowers/reports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ report: text, signature }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const body = (await response.json().catch(() => ({}))) as { error?: string; checked?: number; mark?: { since: string } | null; markAfter?: number };
+    if (!response.ok) throw new Error(body.error ?? `${response.status} from ${network.service}`);
+    return body.mark
+      ? `reported to ${network.name}: ${body.checked} decisions re-verified in all, watchtower mark since ${body.mark.since}`
+      : `reported to ${network.name}: ${body.checked} of the ${body.markAfter} re-verified decisions that earn the watchtower mark`;
+  };
+}
 
 /**
  * Watches the chain for the worker: every queued change is judged against the
@@ -136,6 +181,8 @@ export function createWatch(options: {
   network: Network;
   chain: WatchChain;
   verify?: Verify;
+  /** Sends each round's re-verified decisions and findings to the service, signed; absent when the worker has no key. */
+  report?: Report;
   veto: boolean;
   log: (line: string) => void;
   /** Where the first round starts reading; later rounds continue from the last block seen. */
@@ -195,12 +242,17 @@ export function createWatch(options: {
       log(`${count} decisions recorded so far; new ones are checked from here`);
       return;
     }
+    const checked: { id: bigint; proof: Hex }[] = [];
+    const found: { id: bigint; checks: string[] }[] = [];
     for (let id = seenDecision + 1n; id <= count; id++) {
       try {
-        const { findings: wrong } = await verify(id);
-        if (wrong.length === 0) log(`decision ${id} verified`);
-        else {
+        const { findings: wrong, record } = await verify(id);
+        if (wrong.length === 0) {
+          log(`decision ${id} verified`);
+          if (record) checked.push({ id, proof: fetchProof(record, chain.account) });
+        } else {
           findings += 1;
+          found.push({ id, checks: wrong });
           log(`decision ${id} does not verify: ${wrong.join("; ")}`);
         }
       } catch (error) {
@@ -208,6 +260,12 @@ export function createWatch(options: {
       }
     }
     seenDecision = count;
+    if (!options.report || (checked.length === 0 && found.length === 0)) return;
+    try {
+      log(await options.report(checked, found));
+    } catch (error) {
+      log(`report not taken: ${reason(error)}`);
+    }
   }
 
   return {
