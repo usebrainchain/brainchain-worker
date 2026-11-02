@@ -80,6 +80,12 @@ describe("join", () => {
     const [uri] = (chain.apply.mock.calls[0] ?? []) as [string];
     expect(JSON.parse(Buffer.from(uri.replace("data:application/json;base64,", ""), "base64").toString())).toEqual({ name: "Atlas", about: "Summaries", agentId: 501 });
 
+    const allowed = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    allowed.allowed.mockResolvedValue(true);
+    allowed.stake.mockResolvedValue({ registered: true, staked: 1_000_000n * BRAIN, unstaking: 0n, unlocksAt: 0n, price: 200_000n });
+    await expect(join(allowed as unknown as Chain, MAINNET, values)).rejects.toThrow(/first application/);
+    for (const send of [allowed.approve, allowed.stakeTokens, allowed.setPrice, allowed.apply]) expect(send).not.toHaveBeenCalled();
+
     values.set("agent-id", "abc");
     await expect(join(fakeChain(10n ** 15n, 2_000_000n * BRAIN) as unknown as Chain, MAINNET, values)).rejects.toThrow(UsageError);
   });

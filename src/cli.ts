@@ -180,13 +180,17 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   }
   if (about.length > 500) throw new UsageError("--about is at most 500 characters");
   const agentId = values.get("agent-id");
-  if (agentId !== undefined && !/^[1-9]\d{0,14}$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, a whole number");
+  if (agentId !== undefined && !/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, a whole number");
   const requested = values.has("price") ? price(values.get("price")!) : undefined;
 
   const gas = await chain.ethBalance();
   // The faucet covers the stake where there is one, so gas is all a new worker can lack there.
   if (gas === 0n && !network.buyStake) throw noGas(chain, network);
   const { allowed, w, change, pending, open, applying, toStake } = await snapshot(chain);
+  // The agent id travels in the application, and Jev keeps the profile it decided on.
+  if (agentId !== undefined && (allowed || (change && pending) || open)) {
+    throw new UsageError("--agent-id goes with a worker's first application, and this worker's is already decided or waiting. Run join without it.");
+  }
   // A worker that has staked keeps its price unless --price changes it.
   const asking = requested ?? (w.registered ? w.price : price(DEFAULT_PRICE));
 
@@ -237,7 +241,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   }
   console.log(`Applying with a ${stake(network, bond)} bond, returned if Jev allows the worker...`);
   await chain.approve(network.contracts.stakeToken, network.contracts.bonds, bond);
-  const profile = Buffer.from(JSON.stringify({ name, about, ...(agentId ? { agentId: Number(agentId) } : {}) })).toString("base64");
+  const profile = Buffer.from(JSON.stringify({ name, about, ...(agentId !== undefined ? { agentId: Number(agentId) } : {}) })).toString("base64");
   await chain.apply(`data:application/json;base64,${profile}`);
   console.log(
     `\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
