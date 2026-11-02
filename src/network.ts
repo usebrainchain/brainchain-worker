@@ -45,6 +45,10 @@ export interface Network {
     registry: Address;
     stakeToken: Address;
     bountyToken: Address;
+    /** The decision log, which `watch` re-verifies decisions from. */
+    log: Address;
+    /** The guardian gate a watcher vetoes through, on sets that have one. */
+    gate?: Address;
   };
   /** The parent chain and its bridge contracts, where `bridge` moves funds in from. */
   bridge?: {
@@ -96,6 +100,8 @@ export const TESTNET: Network = {
     bonds: "0x34279448dc42b84B479daeF092749020017F001B",
     executor: "0xFFf56B7B194C190152b17C086c36A2a79f050397",
     registry: "0xcE777c32824fd5963a9C31C70e9B1c5D9C4ED16e",
+    log: "0xD7FC002E9FB9ba1D9119cF895936FA720545f6B8",
+    gate: "0x27c519399e178F1Ba5E453F6075b0bb9Ef4d1d5E",
     stakeToken: "0xc717546497343911750768335b649b86d0a6eCcf",
     bountyToken: "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
   },
@@ -150,6 +156,7 @@ export const MAINNET: Network = {
     bonds: MAINNET_PROPOSAL_BONDS,
     executor: MAINNET_DECISION_EXECUTOR,
     registry: "0x65B71706bE8a92dda39dDfdb6ABA8CEA64A33865",
+    log: "0x5FfED27750E5Ca990aB60751Fc4B25E39358FcD7",
     stakeToken: BRAIN,
     bountyToken: "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
   },
