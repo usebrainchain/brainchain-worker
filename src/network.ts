@@ -48,14 +48,14 @@ export interface Network {
   };
 }
 
-/** BrainChain testnet, release 3.1.0. */
+/** BrainChain testnet, release 3.4.0. */
 export const TESTNET: Network = {
   id: "testnet",
   name: "BrainChain testnet",
   chainId: 274630,
   rpc: "https://rpc.testnet.usebrainchain.com",
   service: "https://brain.testnet.usebrainchain.com",
-  fromBlock: 898n,
+  fromBlock: 1793n,
   explorer: "https://usebrainchain.com/testnet",
   stakeSymbol: "tBRAIN",
   bountySymbol: "tUSDG",
@@ -71,11 +71,11 @@ export const TESTNET: Network = {
     gas: "Get Robinhood Chain testnet ETH for gas at https://faucet.testnet.chain.robinhood.com",
   },
   contracts: {
-    taskBoard: "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6",
-    staking: "0xbdC08799D865DA79FE44a469de1FeaE84bb45059",
-    bonds: "0x574060D1A7CA8f3786d2D14fe1A782cc4638CB1e",
-    executor: "0x420484B139001ED5B1DA330e689Cc2f4814001Fb",
-    registry: "0x297AA5fb95Ef9785Da6DC0cA00121060606e2C63",
+    taskBoard: "0x0beA77333E26a257983fCc59B8D857730b5B1D2B",
+    staking: "0x09468dE253517bD5d91b92115cce45798F300Cf0",
+    bonds: "0x34279448dc42b84B479daeF092749020017F001B",
+    executor: "0xFFf56B7B194C190152b17C086c36A2a79f050397",
+    registry: "0xcE777c32824fd5963a9C31C70e9B1c5D9C4ED16e",
     stakeToken: "0xc717546497343911750768335b649b86d0a6eCcf",
     bountyToken: "0xC4ec72794bF3Ce9ba1DE4B38085464c2eb0cDCf2",
   },
