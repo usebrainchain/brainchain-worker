@@ -13,8 +13,17 @@ import { chainOf, resolveNetwork, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
 import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore } from "./state.js";
-import { createWatch, createWatchChain, type Verify } from "./watch.js";
+import { createReporter, createWatch, createWatchChain, type Verify } from "./watch.js";
 import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
+
+/** A published record's bytes as the service serves them, capped at a megabyte. */
+async function fetchRecord(uri: string): Promise<Uint8Array> {
+  const response = await fetch(uri, { signal: AbortSignal.timeout(20_000) });
+  if (!response.ok) throw new Error(`${response.status} from ${uri}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.byteLength > 1_000_000) throw new Error(`the record at ${uri} is ${bytes.byteLength} bytes`);
+  return bytes;
+}
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
@@ -51,10 +60,11 @@ Usage:
   brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.
   brainchain-worker watch [--veto] [--once]
                                             Watch the chain: judge every queued change against the constitution
-                                            and re-verify every new decision, reporting what disagrees. --veto
-                                            vetoes a change that crosses a floor through the guardian gate, when
-                                            the worker's key is the gate's watcher. --once reads one round and
-                                            exits 1 on a finding.
+                                            and re-verify every new decision, reporting what disagrees. With the
+                                            worker's key set, each round is reported to the service toward the
+                                            worker's watchtower mark. --veto vetoes a change that crosses a floor
+                                            through the guardian gate, when the worker's key is the gate's
+                                            watcher. --once reads one round and exits 1 on a finding.
   brainchain-worker leave                   Start unstaking (3-day cooldown).
   brainchain-worker withdraw                Withdraw stake once the cooldown has passed.
   brainchain-worker --version               Print the version.
@@ -380,8 +390,9 @@ export async function main(argv: string[]): Promise<void> {
   if (command === "watch") {
     const veto = switches.has("veto");
     const once = switches.has("once");
-    // Judging changes needs no key; vetoing does. A reader stands in for the signer otherwise.
-    const account = veto || process.env.BRAINCHAIN_WORKER_KEY?.trim() ? signer().account : privateKeyToAccount(generatePrivateKey());
+    // Judging changes needs no key; vetoing and reporting do. A reader stands in for the signer otherwise.
+    const keyed = veto || Boolean(process.env.BRAINCHAIN_WORKER_KEY?.trim());
+    const account = keyed ? signer().account : privateKeyToAccount(generatePrivateKey());
     const client = createPublicClient({ chain: chainOf(network), transport: brainchainTransport(network) });
     const { taskBoard, executor, log } = network.contracts;
     const verify: Verify = async (id) => {
@@ -394,11 +405,21 @@ export async function main(argv: string[]): Promise<void> {
         },
         id,
       );
-      return { findings: report.checks.filter((c) => c.status === "fail" || c.status === "error").map((c) => `${c.name}: ${c.message}`) };
+      const findings = report.checks.filter((c) => c.status === "fail" || c.status === "error").map((c) => `${c.name}: ${c.message}`);
+      // A verified decision is reported with the record it was checked against, fetched again as the service serves it.
+      const record = findings.length === 0 && keyed && report.payloadURI ? await fetchRecord(report.payloadURI).catch(() => undefined) : undefined;
+      return { findings, ...(record ? { record } : {}) };
     };
-    const watch = createWatch({ network, chain: createWatchChain(network, account), verify, veto, log: console.log });
+    const watch = createWatch({
+      network,
+      chain: createWatchChain(network, account),
+      verify,
+      ...(keyed ? { report: createReporter(network, account) } : {}),
+      veto,
+      log: console.log,
+    });
     if (veto && !network.contracts.gate) throw new UsageError(`${network.name} has no guardian gate yet, so there is nothing to veto through`);
-    console.log(`watching ${network.name} as ${account.address}${veto ? ", vetoing through the guardian gate" : ""}`);
+    console.log(`watching ${network.name} as ${account.address}${veto ? ", vetoing through the guardian gate" : ""}${keyed ? ", reporting rounds to the service" : ""}`);
     if (once) {
       const { findings } = await watch.round();
       if (findings > 0) process.exitCode = 1;

@@ -1,8 +1,9 @@
-import { encodeFunctionData, parseAbi, type Address, type Hex } from "viem";
+import { encodeFunctionData, parseAbi, verifyMessage, type Address, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
 import { TESTNET } from "./network.js";
-import { argumentsOf, createWatch, judge, type QueuedChange, type WatchChain } from "./watch.js";
+import { argumentsOf, createReporter, createWatch, fetchProof, judge, REPORT_PREFIX, type QueuedChange, type Report, type WatchChain } from "./watch.js";
 
 const TX: Hex = `0x${"ab".repeat(32)}`;
 const BOARD: Address = TESTNET.contracts.taskBoard;
@@ -104,5 +105,73 @@ describe("watch", () => {
     expect(await watch.round()).toEqual({ findings: 1 });
     expect(verify.mock.calls.map((c) => c[0])).toEqual([4n, 5n]);
     expect(lines.slice(1)).toEqual(["decision 4 verified", "decision 5 does not verify: record hash: does not match payloadHash"]);
+  });
+});
+
+describe("reporting rounds", () => {
+  const worker = privateKeyToAccount(`0x${"7".repeat(64)}`);
+  const record = new TextEncoder().encode('{"kind":"hire"}');
+
+  it("sends a signed report of the decisions re-verified and the findings, and logs the service's answer", async () => {
+    const calls: { url: string; body: { report: string; signature: Hex } }[] = [];
+    const fetcher = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) as { report: string; signature: Hex } });
+      return new Response(JSON.stringify({ checked: 3, mark: null, markAfter: 10 }), { status: 200 });
+    }) as typeof fetch;
+    const report = createReporter(TESTNET, worker, fetcher);
+    const line = await report([{ id: 4n, proof: fetchProof(record, worker.address) }], [{ id: 5n, checks: ["record-hash: differs"] }]);
+    expect(line).toBe("reported to BrainChain testnet: 3 of the 10 re-verified decisions that earn the watchtower mark");
+    expect(calls[0]!.url).toBe(`${TESTNET.service}/watchtowers/reports`);
+    const sent = JSON.parse(calls[0]!.body.report) as { worker: string; chainId: number; log: string; checked: unknown[]; findings: unknown[] };
+    expect(sent).toMatchObject({ worker: worker.address, chainId: TESTNET.chainId, log: TESTNET.contracts.log, findings: [{ id: 5, checks: ["record-hash: differs"] }] });
+    expect(sent.checked).toEqual([{ id: 4, proof: fetchProof(record, worker.address) }]);
+    expect(await verifyMessage({ address: worker.address, message: `${REPORT_PREFIX}${calls[0]!.body.report}`, signature: calls[0]!.body.signature })).toBe(true);
+  });
+
+  it("names the mark once the service grants it, and the refusal when it does not take the report", async () => {
+    const granted = createReporter(TESTNET, worker, (async () => new Response(JSON.stringify({ checked: 12, mark: { since: "2026-11-02", checked: 12 } }), { status: 200 })) as typeof fetch);
+    expect(await granted([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).toBe("reported to BrainChain testnet: 12 decisions re-verified in all, watchtower mark since 2026-11-02");
+    const refused = createReporter(TESTNET, worker, (async () => new Response(JSON.stringify({ error: "The proof for decision 1 does not match its record." }), { status: 400 })) as typeof fetch);
+    await expect(refused([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).rejects.toThrow("The proof for decision 1 does not match its record.");
+  });
+
+  it("reports after a round that re-verified decisions, with the proof bound to the worker, and goes on when the service refuses", async () => {
+    const { chain } = fakeChain({ decisions: [2n, 4n, 5n] });
+    const lines: string[] = [];
+    const reports: Parameters<Report>[] = [];
+    let refuse = false;
+    const watch = createWatch({
+      network: TESTNET,
+      chain,
+      veto: false,
+      log: (line) => lines.push(line),
+      verify: async (id) => (id === 4n ? { findings: ["record-hash: differs"] } : { findings: [], record }),
+      report: async (checked, findings) => {
+        reports.push([checked, findings]);
+        if (refuse) throw new Error("The report was signed too long ago.");
+        return "reported";
+      },
+    });
+    await watch.round();
+    expect(reports).toEqual([]);
+    await watch.round();
+    expect(reports).toEqual([[[{ id: 3n, proof: fetchProof(record, chain.account) }], [{ id: 4n, checks: ["record-hash: differs"] }]]]);
+    expect(lines.at(-1)).toBe("reported");
+    refuse = true;
+    await watch.round();
+    expect(reports).toHaveLength(2);
+    expect(lines.at(-1)).toBe("report not taken: The report was signed too long ago.");
+  });
+
+  it("sends nothing without a reporter or when a round re-verified nothing", async () => {
+    const { chain } = fakeChain({ decisions: [2n, 2n, 3n] });
+    const reports: unknown[] = [];
+    const watch = createWatch({ network: TESTNET, chain, veto: false, log: () => {}, verify: async () => ({ findings: [] }), report: async (...args) => (reports.push(args), "reported") });
+    await watch.round();
+    await watch.round();
+    expect(reports).toEqual([]);
+    // Verified without a record (the refetch failed): nothing to prove, so nothing is sent.
+    await watch.round();
+    expect(reports).toEqual([]);
   });
 });
