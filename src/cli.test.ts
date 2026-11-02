@@ -46,6 +46,7 @@ function fakeChain(gas: bigint, balance: bigint) {
     stakeTokens: send(),
     setPrice: send(),
     apply: send(),
+    holdsAgent: vi.fn(async () => true as boolean | undefined),
   };
 }
 
@@ -64,6 +65,38 @@ async function joinError(chain: ReturnType<typeof fakeChain>, network: Network):
 }
 
 describe("join", () => {
+  const withId = (id: string) =>
+    new Map([
+      ["name", "Atlas"],
+      ["about", "Summaries"],
+      ["agent-id", id],
+    ]);
+
+  it("applies with the ERC-8004 agent id in the profile", async () => {
+    const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, MAINNET, withId("501"));
+    } finally {
+      log.mockRestore();
+    }
+    const uri = (chain.apply.mock.calls[0] as unknown as [string])[0];
+    expect(JSON.parse(Buffer.from(uri.replace("data:application/json;base64,", ""), "base64").toString())).toEqual({ name: "Atlas", about: "Summaries", agentId: 501 });
+  });
+
+  it("refuses an agent id before any transaction: past the application, not held by the wallet, on testnet, or not a whole number", async () => {
+    const allowed = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    allowed.allowed.mockResolvedValue(true);
+    allowed.stake.mockResolvedValue({ registered: true, staked: 1_000_000n * BRAIN, unstaking: 0n, unlocksAt: 0n, price: 200_000n });
+    await expect(join(allowed as unknown as Chain, MAINNET, withId("501"))).rejects.toThrow(/already allowed or has one waiting/);
+    const stranger = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    stranger.holdsAgent.mockResolvedValue(false);
+    await expect(join(stranger as unknown as Chain, MAINNET, withId("502"))).rejects.toThrow(/neither owns ERC-8004 agent 502/);
+    await expect(join(fakeChain(10n ** 15n, 2_000_000n * BRAIN) as unknown as Chain, TESTNET, withId("502"))).rejects.toThrow(/mainnet only/);
+    await expect(join(fakeChain(10n ** 15n, 2_000_000n * BRAIN) as unknown as Chain, MAINNET, withId("abc"))).rejects.toThrow(UsageError);
+    for (const chain of [allowed, stranger]) for (const send of [chain.approve, chain.stakeTokens, chain.setPrice, chain.apply]) expect(send).not.toHaveBeenCalled();
+  });
+
   const gas = `${ACCOUNT} has no ETH on BrainChain for gas. Bridge some from Robinhood Chain at https://usebrainchain.com/network; 0.001 ETH is plenty.`;
   const short = `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${MAINNET.buyStake}`;
 

@@ -50,6 +50,8 @@ export interface Network {
     /** The guardian gate a watcher vetoes through, on sets that have one. */
     gate?: Address;
   };
+  /** The ERC-8004 identity registry on the parent chain, where `join --agent-id` checks the wallet holds the agent; mainnet only. */
+  identity?: Address;
   /** The parent chain and its bridge contracts, where `bridge` moves funds in from. */
   bridge?: {
     chainId: number;
@@ -128,9 +130,8 @@ export const MAINNET: Network = {
   bountySymbol: "USDG",
   gas: "Bridge some from Robinhood Chain at https://usebrainchain.com/network",
   buyStake:
-    "Buy BRAIN on ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and bridge it to BrainChain through the " +
-    "Robinhood Chain gateway router 0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96 (docs: https://docs.usebrainchain.com/bridging); " +
-    `the stake token on BrainChain is ${BRAIN}.`,
+    "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
+    `brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
   proofs: {
     chainId: 4663,
     name: "Robinhood Chain",
@@ -141,6 +142,7 @@ export const MAINNET: Network = {
     gas: "Send it a little ETH there for gas",
     income: "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
   },
+  identity: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
   bridge: {
     chainId: 4663,
     name: "Robinhood Chain",

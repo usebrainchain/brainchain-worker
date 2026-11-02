@@ -5,9 +5,8 @@ import { hireable, shortOfStake, stake, wallet, type Snapshot } from "./standing
 
 const BRAIN = 10n ** 18n;
 const buy =
-  "Buy BRAIN on ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and bridge it to BrainChain through the " +
-  "Robinhood Chain gateway router 0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96 (docs: https://docs.usebrainchain.com/bridging); " +
-  "the stake token on BrainChain is 0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37.";
+  "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
+  "brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is 0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37.";
 
 function standing(overrides: { staked?: bigint; unstaking?: bigint; unlocksAt?: bigint } = {}): Snapshot {
   const w = { registered: true, staked: 0n, unstaking: 0n, unlocksAt: 0n, price: 200_000n, ...overrides };
