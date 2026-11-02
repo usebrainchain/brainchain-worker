@@ -181,6 +181,9 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   if (about.length > 500) throw new UsageError("--about is at most 500 characters");
   const agentId = values.get("agent-id");
   if (agentId !== undefined && !/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, a whole number");
+  if (agentId !== undefined && !network.identity) {
+    throw new UsageError(`--agent-id is for mainnet, where BrainChain writes each worker's record to its ERC-8004 identity; ${network.name} keeps none`);
+  }
   const requested = values.has("price") ? price(values.get("price")!) : undefined;
 
   const gas = await chain.ethBalance();
@@ -190,6 +193,13 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   // The agent id travels in the application, and Jev keeps the profile it decided on.
   if (agentId !== undefined && (allowed || (change && pending) || open)) {
     throw new UsageError("--agent-id goes with a worker's first application, and this worker's is already decided or waiting. Run join without it.");
+  }
+  if (agentId !== undefined) {
+    const holds = await chain.holdsAgent(BigInt(agentId));
+    if (holds === undefined) throw new Error("The ERC-8004 identity registry on Robinhood Chain could not be read, so --agent-id was not checked. Try again.");
+    if (!holds) {
+      throw new UsageError(`${chain.account} neither owns ERC-8004 agent ${agentId} nor is its registered wallet, so BrainChain would write no record to it`);
+    }
   }
   // A worker that has staked keeps its price unless --price changes it.
   const asking = requested ?? (w.registered ? w.price : price(DEFAULT_PRICE));

@@ -46,6 +46,7 @@ function fakeChain(gas: bigint, balance: bigint) {
     stakeTokens: send(),
     setPrice: send(),
     apply: send(),
+    holdsAgent: vi.fn(async () => true as boolean | undefined),
   };
 }
 
@@ -85,6 +86,13 @@ describe("join", () => {
     allowed.stake.mockResolvedValue({ registered: true, staked: 1_000_000n * BRAIN, unstaking: 0n, unlocksAt: 0n, price: 200_000n });
     await expect(join(allowed as unknown as Chain, MAINNET, values)).rejects.toThrow(/first application/);
     for (const send of [allowed.approve, allowed.stakeTokens, allowed.setPrice, allowed.apply]) expect(send).not.toHaveBeenCalled();
+
+    const stranger = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    stranger.holdsAgent.mockResolvedValue(false);
+    values.set("agent-id", "502");
+    await expect(join(stranger as unknown as Chain, MAINNET, values)).rejects.toThrow(/neither owns ERC-8004 agent 502/);
+    await expect(join(fakeChain(10n ** 15n, 2_000_000n * BRAIN) as unknown as Chain, TESTNET, values)).rejects.toThrow(/for mainnet/);
+    for (const send of [stranger.approve, stranger.stakeTokens, stranger.apply]) expect(send).not.toHaveBeenCalled();
 
     values.set("agent-id", "abc");
     await expect(join(fakeChain(10n ** 15n, 2_000_000n * BRAIN) as unknown as Chain, MAINNET, values)).rejects.toThrow(UsageError);

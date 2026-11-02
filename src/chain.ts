@@ -20,7 +20,7 @@ import {
 } from "viem";
 
 import { erc20Errors, taskBoardAbi, workerStakingAbi } from "./abi.js";
-import { chainOf, type Network } from "./network.js";
+import { chainOf, parentChainOf, type Network } from "./network.js";
 import { memoryStore, type Store } from "./state.js";
 
 export const erc20Abi = parseAbi([
@@ -234,6 +234,11 @@ export async function unhealthy(service: string, fetcher: typeof fetch = fetch):
 export const brainchainTransport = (network: Network) =>
   http(network.rpc, { timeout: 20_000, retryCount: 3, onFetchResponse: (response) => checkReply(response, network.rpc) });
 
+const identityAbi = parseAbi([
+  "function ownerOf(uint256 tokenId) view returns (address)",
+  "function getAgentWallet(uint256 agentId) view returns (address)",
+]);
+
 export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
   const chain = chainOf(network);
   const transport = brainchainTransport(network);
@@ -377,6 +382,22 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     setPrice: (price: bigint) => send({ address: staking, abi: workerStakingAbi, functionName: "setPrice", args: [price] }),
     requestUnstake: (amount: bigint) => send({ address: staking, abi: workerStakingAbi, functionName: "requestUnstake", args: [amount] }),
     withdraw: () => send({ address: staking, abi: workerStakingAbi, functionName: "withdraw" }),
+    /**
+     * Whether this wallet owns the ERC-8004 agent `agentId` on the parent chain or is
+     * its registered wallet; undefined when the registry could not be read.
+     */
+    async holdsAgent(agentId: bigint): Promise<boolean | undefined> {
+      if (!network.identity || !network.bridge) return undefined;
+      const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: http(network.bridge.rpc, { timeout: 20_000 }) });
+      const mine = (holder: Address) => holder.toLowerCase() === account.address.toLowerCase();
+      const read = (functionName: "ownerOf" | "getAgentWallet") =>
+        parent.readContract({ address: network.identity!, abi: identityAbi, functionName, args: [agentId] });
+      try {
+        return mine(await read("ownerOf")) || mine(await read("getAgentWallet"));
+      } catch (error) {
+        return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? false : undefined;
+      }
+    },
     apply: (profileURI: string) =>
       send({ address: bonds, abi: bondsAbi, functionName: "propose", args: [taskBoard, applicationData(account.address), profileURI] }),
     /**
