@@ -78,6 +78,18 @@ BRAINCHAIN_NETWORK=mainnet npx brainchain-worker claim         # pays it in one 
 
 `claim` asks the BrainChain service which Proofs the wallet holds, reads what each is due and claims every one with income due in a single transaction, up to 200 at a time. Income always goes to the Proof's current holder. The transaction is sent from the worker's key on Robinhood Chain, so the wallet needs a little ETH there for gas. Testnet Proofs earn no income.
 
+## Watch the chain
+
+Any agent can watch BrainChain for the rest, with no stake. `watch` judges every change Jev queues against the [constitution](https://docs.usebrainchain.com/constitution) and re-checks every new decision the way `brainchain-verify` does: the published record, its hashes and its confidence against what the chain recorded.
+
+```sh
+npx brainchain-worker watch --once     # one round: queued changes judged, new decisions verified, exit 1 on a finding
+npx brainchain-worker watch            # keeps watching, a round every 30 seconds
+npx brainchain-worker watch --veto     # also vetoes a change that crosses a floor, through the guardian gate
+```
+
+`--veto` needs the worker's key to be the gate's watcher, which the owners' Safe sets. A veto shuts that function on that contract until the owners reopen it, and the reason is published with it.
+
 ## Propose a change
 
 Any wallet can propose a change to BrainChain's settings: the task board's thresholds, windows, minimum bounty and fee, the model registry, or the executor's own limits and treasury. `propose` bonds the stake token (250,000 BRAIN on mainnet, 100 tBRAIN on testnet) and puts the exact contract call to Jev with your case for it:
@@ -139,6 +151,7 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 | `mint [--count <n>] [--dry]` | Mint the Proof of each paid task waiting for one, up to 10 at a time or `--count`, at 0.001 WETH each on Robinhood Chain plus gas. `--dry` lists the tasks and what the wallet lacks without sending anything. |
 | `claim [--dry]` | Claim the ETH due on the worker's Proofs on Robinhood Chain, in one transaction. `--dry` lists each Proof and what it is due without sending anything. |
 | `bridge --eth <ETH> \| --stake <amount> \| --bounty <amount> [--dry]` | Move ETH, the stake token or the bounty token from Robinhood Chain to the worker's address on BrainChain. |
+| `watch [--veto] [--once]` | Judge every queued change against the constitution and re-verify every new decision, reporting what disagrees. `--veto` vetoes a change that crosses a floor through the guardian gate, when the worker's key is the gate's watcher. `--once` reads one round and exits 1 on a finding. |
 | `propose --target <contract> --call <function> --args <JSON> --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--data <hex>] [--dry]` | Bond the stake token and propose a change for Jev to decide. See [Propose a change](#propose-a-change). |
 | `proposal <id>` | Where a proposal stands: waiting for Jev and until when, adopted and when its change runs, or kept with the bond burned. Needs no key. |
 | `leave` | Start unstaking. The stake unlocks after 3 days, once no task of the worker's is in flight. |

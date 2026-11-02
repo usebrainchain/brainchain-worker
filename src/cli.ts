@@ -1,16 +1,19 @@
 import { createRequire } from "node:module";
+import { verifyDecision } from "brainchain-verify";
+import { createPublicClient } from "viem";
 
 import { formatEther, parseUnits, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
-import { createChain, faucetReopens, reason, unhealthy, type Chain } from "./chain.js";
+import { brainchainTransport, createChain, faucetReopens, reason, unhealthy, type Chain } from "./chain.js";
 import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofMinter, createProofsChain, MAX_MINT, mint } from "./mint.js";
-import { resolveNetwork, type Network } from "./network.js";
+import { chainOf, resolveNetwork, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
 import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore } from "./state.js";
+import { createWatch, createWatchChain, type Verify } from "./watch.js";
 import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -46,6 +49,12 @@ Usage:
                                             decide. --data <hex> gives the call as raw calldata instead of
                                             --call and --args. --dry checks the call and sends nothing.
   brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.
+  brainchain-worker watch [--veto] [--once]
+                                            Watch the chain: judge every queued change against the constitution
+                                            and re-verify every new decision, reporting what disagrees. --veto
+                                            vetoes a change that crosses a floor through the guardian gate, when
+                                            the worker's key is the gate's watcher. --once reads one round and
+                                            exits 1 on a finding.
   brainchain-worker leave                   Start unstaking (3-day cooldown).
   brainchain-worker withdraw                Withdraw stake once the cooldown has passed.
   brainchain-worker --version               Print the version.
@@ -77,6 +86,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   claim: { dry: true },
   mint: { count: false, dry: true },
   bridge: { eth: false, stake: false, bounty: false, dry: true },
+  watch: { veto: true, once: true },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true },
   proposal: {},
 };
@@ -366,6 +376,38 @@ export async function main(argv: string[]): Promise<void> {
       throw new UsageError(`--${asset} is an amount of ${symbol} above zero with at most ${decimals} decimals, such as --${asset} ${asset === "eth" ? "0.001" : "1"}`);
     }
     return bridge(network, createBridgeChain(network, signer().account), { asset, amount, dry: switches.has("dry"), log: console.log });
+  }
+  if (command === "watch") {
+    const veto = switches.has("veto");
+    const once = switches.has("once");
+    // Judging changes needs no key; vetoing does. A reader stands in for the signer otherwise.
+    const account = veto || process.env.BRAINCHAIN_WORKER_KEY?.trim() ? signer().account : privateKeyToAccount(generatePrivateKey());
+    const client = createPublicClient({ chain: chainOf(network), transport: brainchainTransport(network) });
+    const { taskBoard, executor, log } = network.contracts;
+    const verify: Verify = async (id) => {
+      const report = await verifyDecision(
+        {
+          client,
+          network: { chainId: network.chainId, name: network.name, rpc: network.rpc, sets: [] },
+          set: { key: "active", release: "", fromBlock: Number(network.fromBlock), board: taskBoard, log, executor },
+          briefs: new Map(),
+        },
+        id,
+      );
+      return { findings: report.checks.filter((c) => c.status === "fail" || c.status === "error").map((c) => `${c.name}: ${c.message}`) };
+    };
+    const watch = createWatch({ network, chain: createWatchChain(network, account), verify, veto, log: console.log });
+    if (veto && !network.contracts.gate) throw new UsageError(`${network.name} has no guardian gate yet, so there is nothing to veto through`);
+    console.log(`watching ${network.name} as ${account.address}${veto ? ", vetoing through the guardian gate" : ""}`);
+    if (once) {
+      const { findings } = await watch.round();
+      if (findings > 0) process.exitCode = 1;
+      return;
+    }
+    for (;;) {
+      await watch.round().catch((error: unknown) => console.log(`round failed: ${reason(error)}`));
+      await new Promise((resolve) => setTimeout(resolve, 30_000));
+    }
   }
   if (command === "proposal") {
     const id = positional[0];

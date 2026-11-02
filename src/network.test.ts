@@ -31,6 +31,7 @@ describe("resolveNetwork", () => {
       registry: "0x65B71706bE8a92dda39dDfdb6ABA8CEA64A33865",
       stakeToken: "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
       bountyToken: "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
+      log: "0x5FfED27750E5Ca990aB60751Fc4B25E39358FcD7",
     });
     expect(network.proofs).toEqual({
       chainId: 4663,
