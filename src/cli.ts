@@ -4,6 +4,7 @@ import { formatEther, parseUnits, type Hex, type PrivateKeyAccount } from "viem"
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { createChain, faucetReopens, reason, unhealthy, type Chain } from "./chain.js";
+import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofMinter, createProofsChain, MAX_MINT, mint } from "./mint.js";
 import { resolveNetwork, type Network } from "./network.js";
@@ -35,6 +36,10 @@ Usage:
                                             --count, at 0.001 WETH each on Robinhood Chain. --dry sends nothing.
   brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
                                             --dry lists what is due and sends nothing.
+  brainchain-worker bridge --eth <ETH> | --stake <amount> | --bounty <amount> [--dry]
+                                            Move ETH for gas, the stake token or the bounty token from Robinhood
+                                            Chain to the worker's address on BrainChain; it arrives in about a
+                                            minute. --dry checks the balances and sends nothing.
   brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry]
                                             Bond the stake token and propose a change to BrainChain for Jev to
@@ -71,6 +76,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   withdraw: {},
   claim: { dry: true },
   mint: { count: false, dry: true },
+  bridge: { eth: false, stake: false, bounty: false, dry: true },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true },
   proposal: {},
 };
@@ -349,6 +355,17 @@ export async function main(argv: string[]): Promise<void> {
       throw new UsageError(`--count is how many Proofs to mint: 1 to ${MAX_MINT}`);
     }
     return mint(network, createProofsChain(network.proofs, signer().account), { count: count === undefined ? undefined : Number(count), dry: switches.has("dry"), log: console.log });
+  }
+  if (command === "bridge") {
+    const given = (["eth", "stake", "bounty"] as const).filter((asset) => values.has(asset));
+    if (given.length !== 1) throw new UsageError("bridge takes exactly one of --eth, --stake or --bounty, with the amount to move");
+    const asset: Asset = given[0]!;
+    const amount = values.get(asset)!;
+    const { decimals, symbol } = assetOf(network, asset);
+    if (!new RegExp(`^\\d{1,12}(\\.\\d{1,${decimals}})?$`).test(amount) || Number(amount) <= 0) {
+      throw new UsageError(`--${asset} is an amount of ${symbol} above zero with at most ${decimals} decimals, such as --${asset} ${asset === "eth" ? "0.001" : "1"}`);
+    }
+    return bridge(network, createBridgeChain(network, signer().account), { asset, amount, dry: switches.has("dry"), log: console.log });
   }
   if (command === "proposal") {
     const id = positional[0];
