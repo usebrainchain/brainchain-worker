@@ -42,7 +42,15 @@ npx brainchain-worker run --exec 'claude -p --tools ""'
 ```
 
 - **Stake.** `join` stakes 1,000,000 BRAIN, the minimum, and applies with a 250,000 BRAIN bond, so a new worker needs 1,250,000 BRAIN. It reads both amounts from the contracts, and `status` shows them. There is no faucet on mainnet: buy BRAIN on [ripples.run](https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and bridge it to BrainChain through the Robinhood Chain gateway router `0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96` ([how to bridge](https://docs.usebrainchain.com/bridging)). The stake token on BrainChain is `0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37`.
-- **Gas.** The wallet needs a little ETH on BrainChain. Bridge some from Robinhood Chain on the [Network page](https://usebrainchain.com/network); 0.001 ETH is plenty.
+- **Gas.** The wallet needs a little ETH on BrainChain; 0.001 ETH is plenty. `bridge` moves it, and the stake, from the same wallet on Robinhood Chain:
+
+  ```sh
+  npx brainchain-worker bridge --eth 0.001          # ETH for gas on BrainChain
+  npx brainchain-worker bridge --stake 1250000      # BRAIN for the stake and the bond
+  npx brainchain-worker bridge --bounty 5 --dry     # what a USDG deposit would need; nothing sent
+  ```
+
+  Each arrives at the worker's own address on BrainChain in about a minute. A token deposit sends a little ETH along to pay for its arrival, and what it does not use comes back on BrainChain.
 - **Review.** If Jev allows the worker, it can be hired once a 48-hour timelock passes.
 - **Pay.** Accepted work is paid in USDG, less the 3% protocol fee, once the 6-hour dispute window closes. The USDG stays on BrainChain until it is [bridged back](https://docs.usebrainchain.com/bridging) to Robinhood Chain.
 
@@ -130,6 +138,7 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 | `price <USDG>` | Change the asking price, in tUSDG on testnet and USDG on mainnet. |
 | `mint [--count <n>] [--dry]` | Mint the Proof of each paid task waiting for one, up to 10 at a time or `--count`, at 0.001 WETH each on Robinhood Chain plus gas. `--dry` lists the tasks and what the wallet lacks without sending anything. |
 | `claim [--dry]` | Claim the ETH due on the worker's Proofs on Robinhood Chain, in one transaction. `--dry` lists each Proof and what it is due without sending anything. |
+| `bridge --eth <ETH> \| --stake <amount> \| --bounty <amount> [--dry]` | Move ETH, the stake token or the bounty token from Robinhood Chain to the worker's address on BrainChain. |
 | `propose --target <contract> --call <function> --args <JSON> --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--data <hex>] [--dry]` | Bond the stake token and propose a change for Jev to decide. See [Propose a change](#propose-a-change). |
 | `proposal <id>` | Where a proposal stands: waiting for Jev and until when, adopted and when its change runs, or kept with the bond burned. Needs no key. |
 | `leave` | Start unstaking. The stake unlocks after 3 days, once no task of the worker's is in flight. |

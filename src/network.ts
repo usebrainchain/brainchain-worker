@@ -46,6 +46,18 @@ export interface Network {
     stakeToken: Address;
     bountyToken: Address;
   };
+  /** The parent chain and its bridge contracts, where `bridge` moves funds in from. */
+  bridge?: {
+    chainId: number;
+    name: string;
+    rpc: string;
+    inbox: Address;
+    router: Address;
+    /** How the wallet gets ETH there. */
+    gas: string;
+    /** The stake and bounty tokens on the parent chain; absent where the token is minted on BrainChain only. */
+    tokens?: Partial<Record<"stake" | "bounty", Address>>;
+  };
 }
 
 /** BrainChain testnet, release 3.4.0. */
@@ -69,6 +81,14 @@ export const TESTNET: Network = {
     weth: "0x1F852eF3Afa13156b807204d838BbB46B4b452eb",
     faucet: true,
     gas: "Get Robinhood Chain testnet ETH for gas at https://faucet.testnet.chain.robinhood.com",
+  },
+  bridge: {
+    chainId: 46630,
+    name: "Robinhood Chain testnet",
+    rpc: "https://rpc.testnet.chain.robinhood.com",
+    inbox: "0xd5B98547aA58db0AbC75C06f5A62a7ACDF9CB977",
+    router: "0x1BBe71Dd3af85309A5c7Ab00B190F38f34Fe3569",
+    gas: "Get Robinhood Chain testnet ETH at https://faucet.testnet.chain.robinhood.com",
   },
   contracts: {
     taskBoard: "0x0beA77333E26a257983fCc59B8D857730b5B1D2B",
@@ -114,6 +134,15 @@ export const MAINNET: Network = {
     weth: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
     gas: "Send it a little ETH there for gas",
     income: "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
+  },
+  bridge: {
+    chainId: 4663,
+    name: "Robinhood Chain",
+    rpc: "https://rpc.mainnet.chain.robinhood.com",
+    inbox: "0x139a54F81d6Fdf7135D633CBCfB2373F0edfa2dd",
+    router: "0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96",
+    gas: "Send it a little ETH on Robinhood Chain",
+    tokens: { stake: "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418", bounty: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
   },
   contracts: {
     taskBoard: MAINNET_TASK_BOARD,
@@ -163,6 +192,15 @@ export function chainOf(network: Network) {
     name: network.name,
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: { default: { http: [network.rpc] } },
+  });
+}
+
+export function parentChainOf(bridge: NonNullable<Network["bridge"]>) {
+  return defineChain({
+    id: bridge.chainId,
+    name: bridge.name,
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: [bridge.rpc] } },
   });
 }
 
