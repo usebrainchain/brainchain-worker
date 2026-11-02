@@ -14,6 +14,7 @@ import {
   parseAbi,
   parseEventLogs,
   size,
+  slice,
   type Abi,
   type AbiParameter,
   type Address,
@@ -53,6 +54,7 @@ const proposalsAbi = parseAbi([
   "function decideWithin() view returns (uint64)",
 ]);
 const executorReadsAbi = parseAbi([
+  "function vetoed(address target, bytes4 selector) view returns (bool)",
   "function vetoedCall(bytes32) view returns (bool)",
   "function changeThresholdBps() view returns (uint16)",
 ]);
@@ -267,13 +269,19 @@ export function createProposals(network: Network, account: PrivateKeyAccount): P
     decideWithin: () => client.readContract({ ...proposals, functionName: "decideWithin" }),
     changeThresholdBps: async () => BigInt(await client.readContract({ address: executor, abi: executorReadsAbi, functionName: "changeThresholdBps" })),
     timelock: () => client.readContract({ address: executor, abi: executorAbi, functionName: "timelock" }),
-    vetoed: (call) =>
-      client.readContract({
-        address: executor,
-        abi: executorReadsAbi,
-        functionName: "vetoedCall",
-        args: [keccak256(encodeAbiParameters([{ type: "address" }, { type: "bytes" }], [call.address, call.data]))],
-      }),
+    // A set 3.4.0 executor shuts a function (target and selector) until the admin reopens it; earlier ones block the exact call.
+    vetoed: async (call) => {
+      try {
+        return await client.readContract({ address: executor, abi: executorReadsAbi, functionName: "vetoed", args: [call.address, slice(call.data, 0, 4)] });
+      } catch {
+        return client.readContract({
+          address: executor,
+          abi: executorReadsAbi,
+          functionName: "vetoedCall",
+          args: [keccak256(encodeAbiParameters([{ type: "address" }, { type: "bytes" }], [call.address, call.data]))],
+        });
+      }
+    },
     async rehearse(call) {
       try {
         await client.call({ account: executor, to: call.address, data: call.data });
@@ -342,7 +350,7 @@ export async function propose(
     chain.vetoed(call),
     chain.rehearse(call),
   ]);
-  if (vetoed) throw new ProposalError(`The guardian vetoed ${call.text} on the ${call.target} before, so the executor never queues it again`);
+  if (vetoed) throw new ProposalError(`The guardian vetoed ${call.text} on the ${call.target}, so the executor does not queue it until the admin reopens that function`);
   if (revert) throw new ProposalError(`${call.text} would fail if the executor made it now (${revert}), so the bond would be burned for nothing`);
   log(`Proposal on ${network.name}
   Call      ${call.text} on the ${call.target} (${call.address})
