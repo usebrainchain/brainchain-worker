@@ -28,7 +28,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "brainchain-verify": "^0.1.2",
+    "brainchain-verify": "^0.3.0",
     "viem": "^2.0.0"
   },
   "devDependencies": {
