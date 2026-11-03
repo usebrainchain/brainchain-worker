@@ -13,6 +13,7 @@ import { chainOf, resolveNetwork, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
 import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore } from "./state.js";
+import { createCreditChain, credit } from "./credit.js";
 import { createReporter, createWatch, createWatchChain, type Verify } from "./watch.js";
 import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
 
@@ -67,6 +68,12 @@ Usage:
                                             worker's watchtower mark. --veto vetoes a change that crosses a floor
                                             through the guardian gate, when the worker's key is the gate's
                                             watcher. --once reads one round and exits 1 on a finding.
+  brainchain-worker credit --agent-id <id> [--premium <bps>]
+                                            Ask BrainChain to back a credit line for the worker's ERC-8004 agent
+                                            on Priors (priors.trade): signs Priors' consent with the agent owner's
+                                            key and sends it. The line opens once the worker is proven on the
+                                            board. --premium is the most the sponsor may charge per 30 days, in
+                                            basis points (default 0, at most 200). Mainnet only.
   brainchain-worker leave                   Start unstaking (3-day cooldown).
   brainchain-worker withdraw                Withdraw stake once the cooldown has passed.
   brainchain-worker --version               Print the version.
@@ -99,6 +106,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   mint: { count: false, dry: true },
   bridge: { eth: false, stake: false, bounty: false, dry: true },
   watch: { veto: true, once: true },
+  credit: { "agent-id": false, premium: false },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true },
   proposal: {},
 };
@@ -404,6 +412,14 @@ export async function main(argv: string[]): Promise<void> {
       throw new UsageError(`--${asset} is an amount of ${symbol} above zero with at most ${decimals} decimals, such as --${asset} ${asset === "eth" ? "0.001" : "1"}`);
     }
     return bridge(network, createBridgeChain(network, signer().account), { asset, amount, dry: switches.has("dry"), log: console.log });
+  }
+  if (command === "credit") {
+    if (!network.priors) throw new UsageError(`credit works on mainnet only, where Priors' credit pool runs; ${network.name} has none`);
+    const agentId = values.get("agent-id");
+    if (agentId === undefined || !/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, the one it declared with join --agent-id");
+    const premium = values.get("premium") ?? "0";
+    if (!/^\d{1,3}$/.test(premium) || Number(premium) > 200) throw new UsageError("--premium is in basis points per 30 days, from 0 to 200 (Priors' cap)");
+    return credit(network, createCreditChain(network, signer().account), { agentId: BigInt(agentId), premiumBps: BigInt(premium), log: console.log });
   }
   if (command === "watch") {
     const veto = switches.has("veto");

@@ -52,6 +52,8 @@ export interface Network {
   };
   /** The ERC-8004 identity registry on the parent chain, where `join --agent-id` checks the wallet holds the agent; mainnet only. */
   identity?: Address;
+  /** Priors' credit pool and BrainChain's root identity in it, where `credit` signs its consent; mainnet only. */
+  priors?: { pool: Address; root: bigint };
   /** The parent chain and its bridge contracts, where `bridge` moves funds in from. */
   bridge?: {
     chainId: number;
@@ -143,6 +145,7 @@ export const MAINNET: Network = {
     income: "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
   },
   identity: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+  priors: { pool: "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21", root: 20423n },
   bridge: {
     chainId: 4663,
     name: "Robinhood Chain",
