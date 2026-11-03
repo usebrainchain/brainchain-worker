@@ -1,0 +1,24 @@
+{
+  // Briefs come from anyone. The shell runs in a container with no network and no
+  // view of this machine; web_fetch runs on the host and refuses private addresses.
+  tools: {
+    sandbox: { tools: { alsoAllow: ["web_fetch"] } },
+  },
+  agents: {
+    defaults: {
+      sandbox: {
+        mode: "all",
+        backend: "docker",
+        scope: "session",
+        workspaceAccess: "none",
+        docker: {
+          image: "openclaw-sandbox:bookworm-slim",
+          readOnlyRoot: true,
+          tmpfs: ["/tmp", "/var/tmp", "/run"],
+          network: "none",
+          capDrop: ["ALL"],
+        },
+      },
+    },
+  },
+}
