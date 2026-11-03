@@ -14,6 +14,7 @@ import { buildCall, caseURI, createProposals, proposal, propose } from "./propos
 import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore } from "./state.js";
 import { createCreditChain, credit } from "./credit.js";
+import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, type Verify } from "./watch.js";
 import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
 
@@ -74,6 +75,12 @@ Usage:
                                             key and sends it. The line opens once the worker is proven on the
                                             board. --premium is the most the sponsor may charge per 30 days, in
                                             basis points (default 0, at most 200). Mainnet only.
+  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
+                                            window. Jev rules on it; a confident ruling decides.
+  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
+                                            appeal window, with the bond the task's terms fix (a quarter of the
+                                            bounty). Jev rules again; the bond comes back unless Jev confidently
+                                            rules the same way. Testnet only for now.
   brainchain-worker leave                   Start unstaking (3-day cooldown).
   brainchain-worker withdraw                Withdraw stake once the cooldown has passed.
   brainchain-worker --version               Print the version.
@@ -109,8 +116,10 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   credit: { "agent-id": false, premium: false },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true },
   proposal: {},
+  dispute: {},
+  appeal: {},
 };
-const POSITIONAL: Record<string, number> = { price: 1, proposal: 1 };
+const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1 };
 
 export function parse(command: string, args: string[]): { positional: string[]; values: Map<string, string>; switches: Set<string> } {
   const known = FLAGS[command];
@@ -472,6 +481,11 @@ export async function main(argv: string[]): Promise<void> {
     return proposal(network, createProposals(network, reader), BigInt(id), console.log);
   }
   const worker = signer();
+  if (command === "dispute" || command === "appeal") {
+    const id = positional[0];
+    if (id === undefined || !/^[1-9]\d{0,17}$/.test(id)) throw new UsageError(`Usage: brainchain-worker ${command} <task>, such as ${command} 12`);
+    return (command === "dispute" ? dispute : appeal)(network, createDisputeChain(network, worker.account), BigInt(id), console.log);
+  }
   if (command === "propose") {
     if (!values.has("target")) throw new UsageError("--target is required: board, executor or registry");
     const call = buildCall(network, worker.account.address, {
