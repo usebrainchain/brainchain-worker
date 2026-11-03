@@ -11,27 +11,28 @@ describe("resolveNetwork", () => {
     expect(resolveNetwork({ BRAINCHAIN_NETWORK: " Testnet " })).toEqual(TESTNET);
   });
 
-  it("resolves mainnet to the 3.3.0 set", () => {
+  it("resolves mainnet to the 3.4.0 set", () => {
     const network = resolveNetwork(mainnet);
     expect(network).toMatchObject({
       name: "BrainChain",
       chainId: 274663,
       rpc: "https://rpc.usebrainchain.com",
       service: "https://brain.usebrainchain.com",
-      fromBlock: 425n,
+      fromBlock: 839n,
       explorer: "https://usebrainchain.com",
       stakeSymbol: "BRAIN",
       bountySymbol: "USDG",
     });
     expect(network.contracts).toEqual({
-      taskBoard: "0x72C890AA996bF7efcA88e3F5063B626560215160",
-      staking: "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee",
-      bonds: "0x3806b71D46cd74d0Ac4BBC34577f311A0Fd06D14",
-      executor: "0xA03614B09Dcc3813eD665a1693123f2a4f2C2483",
-      registry: "0x65B71706bE8a92dda39dDfdb6ABA8CEA64A33865",
+      taskBoard: "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4",
+      staking: "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F",
+      bonds: "0x1129435A110AB3Ffd3fFEE345A48f648DdE3D52c",
+      executor: "0x98BEA2E455539dB38b7337d81C673326128EA17F",
+      gate: "0x48c2Ed99Dc786ba667eFcFF721ff4cA92a1f344A",
+      registry: "0x870B0BFB24aF2C06180FbEe266117305e0B0E00F",
       stakeToken: "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37",
       bountyToken: "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
-      log: "0x5FfED27750E5Ca990aB60751Fc4B25E39358FcD7",
+      log: "0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7",
     });
     expect(network.proofs).toEqual({
       chainId: 4663,
