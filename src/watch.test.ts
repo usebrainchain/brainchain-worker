@@ -22,7 +22,7 @@ function fakeChain(options: { queued?: QueuedChange[]; open?: boolean; decisions
   let round = 0;
   const chain: WatchChain = {
     account: "0x00000000000000000000000000000000000000C1",
-    head: vi.fn(async () => 2_000n),
+    head: vi.fn(async () => 3_000n),
     queued: vi.fn(async () => options.queued ?? []),
     open: vi.fn(async () => options.open ?? true),
     decisions: vi.fn(async () => counts[Math.min(round++, counts.length - 1)]!),
@@ -60,7 +60,7 @@ describe("watch", () => {
     const { chain, vetoes } = fakeChain({ queued: [change(1n, encodeFunctionData({ abi, functionName: "setWorkerAllowed", args: [BOARD, true] }))] });
     const watch = createWatch({ network: TESTNET, chain, veto: true, log });
     expect(await watch.round()).toEqual({ findings: 0 });
-    expect(lines[0]).toMatch(/^change 1: setWorkerAllowed on 0x0beA.*within the constitution, runs after 2027-01-15 08:00 UTC$/);
+    expect(lines[0]).toMatch(/^change 1: setWorkerAllowed on 0x67e0C.*within the constitution, runs after 2027-01-15 08:00 UTC$/);
     expect(vetoes).toEqual([]);
     // A later round does not judge the same change again.
     await watch.round();
@@ -75,7 +75,7 @@ describe("watch", () => {
     expect(await watch.round()).toEqual({ findings: 1 });
     expect(vetoes).toEqual(["2: Breaks the constitution: a protocol fee above 5%"]);
     expect(lines).toEqual([
-      "change 2: setFee on 0x0beA77333E26a257983fCc59B8D857730b5B1D2B breaks the constitution (a protocol fee above 5%), runs after 2027-01-15 08:00 UTC",
+      "change 2: setFee on 0x67e0C5F884E1df61AC585B6d158c6E8175956AD1 breaks the constitution (a protocol fee above 5%), runs after 2027-01-15 08:00 UTC",
       `vetoed change 2 through the guardian gate: ${TX}`,
     ]);
   });
