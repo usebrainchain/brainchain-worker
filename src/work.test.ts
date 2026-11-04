@@ -517,12 +517,13 @@ describe("shellCommand", () => {
   });
 
   it("kills what a command leaves running when it exits, even with the pipes closed", async () => {
-    const folder = mkdtempSync(join(tmpdir(), "brainchain-worker-"));
-    const pidFile = join(folder, "pid");
-    await shellCommand(`nohup sh -c 'echo $$ > ${pidFile}; sleep 30' >/dev/null 2>&1 & sleep 0.2; echo done`).run("", {}, 20_000);
-    const pid = Number(readFileSync(pidFile, "utf8"));
+    const beat = join(mkdtempSync(join(tmpdir(), "brainchain-worker-")), "beat");
+    await shellCommand(`nohup sh -c 'while :; do echo x >> ${beat}; sleep 0.02; done' >/dev/null 2>&1 & sleep 0.2; echo done`).run("", {}, 20_000);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(() => process.kill(pid, 0)).toThrow();
+    const size = readFileSync(beat).byteLength;
+    expect(size).toBeGreaterThan(0);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(readFileSync(beat).byteLength).toBe(size);
   });
 
   it("kills a running command at once", async () => {
