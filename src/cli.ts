@@ -25,6 +25,8 @@ const FIRST_RUN_DECISIONS = 10n;
 const HEARTBEAT_MS = 3_600_000;
 /** Below this many deliveries' worth of gas, run warns after each delivery. */
 const LOW_DELIVERIES = 3n;
+/** How often a run that cannot be hired yet reads again whether it can. */
+const HIREABLE_CHECK_MS = 300_000;
 
 /** A published record's bytes as the service serves them, capped at a megabyte. */
 async function fetchRecord(uri: string): Promise<Uint8Array> {
@@ -463,12 +465,15 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   log("waiting for tasks (Ctrl-C to stop)");
   // Minting waits on receipts from another chain, so it runs beside the work, one round at a time.
   let minting: Promise<void> | undefined;
+  const hireChange = hireWatch(line, () => snapshot(chain).then((s) => hireable(s, network, "run"), () => undefined));
   while (!stop.stopping()) {
     await work.round().catch((error: unknown) => log(`round failed: ${reason(error)}`));
     minting ??= settlements
       .round()
       .catch((error: unknown) => log(`settlement round failed: ${reason(error)}`))
       .finally(() => (minting = undefined));
+    const changed = stop.stopping() ? undefined : await hireChange();
+    if (changed !== undefined) log(`hireable: ${changed}`);
     if (quietFor() >= HEARTBEAT_MS && !work.busy() && !stop.stopping()) {
       log(`still waiting for tasks; hireable: ${await snapshot(chain).then((s) => hireable(s, network, "run"), (error: unknown) => `could not check (${reason(error)})`)}`);
     }
@@ -476,6 +481,25 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   }
   await minting;
   log("stopped");
+}
+
+/**
+ * Reads again, every few minutes until the worker can be hired, whether it can,
+ * and returns the new answer when it changed. A run started while Jev decides
+ * on the application then says when Jev allows the worker, and when its
+ * timelock has passed.
+ */
+export function hireWatch(first: string, check: () => Promise<string | undefined>, everyMs = HIREABLE_CHECK_MS, now = Date.now) {
+  let last = first;
+  let checkedAt = now();
+  return async (): Promise<string | undefined> => {
+    if (last === "yes" || now() - checkedAt < everyMs) return undefined;
+    checkedAt = now();
+    const line = await check();
+    if (line === undefined || line === last) return undefined;
+    last = line;
+    return line;
+  };
 }
 
 /** Run's log, with each line's time, and how long it has been quiet, so an idle run can say it is still there. */

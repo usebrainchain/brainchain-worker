@@ -6,7 +6,7 @@ import { parseEther, type Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { asksHelp, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
+import { asksHelp, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
@@ -312,6 +312,29 @@ describe("watchPlace", () => {
     expect(readWatched(watchPlace(LOG, undefined), folder)).toBe(100n);
     expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBe(94n);
     expect(readWatched(watchPlace(LOG, "0x00000000000000000000000000000000000000c2"), folder)).toBeUndefined();
+  });
+});
+
+describe("hireWatch", () => {
+  it("reads again every few minutes until the worker can be hired, and gives each new answer once", async () => {
+    let now = 0;
+    const answers = ["no: application 9 is waiting for Jev", undefined, "no: Jev allowed this worker; it can be hired after 2026-11-04T23:02:19Z", "yes"];
+    const check = vi.fn(async () => answers.shift());
+    const changed = hireWatch("no: application 9 is waiting for Jev", check, 300_000, () => now);
+    expect(await changed()).toBeUndefined();
+    expect(check).not.toHaveBeenCalled();
+    now += 300_000;
+    // The same answer, then one that could not be read: nothing to say.
+    expect(await changed()).toBeUndefined();
+    now += 300_000;
+    expect(await changed()).toBeUndefined();
+    now += 300_000;
+    expect(await changed()).toBe("no: Jev allowed this worker; it can be hired after 2026-11-04T23:02:19Z");
+    now += 300_000;
+    expect(await changed()).toBe("yes");
+    now += 3_600_000;
+    expect(await changed()).toBeUndefined();
+    expect(check).toHaveBeenCalledTimes(4);
   });
 });
 
