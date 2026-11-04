@@ -102,6 +102,8 @@ export interface HiredTask {
 export class PermanentError extends Error {}
 
 /** What the work loop needs from the chain and the service. */
+const payoutsAbi = parseAbi(["function preferences(address) view returns (address asset, address to)", "function set(address asset, address to)"]);
+
 export interface WorkerChain {
   now(): Promise<bigint>;
   /** Tasks hired to this worker that wait for its result. */
@@ -113,6 +115,9 @@ export interface WorkerChain {
   submit(id: bigint, resultHash: Hex, resultURI: string, sent: (tx: Hex) => void): Promise<Hex>;
   /** Whether a transaction already sent succeeded, waiting up to `waitMs` for it; undefined when it did not land in that time. */
   landed(tx: Hex, waitMs: number): Promise<boolean | undefined>;
+  /** How the worker is paid: asset zero is USDG on BrainChain; undefined where the network has no payout registry. */
+  payout(): Promise<{ asset: Address; to: Address } | undefined>;
+  setPayout(asset: Address, to: Address): Promise<Hex>;
 }
 
 /** What the worker signs to upload a result: the chain, the board, the task and the hash of exactly the bytes it uploads. */
@@ -365,6 +370,12 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
   }
 
   const work: WorkerChain = {
+    async payout() {
+      if (!network.payouts) return undefined;
+      const [asset, to] = await client.readContract({ address: network.payouts, abi: payoutsAbi, functionName: "preferences", args: [account.address] });
+      return { asset, to };
+    },
+    setPayout: (asset: Address, to: Address) => send({ address: network.payouts!, abi: payoutsAbi, functionName: "set", args: [asset, to] }),
     async now() {
       const block = await client.getBlock();
       const wall = BigInt(Math.floor(Date.now() / 1000));

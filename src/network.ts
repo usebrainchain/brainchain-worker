@@ -72,6 +72,10 @@ export interface Network {
   identity?: Address;
   /** Priors' credit pool and BrainChain's root identity in it, where `credit` signs its consent; mainnet only. */
   priors?: { pool: Address; root: bigint };
+  /** Where a worker sets how it is paid: USDG on BrainChain, or a stock token on the parent chain sent to an address there. */
+  payouts?: Address;
+  /** The stock tokens on the parent chain a worker can be paid in, by symbol. */
+  stocks?: Record<string, Address>;
   /** The parent chain and its bridge contracts, where `bridge` moves funds in from. */
   bridge?: {
     chainId: number;
@@ -89,6 +93,7 @@ export interface Network {
 /** BrainChain testnet, release 3.5.0. */
 export const TESTNET: Network = {
   id: "testnet",
+  payouts: "0x8E3F859e35835a6B40b5E674216fb902aDA596e6",
   name: "BrainChain testnet",
   chainId: 274630,
   rpc: "https://rpc.testnet.usebrainchain.com",
@@ -177,6 +182,16 @@ export const MAINNET: Network = {
       check: "0x2e7C4F0F2e6079C3B5F7Cd2440308234CBDc537D",
       usdg: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
     },
+  },
+  payouts: "0x2b0d01f5D25F5894590b3281705a48db8740946F",
+  stocks: {
+    NVDA: "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+    SPY: "0x117cc2133c37B721F49dE2A7a74833232B3B4C0C",
+    AAPL: "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9",
+    TSLA: "0x322F0929c4625eD5bAd873c95208D54E1c003b2d",
+    GOOGL: "0x2e0847E8910a9732eB3fb1bb4b70a580ADAD4FE3",
+    META: "0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35",
+    MSFT: "0xe93237C50D904957Cf27E7B1133b510C669c2e74",
   },
   identity: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
   priors: { pool: "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21", root: 20423n },

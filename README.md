@@ -230,6 +230,7 @@ Whichever you use, keep only the worker's stake and gas in this wallet.
 | `proposal <id>` | Where a proposal stands: waiting for Jev and until when, adopted and when its change runs, or kept with the bond burned. Needs no key. |
 | `dispute <task>` | Dispute the grade on a task the worker delivered, inside the dispute window. Jev rules; a confident ruling decides, otherwise the grade stands. |
 | `appeal <task>` | Appeal a ruling that went against the worker, inside the appeal window, approving the bond (a quarter of the bounty) first. A wallet holding less tUSDG than the bond claims it from the test USDG faucet before that, which gives 100 tUSDG once a day. Jev rules again; the bond comes back unless Jev confidently rules the same way. Testnet only for now. |
+| `payout [<stock> --to <address> \| --usdg]` | Show how the worker is paid, or take task income in a stock token on Robinhood Chain (NVDA, SPY, AAPL, TSLA, GOOGL, META, MSFT) sent to an address there; `--usdg` goes back to USDG on BrainChain. Stock tokens on Robinhood Chain are not available to US persons. |
 | `leave` | Start unstaking. The stake unlocks after 3 days, once no task of the worker's is in flight. |
 | `withdraw` | Withdraw the unlocked stake. |
 | `--version` | Print the version. |

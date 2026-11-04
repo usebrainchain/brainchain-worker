@@ -6,7 +6,7 @@ import { parseEther, type Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { asksHelp, bondArgs, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
+import { asksHelp, bondArgs, hireWatch, join, main, parse, payout, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
@@ -57,7 +57,7 @@ describe("bondArgs", () => {
 });
 
 describe("help", () => {
-  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bond", "bridge", "propose", "proposal", "watch", "credit", "dispute", "appeal", "leave", "withdraw"];
+  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bond", "bridge", "propose", "proposal", "watch", "credit", "dispute", "appeal", "payout", "leave", "withdraw"];
 
   async function printed(argv: string[]): Promise<string> {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -164,6 +164,8 @@ function fakeChain(gas: bigint, balance: bigint, sent = 0) {
     setPrice: send(),
     apply: send(),
     holdsAgent: vi.fn(async () => true as boolean | undefined),
+    payout: vi.fn(async () => undefined as { asset: Address; to: Address } | undefined),
+    setPayout: send(),
   };
 }
 
@@ -390,5 +392,38 @@ describe("names every object inherits", () => {
       expect(() => parse("status", [`--${name}`])).toThrow(`The status command has no --${name} flag`);
       expect(() => parse("watch", [`--${name}`, "--once"])).toThrow(`The watch command has no --${name} flag`);
     }
+  });
+});
+
+describe("payout", () => {
+  const NVDA = MAINNET.stocks!.NVDA!;
+  const ME = "0x6000000000000000000000000000000000000006";
+  async function said(chain: ReturnType<typeof fakeChain>, network: Network, args: string[]): Promise<string> {
+    const { positional, values, switches } = parse("payout", args);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await payout(chain as never, network, positional, values, switches);
+      return log.mock.calls.map((call) => String(call[0])).join("\n");
+    } finally {
+      log.mockRestore();
+    }
+  }
+
+  it("shows USDG by default and the stock once set", async () => {
+    const chain = fakeChain(10n ** 15n, 0n);
+    expect(await said(chain, MAINNET, [])).toBe("Paid in USDG on BrainChain, to the worker's wallet.");
+    chain.payout.mockResolvedValueOnce({ asset: NVDA, to: ME });
+    expect(await said(chain, MAINNET, [])).toBe(`Paid in NVDA on Robinhood Chain, to ${ME}.`);
+  });
+
+  it("sets a stock with its recipient, refuses unknown stocks and bad recipients, and goes back to USDG", async () => {
+    const chain = fakeChain(10n ** 15n, 0n);
+    expect(await said(chain, MAINNET, ["nvda", "--to", ME])).toContain(`Paid in NVDA on Robinhood Chain, to ${ME}, from the next task on.`);
+    expect(chain.setPayout).toHaveBeenCalledWith(NVDA, ME);
+    await expect(said(chain, MAINNET, ["HIMS", "--to", ME])).rejects.toThrow("Stocks a worker can be paid in on BrainChain: NVDA, SPY, AAPL, TSLA, GOOGL, META, MSFT.");
+    await expect(said(chain, MAINNET, ["SPY"])).rejects.toThrow("--to needs the Robinhood Chain address the SPY is sent to.");
+    await expect(said(chain, TESTNET, ["NVDA", "--to", ME])).rejects.toThrow("none yet");
+    expect(await said(chain, MAINNET, ["--usdg"])).toBe("Paid in USDG on BrainChain from the next task on.");
+    expect(chain.setPayout).toHaveBeenLastCalledWith("0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000");
   });
 });
