@@ -365,7 +365,7 @@ export async function propose(
     const buy = network.buyStake ? ` ${network.buyStake}` : "";
     throw new Error(`The wallet holds ${stake(network, balance)} of the ${stake(network, bond)} bond.${buy}`);
   }
-  if (gas === 0n) throw new Error(`${chain.account} has no ETH on ${network.name} for gas. ${network.gas}; 0.001 ETH is plenty.`);
+  if (gas === 0n) throw new Error(`${chain.account} has no ETH on ${network.name} for gas. ${network.gas}.`);
   log(`Bonding ${stake(network, bond)} and proposing...`);
   const { id, tx } = await chain.propose(call, uri, bond);
   log(`Proposal ${id} is waiting for Jev (${tx}). Follow it with \`npx brainchain-worker proposal ${id}\`.`);

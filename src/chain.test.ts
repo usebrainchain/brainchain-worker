@@ -5,6 +5,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   BaseError,
   ContractFunctionExecutionError,
+  encodeEventTopics,
+  encodeFunctionResult,
+  InsufficientFundsError,
   ContractFunctionRevertedError,
   createPublicClient,
   encodeErrorResult,
@@ -16,7 +19,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi, workerStakingAbi } from "./abi.js";
-import { createChain, erc20Abi, faucetReopens, fetchBrief, PermanentError, reason, resultMessage, submitFailure, unhealthy, workerId } from "./chain.js";
+import { createChain, erc20Abi, faucetReopens, fetchBrief, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
 import { resolveNetwork, TESTNET } from "./network.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
@@ -134,6 +137,103 @@ describe("chain helpers", () => {
         throw new TypeError("fetch failed");
       }),
     ).toBe("could not reach the BrainChain service at localhost:1; results are uploaded there, so none can be delivered until it answers");
+  });
+});
+
+describe("a wallet short of gas", () => {
+  const plain = "The wallet holds too little ETH to pay for this transaction's gas. Nothing was sent; `brainchain-worker status` shows its balance";
+
+  it("is said plainly, in the words of either failure", () => {
+    const estimate = new BaseError("Execution reverted with reason: gas required exceeds allowance (38928).");
+    expect(reason(estimate)).toBe(plain);
+    const send = new BaseError("The total cost (gas * gas fee + value) of executing this transaction exceeds the balance of the account.", { cause: new InsufficientFundsError() });
+    expect(reason(send)).toBe(plain);
+  });
+
+  it("is not confused with a token's own allowance", () => {
+    expect(reason(new BaseError("ERC20: transfer amount exceeds allowance"))).toBe("ERC20: transfer amount exceeds allowance");
+  });
+});
+
+describe("requireChainId", () => {
+  it("refuses an RPC serving another chain, and leaves one that does not answer to the commands", async () => {
+    await expect(requireChainId(TESTNET, async () => 46_630)).rejects.toThrow("BRAINCHAIN_RPC_URL serves chain 46630; BrainChain testnet is chain 274630.");
+    await expect(requireChainId(TESTNET, async () => 274_630)).resolves.toBeUndefined();
+    await expect(
+      requireChainId(TESTNET, async () => {
+        throw new Error("no answer");
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("record", () => {
+  it("counts a ruled or appealed task as in flight, since the stake can still be at risk", async () => {
+    const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+    const id = workerId(account.address);
+    const hired = encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkerHired" })[0];
+    const zero = `0x${"0".repeat(64)}` as const;
+    let status: number = Status.Ruled;
+    const answer = ({ id: rpcId, method, params }: { id: number; method: string; params: [{ topics?: unknown[] }] }) => {
+      let result: unknown = "0x";
+      if (method === "eth_chainId") result = "0x430c6";
+      if (method === "eth_blockNumber") result = "0x1000";
+      if (method === "eth_getLogs") {
+        const first = params[0].topics?.[0];
+        const log = { address: TESTNET.contracts.taskBoard, data: "0x", blockNumber: "0x900", transactionHash: zero, logIndex: "0x0", blockHash: zero, transactionIndex: "0x0", removed: false };
+        result = (Array.isArray(first) ? first[0] : first) === hired ? [{ ...log, topics: [hired, `0x${"1".padStart(64, "0")}`, id, `0x${"1".padStart(64, "0")}`] }] : [];
+      }
+      if (method === "eth_call") {
+        const task = {
+          poster: account.address,
+          bounty: 1_000_000n,
+          deadline: 2_000_000_000n,
+          status,
+          accepted: false,
+          disputed: true,
+          disputedByModel: true,
+          model: id,
+          briefHash: zero,
+          resultHash: zero,
+          submittedAt: 1n,
+          gradedAt: 2n,
+          disputedAt: 3n,
+          postedAt: 1n,
+          payee: account.address,
+          feeRecipient: account.address,
+          feeBps: 300,
+          hireThresholdBps: 1500,
+          gradeThresholdBps: 8000,
+          ruleThresholdBps: 8000,
+          gradeWindow: 3600n,
+          disputeWindow: 3600n,
+          ruleWindow: 3600n,
+        };
+        result = encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: task });
+      }
+      return { jsonrpc: "2.0", id: rpcId, result };
+    };
+    const rpc = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const request = JSON.parse(body) as Parameters<typeof answer>[0] | Parameters<typeof answer>[0][];
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(Array.isArray(request) ? request.map(answer) : answer(request)));
+      });
+    });
+    await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    try {
+      const chain = createChain({ ...TESTNET, rpc: `http://127.0.0.1:${(rpc.address() as AddressInfo).port}` }, account);
+      for (const each of [Status.Ruled, Status.Appealed, Status.Hired, Status.Disputed]) {
+        status = each;
+        expect((await chain.record()).inFlight).toBe(1);
+      }
+      status = Status.Paid;
+      expect(await chain.record()).toMatchObject({ accepted: 1, inFlight: 0 });
+    } finally {
+      rpc.close();
+    }
   });
 });
 

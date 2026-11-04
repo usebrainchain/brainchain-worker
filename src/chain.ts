@@ -8,6 +8,7 @@ import {
   encodeFunctionData,
   http,
   HttpRequestError,
+  InsufficientFundsError,
   keccak256,
   parseAbi,
   RpcRequestError,
@@ -52,7 +53,7 @@ export const executorAbi = parseAbi([
 ]);
 
 /** Mirrors TaskBoard.Status. */
-export const Status = { Open: 1, Hired: 2, Submitted: 3, Graded: 4, Disputed: 5, Paid: 6, Refunded: 7 } as const;
+export const Status = { Open: 1, Hired: 2, Submitted: 3, Graded: 4, Disputed: 5, Paid: 6, Refunded: 7, Ruled: 8, Appealed: 9 } as const;
 /** Mirrors ProposalBonds.State. */
 export const ApplicationState = { Open: 1, Returned: 2, Burned: 3 } as const;
 
@@ -206,9 +207,15 @@ function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutErr
   return `${host} answered ${status}${details ? ` (${details})` : ""}`;
 }
 
+/** Whether a send failed because the wallet cannot cover its gas: the RPC's gas estimate says so as a revert, and the send itself as insufficient funds. */
+function outOfGas(error: BaseError): boolean {
+  return /gas required exceeds allowance/i.test(error.message) || error.walk((e) => e instanceof InsufficientFundsError) instanceof InsufficientFundsError;
+}
+
 /** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
 export function reason(error: unknown): string {
   if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error);
+  if (outOfGas(error)) return "The wallet holds too little ETH to pay for this transaction's gas. Nothing was sent; `brainchain-worker status` shows its balance";
   // An RPC error with an HTTP status is a provider refusing the request, such as a bad key or a rate limit.
   const request = error.walk(
     (e) => e instanceof HttpRequestError || e instanceof TimeoutError || (e instanceof RpcRequestError && e.status !== undefined),
@@ -228,6 +235,16 @@ export async function unhealthy(service: string, fetcher: typeof fetch = fetch):
   // The service answers 503 while its review rounds are late, which does not stop it taking results.
   if (response.status === 503) return `the BrainChain service at ${host} reports it is behind (503); results still upload, and grading may be late`;
   return `the BrainChain service at ${host} answered its health check with ${response.status}; results are uploaded there, so delivery can fail until it recovers`;
+}
+
+/**
+ * Refuses a BRAINCHAIN_RPC_URL that serves another chain, which otherwise shows
+ * as a read that returns no data or a scan through someone else's blocks. An RPC
+ * that does not answer is left to the commands, which say so or outlast it.
+ */
+export async function requireChainId(network: Network, read: () => Promise<number>): Promise<void> {
+  const id = await read().catch(() => undefined);
+  if (id !== undefined && id !== network.chainId) throw new Error(`BRAINCHAIN_RPC_URL serves chain ${id}; ${network.name} is chain ${network.chainId}.`);
 }
 
 /** BrainChain's RPC, with answers that are not JSON-RPC refused before viem reads them. */
@@ -354,6 +371,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
   return {
     ...work,
     account: account.address,
+    gasPrice: () => client.getGasPrice(),
     stakeBalance: () => client.readContract({ address: stakeToken, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     bountyBalance: () => client.readContract({ address: bountyToken, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     stake: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "get", args: [account.address] }),
@@ -467,7 +485,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       return {
         accepted: count([Status.Paid]),
         refunded: tasks.filter((t) => t.status === Status.Refunded && t.model.toLowerCase() === id).length,
-        inFlight: count([Status.Hired, Status.Submitted, Status.Graded, Status.Disputed]),
+        inFlight: count([Status.Hired, Status.Submitted, Status.Graded, Status.Disputed, Status.Ruled, Status.Appealed]),
         earned: paid.reduce((sum, log) => sum + log.args.bounty! - log.args.fee!, 0n),
       };
     },

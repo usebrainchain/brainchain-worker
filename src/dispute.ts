@@ -4,8 +4,7 @@ import { brainchainTransport, erc20Abi, RECEIPT_MS, Status } from "./chain.js";
 import { chainOf, type Network } from "./network.js";
 
 /** TaskBoard statuses from set 3.5.0 on: a ruling that waits out its appeal window, and one under appeal. */
-export const Ruled = 8;
-export const Appealed = 9;
+export const { Ruled, Appealed } = Status;
 
 const boardAbi = parseAbi([
   "function get(uint256 id) view returns ((address poster, uint128 bounty, uint64 deadline, uint8 status, bool accepted, bool disputed, bool disputedByModel, bytes32 model, bytes32 briefHash, bytes32 resultHash, uint64 submittedAt, uint64 gradedAt, uint64 disputedAt, uint64 postedAt, address payee, address feeRecipient, uint16 feeBps, uint16 hireThresholdBps, uint16 gradeThresholdBps, uint16 ruleThresholdBps, uint64 gradeWindow, uint64 disputeWindow, uint64 ruleWindow))",

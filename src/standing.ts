@@ -34,6 +34,42 @@ export async function snapshot(chain: Chain) {
 
 export type Snapshot = Awaited<ReturnType<typeof snapshot>>;
 
+/** The highest gas limit seen for each transaction join can send, across testnet and mainnet. */
+const GAS = { faucet: 76_000n, approve: 50_000n, stake: 120_000n, setPrice: 31_000n, apply: 240_000n };
+/** The highest gas limit seen for delivering a result. */
+const SUBMIT_GAS = 104_000n;
+
+/**
+ * The ETH a wallet must hold for transactions with these gas limits to go
+ * through in order. Each pays the going price, but the RPC refuses one the
+ * wallet could not cover at 2.4 times it, the fee cap it fills in.
+ */
+export function ethNeeded(limits: bigint[], gasPrice: bigint): bigint {
+  let spent = 0n;
+  let need = 0n;
+  for (const limit of limits) {
+    const covered = spent + (limit * gasPrice * 24n) / 10n;
+    if (covered > need) need = covered;
+    spent += limit * gasPrice;
+  }
+  return need;
+}
+
+/** The gas limits of what join would send for this worker, in order. */
+export function joinLimits(s: Snapshot, claims: boolean, reprices: boolean): bigint[] {
+  return [
+    ...(claims ? [GAS.faucet] : []),
+    ...(s.toStake > 0n ? [GAS.approve, GAS.stake] : reprices ? [GAS.setPrice] : []),
+    ...(s.applying ? [GAS.approve, GAS.apply] : []),
+  ];
+}
+
+/** An amount of ETH rounded up to two significant figures. */
+export function aboutEth(wei: bigint): string {
+  const unit = 10n ** BigInt(Math.max(wei.toString().length - 2, 0));
+  return formatEther(((wei + unit - 1n) / unit) * unit);
+}
+
 /** Why the worker can or cannot be hired right now, in one line for `run` or for `status`, which shows the rest itself. */
 export function hireable({ allowed, w, min, applications, change, pending }: Snapshot, network: Network, from: "run" | "status"): string {
   if (allowed) {
@@ -41,7 +77,11 @@ export function hireable({ allowed, w, min, applications, change, pending }: Sna
     return `no: your stake is below the minimum of ${stake(network, min)}. Run join to stake again${from === "run" ? "; status shows what it needs" : ""}.`;
   }
   // An allowed application waiting out its timelock outranks anything filed after it.
-  if (change && pending) return `no: Jev allowed this worker; it can be hired after ${when(change.eta)}`;
+  if (change && pending) {
+    const due = BigInt(Math.floor(Date.now() / 1000)) >= change.eta;
+    const allowed = `no: Jev allowed this worker; ${due ? `the change that allows it was due at ${when(change.eta)} and has not run yet` : `it can be hired after ${when(change.eta)}`}`;
+    return w.staked >= min ? allowed : `${allowed}. Its stake is below the minimum of ${stake(network, min)}, so run join to stake again first.`;
+  }
   const last = applications.at(-1);
   if (last === undefined) return "no: run `npx brainchain-worker join` to apply";
   if (last.state === ApplicationState.Open) return `no: application ${last.id} is waiting for Jev`;
@@ -79,11 +119,15 @@ export function wallet(
   return `${has}; join needs ${stake(network, need)}${reopens}${unstaking}${buy}`;
 }
 
-/** The wallet's ETH. With none, and something for join to do, it says so: join can send nothing until the wallet has some. */
-export function gasLine(network: Network, s: Snapshot, gas: bigint): string {
-  const has = `${formatEther(gas)} ETH`;
-  if (gas > 0n || (s.toStake === 0n && !s.applying)) return has;
-  return `${has}; join needs ETH for gas first. ${network.gas}; 0.001 ETH is plenty.`;
+/** What a wallet short of gas holds and needs, for join's refusal and for `status`. */
+export const shortOfGas = (network: Network, gas: bigint, need: bigint, purpose: string) =>
+  `${formatEther(gas)} ETH on ${network.name}; ${purpose} needs about ${aboutEth(need)} ETH for gas. ${network.gas}.`;
+
+/** The wallet's ETH, and what more join or the next delivery needs, since a send the wallet cannot cover fails partway through. */
+export function gasLine(network: Network, s: Snapshot, gas: bigint, gasPrice: bigint, claims: boolean): string {
+  const limits = joinLimits(s, claims, false);
+  const need = ethNeeded(limits.length > 0 ? limits : [SUBMIT_GAS], gasPrice);
+  return gas >= need ? `${formatEther(gas)} ETH` : shortOfGas(network, gas, need, limits.length > 0 ? "join" : "delivering a result");
 }
 
 /** What join says when the wallet holds too little of a stake token that has no faucet. */

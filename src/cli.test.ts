@@ -118,6 +118,7 @@ function fakeChain(gas: bigint, balance: bigint) {
   return {
     account: ACCOUNT,
     ethBalance: vi.fn(async () => gas),
+    gasPrice: vi.fn(async () => 100_000_000n),
     allowed: vi.fn(async () => false),
     stake: vi.fn(async () => ({ registered: false, staked: 0n, unstaking: 0n, unlocksAt: 0n, price: 0n })),
     minStake: vi.fn(async () => 1_000_000n * BRAIN),
@@ -183,23 +184,68 @@ describe("join", () => {
     for (const chain of [allowed, stranger]) for (const send of [chain.approve, chain.stakeTokens, chain.setPrice, chain.apply]) expect(send).not.toHaveBeenCalled();
   });
 
-  const gas = `${ACCOUNT} has no ETH on BrainChain for gas. Bridge some from Robinhood Chain at https://usebrainchain.com/network; 0.001 ETH is plenty.`;
+  const gas = (holds: string, need: string, network: Network = MAINNET) => `${ACCOUNT} holds ${holds} ETH on ${network.name}; join needs about ${need} ETH for gas. ${network.gas}.`;
   const short = `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${MAINNET.buyStake}`;
 
   it("tells a new mainnet worker with no ETH and no BRAIN both needs at once", async () => {
-    expect(await joinError(fakeChain(0n, 0n), MAINNET)).toBe(`${gas}\n${short}`);
+    expect(await joinError(fakeChain(0n, 0n), MAINNET)).toBe(`${gas("0", "0.00008")}\n${short}`);
   });
 
   it("names only the need a mainnet worker has", async () => {
-    expect(await joinError(fakeChain(0n, 1_250_000n * BRAIN), MAINNET)).toBe(gas);
+    expect(await joinError(fakeChain(0n, 1_250_000n * BRAIN), MAINNET)).toBe(gas("0", "0.00008"));
     expect(await joinError(fakeChain(10n ** 15n, 0n), MAINNET)).toBe(short);
   });
 
   it("names only gas on testnet, where the faucet covers the stake", async () => {
+    expect(await joinError(fakeChain(0n, 0n), TESTNET)).toBe(gas("0", "0.000088", TESTNET));
+  });
+
+  it("refuses a wallet with some ETH but not enough, before anything is sent", async () => {
+    expect(await joinError(fakeChain(20_000_000_000_000n, 0n), TESTNET)).toBe(gas("0.00002", "0.000088", TESTNET));
+    // The figure the docs used to give for joining: what join spends, which is less than a wallet must hold to start.
+    expect(await joinError(fakeChain(50_000_000_000_000n, 0n), TESTNET)).toBe(gas("0.00005", "0.000088", TESTNET));
+  });
+
+  it("goes through with the amount it names", async () => {
+    const chain = fakeChain(88_000_000_000_000n, 0n);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, TESTNET, new Map([["name", "Atlas"], ["about", "Summaries"]]));
+    } finally {
+      log.mockRestore();
+    }
+    expect(chain.apply).toHaveBeenCalledOnce();
+  });
+
+  it("needs no gas when there is nothing to send", async () => {
     const chain = fakeChain(0n, 0n);
-    expect(await joinError(chain, TESTNET)).toBe(
-      `${ACCOUNT} has no ETH on BrainChain testnet for gas. ${TESTNET.gas}; 0.001 ETH is plenty.`,
-    );
-    expect(chain.stake).not.toHaveBeenCalled();
+    chain.allowed.mockResolvedValue(true);
+    chain.stake.mockResolvedValue({ registered: true, staked: 1_000_000n * BRAIN, unstaking: 0n, unlocksAt: 0n, price: 200_000n });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "Summaries"]]));
+      expect(log.mock.calls.at(-1)![0]).toContain("can already be hired");
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
+describe("names every object inherits", () => {
+  const inherited = ["constructor", "toString", "__proto__", "hasOwnProperty"];
+
+  it("are not commands", async () => {
+    for (const name of inherited) {
+      expect(() => parse(name, [])).toThrow(UsageError);
+      await expect(main([name])).rejects.toThrow(`Unknown command "${name}"`);
+      expect(usage(name)).toContain("Usage:\n  brainchain-worker new-key");
+    }
+  });
+
+  it("are not flags", () => {
+    for (const name of inherited) {
+      expect(() => parse("status", [`--${name}`])).toThrow(`The status command has no --${name} flag`);
+      expect(() => parse("watch", [`--${name}`, "--once"])).toThrow(`The watch command has no --${name} flag`);
+    }
   });
 });
