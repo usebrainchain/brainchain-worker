@@ -187,10 +187,16 @@ export function createWatch(options: {
   log: (line: string) => void;
   /** Where the first round starts reading; later rounds continue from the last block seen. */
   fromBlock?: bigint;
+  /** The log's count when an earlier run stopped, so decisions added since are checked. */
+  seenDecision?: bigint;
+  /** With no count to pick up from, how many of the latest decisions the first round checks; without it, that round only notes where the log stands. */
+  recent?: bigint;
+  /** Told the log's count after each round of checks. */
+  saw?: (count: bigint) => void;
 }) {
   const { network, chain, verify, log } = options;
   let nextBlock = options.fromBlock ?? network.fromBlock;
-  let seenDecision: bigint | undefined;
+  let seenDecision = options.seenDecision;
   const judged = new Set<string>();
   let findings = 0;
 
@@ -236,7 +242,9 @@ export function createWatch(options: {
   async function decisions(): Promise<void> {
     if (!verify) return;
     const count = await chain.decisions();
-    // The first round only notes where the log stands; later ones check what was added.
+    if (seenDecision === undefined && options.recent !== undefined) seenDecision = count > options.recent ? count - options.recent : 0n;
+    // A log restarted under a new set of contracts has fewer decisions than the count kept from the old one.
+    if (seenDecision !== undefined && seenDecision > count) seenDecision = options.recent === undefined ? undefined : count > options.recent ? count - options.recent : 0n;
     if (seenDecision === undefined) {
       seenDecision = count;
       log(`${count} decisions recorded so far; new ones are checked from here`);
@@ -260,6 +268,7 @@ export function createWatch(options: {
       }
     }
     seenDecision = count;
+    options.saw?.(count);
     if (!options.report || (checked.length === 0 && found.length === 0)) return;
     try {
       log(await options.report(checked, found));

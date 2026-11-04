@@ -12,11 +12,14 @@ import { createProofMinter, createProofsChain, MAX_MINT, mint } from "./mint.js"
 import { chainOf, resolveNetwork, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
 import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
-import { openStore } from "./state.js";
+import { openStore, readWatched, writeWatched } from "./state.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, type Verify } from "./watch.js";
 import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
+
+/** How many of the latest decisions a first watch --once checks. */
+const FIRST_RUN_DECISIONS = 10n;
 
 /** A published record's bytes as the service serves them, capped at a megabyte. */
 async function fetchRecord(uri: string): Promise<Uint8Array> {
@@ -68,7 +71,8 @@ Usage:
                                             worker's key set, each round is reported to the service toward the
                                             worker's watchtower mark. --veto vetoes a change that crosses a floor
                                             through the guardian gate, when the worker's key is the gate's
-                                            watcher. --once reads one round and exits 1 on a finding.
+                                            watcher. --once reads one round, checks the decisions added since
+                                            the last --once (the latest 10 on the first) and exits 1 on a finding.
   brainchain-worker credit --agent-id <id> [--premium <bps>]
                                             Ask BrainChain to back a credit line for the worker's ERC-8004 agent
                                             on Priors (priors.trade): signs Priors' consent with the agent owner's
@@ -460,6 +464,8 @@ export async function main(argv: string[]): Promise<void> {
       ...(keyed ? { report: createReporter(network, account) } : {}),
       veto,
       log: console.log,
+      // Each run of --once is a new process, so it keeps its place on disk; a first run checks the latest few.
+      ...(once ? { seenDecision: readWatched(log), recent: FIRST_RUN_DECISIONS, saw: (count: bigint) => writeWatched(log, count) } : {}),
     });
     if (veto && !network.contracts.gate) throw new UsageError(`${network.name} has no guardian gate yet, so there is nothing to veto through`);
     console.log(`watching ${network.name} as ${account.address}${veto ? ", vetoing through the guardian gate" : ""}${keyed ? ", reporting rounds to the service" : ""}`);
