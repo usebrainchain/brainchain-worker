@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,7 @@ import { ContractFunctionExecutionError, ContractFunctionRevertedError, encodeEr
 import { taskBoardAbi } from "./abi.js";
 import { PermanentError, submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
-import { createWork, MAX_RESULT_BYTES, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound } from "./work.js";
+import { createWork, MAX_RESULT_BYTES, npxUnderSupervisor, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
 const dataURI = (text: string) => `data:application/json;base64,${Buffer.from(text).toString("base64")}`;
@@ -134,6 +134,34 @@ describe("work", () => {
     });
     await work.round();
     expect(lastLog(log)).toContain("no time left to retry");
+  });
+
+  it("delivers a finished result inside the last minutes before the deadline, and runs no new command there", async () => {
+    const store = memoryStore();
+    store.state.tasks["7"] = { failures: 1, nextAt: 0, result: "finished work", stored: { uri: "https://brain.example/records/7.txt", hash: TX } };
+    const held = setup(async () => "unused", { store });
+    held.at(9_800n);
+    expect(await held.work.round()).toEqual({ hired: 1, delivered: 1, failed: 0 });
+    expect(held.command.run).not.toHaveBeenCalled();
+    expect(held.chain.submit).toHaveBeenCalledOnce();
+
+    const fresh = setup(async () => "unused");
+    fresh.at(9_800n);
+    expect(await fresh.work.round()).toEqual({ hired: 1, delivered: 0, failed: 1 });
+    expect(fresh.command.run).not.toHaveBeenCalled();
+    expect(lastLog(fresh.log)).toContain("too close to the deadline");
+  });
+
+  it("keeps retrying the delivery of a finished result until the deadline itself", async () => {
+    const store = memoryStore();
+    store.state.tasks["7"] = { failures: 0, nextAt: 0, result: "finished work" };
+    const { chain, log, work, at } = setup(async () => "unused", { store });
+    chain.publish.mockRejectedValueOnce(new Error("Uploading the result failed (503)"));
+    at(9_800n);
+    await work.round();
+    expect(lastLog(log)).toContain("retrying in 60 seconds");
+    at(9_900n);
+    expect((await work.round()).delivered).toBe(1);
   });
 
   it("refuses a result larger than the service accepts", async () => {
@@ -478,6 +506,25 @@ describe("shellCommand", () => {
     expect(Date.now() - started).toBeLessThan(4_000);
   });
 
+  it("takes what a command printed when it exits 0 and leaves a background process holding its pipes", async () => {
+    const started = Date.now();
+    expect(await shellCommand("echo done; sleep 30 &").run("", {}, 20_000)).toBe("done\n");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("still fails a command that exits non-zero and leaves a background process holding its pipes", async () => {
+    await expect(shellCommand("echo partial; sleep 30 & exit 3").run("", {}, 20_000)).rejects.toThrow("code 3");
+  });
+
+  it("kills what a command leaves running when it exits, even with the pipes closed", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "brainchain-worker-"));
+    const pidFile = join(folder, "pid");
+    await shellCommand(`nohup sh -c 'echo $$ > ${pidFile}; sleep 30' >/dev/null 2>&1 & sleep 0.2; echo done`).run("", {}, 20_000);
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
   it("kills a running command at once", async () => {
     const command = shellCommand("sleep 30");
     const running = command.run("", {}, 60_000);
@@ -494,6 +541,33 @@ describe("shellCommand", () => {
     added[0]!(0);
     await expect(running).rejects.toThrow("SIGKILL");
     expect(process.listeners("exit")).toEqual(before);
+  });
+});
+
+describe("watchStarter", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("calls back once when the process above this one is gone, and not before", async () => {
+    const ppid = vi.spyOn(process, "ppid", "get");
+    ppid.mockReturnValue(4_242);
+    const lost = vi.fn();
+    watchStarter(lost, 10);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(lost).not.toHaveBeenCalled();
+    ppid.mockReturnValue(1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(lost).toHaveBeenCalledOnce();
+    ppid.mockReturnValue(7);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(lost).toHaveBeenCalledOnce();
+  });
+});
+
+describe("npxUnderSupervisor", () => {
+  it("is false where it cannot tell, as off Linux or for a parent that is gone", () => {
+    const ppid = vi.spyOn(process, "ppid", "get").mockReturnValue(2 ** 22 + 1);
+    expect(npxUnderSupervisor({ INVOCATION_ID: "abc" })).toBe(false);
+    ppid.mockRestore();
   });
 });
 

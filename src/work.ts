@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 import { toBytes, type Hex } from "viem";
 
@@ -13,6 +14,8 @@ const OUTPUT_CAP = MAX_RESULT_BYTES * 2;
 const MARGIN_SEC = 300n;
 const RETRY_SEC = [60n, 240n, 960n];
 const DEFAULT_TIMEOUT_MS = 20 * 60_000;
+/** How long the pipes stay open after a command exits, for what it had already written. */
+const DRAIN_MS = 2_000;
 
 const ANSI = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
 
@@ -163,6 +166,45 @@ function orphaned(pgid: number): boolean {
   return own !== undefined && own !== String(pgid);
 }
 
+/** A Linux process's name and parent; undefined where /proc has no such process or there is no /proc. */
+function procStat(pid: number): { comm: string; ppid: number } | undefined {
+  try {
+    const stat = /^\d+ \((.*)\) \S (\d+) /s.exec(readFileSync(`/proc/${pid}/stat`, "utf8"));
+    return stat ? { comm: stat[1]!, ppid: Number(stat[2]) } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The npm process above a worker it started: its parent, or its grandparent where the shell npm runs the command in stays between them. */
+function npmAbove(): number | undefined {
+  const parent = procStat(process.ppid);
+  return parent && /^(sh|dash)$/.test(parent.comm) ? parent.ppid : undefined;
+}
+
+/**
+ * Calls `lost` once when what npx put above this process dies. npx passes a stop
+ * to the shell it runs the worker in, and dash dies without passing it on, so
+ * the worker never hears it and would run on with nothing above it.
+ */
+export function watchStarter(lost: () => void, intervalMs = 1_000): void {
+  const parent = process.ppid;
+  const npm = npmAbove();
+  const timer = setInterval(() => {
+    if (process.ppid === parent && (npm === undefined || exists(npm))) return;
+    clearInterval(timer);
+    lost();
+  }, intervalMs);
+  timer.unref();
+}
+
+/** Whether a supervisor started the npx above this process, as PID 1, as a child of PID 1 or as a systemd service. A stop from it can reach no further than npx. */
+export function npxUnderSupervisor(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (procStat(process.ppid) === undefined) return false;
+  const npm = npmAbove() ?? process.ppid;
+  return npm === 1 || procStat(npm)?.ppid === 1 || env.INVOCATION_ID !== undefined;
+}
+
 /**
  * Stops the command an earlier run left running when it died, such as on
  * SIGKILL, so a restart never works on the same task twice at once. It gets
@@ -224,6 +266,15 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
           }, graceMs);
         };
         const timer = setTimeout(() => stop(`The command ran past ${Math.round(timeoutMs / 1000)} seconds and was stopped`), timeoutMs);
+        let drain: NodeJS.Timeout | undefined;
+        child.on("exit", () => {
+          clearTimeout(timer);
+          // A background process can hold the pipes open long after the command has exited, and close would wait for it.
+          drain = setTimeout(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+          }, DRAIN_MS);
+        });
         child.stdout.on("data", (chunk: Buffer) => {
           size += chunk.byteLength;
           if (size <= OUTPUT_CAP) return void chunks.push(chunk);
@@ -232,12 +283,18 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
         child.on("error", (error) => {
           clearTimeout(timer);
           clearTimeout(force);
+          clearTimeout(drain);
           reject(error);
         });
         child.on("close", (code, signal) => {
           clearTimeout(timer);
           clearTimeout(force);
-          if (pid !== undefined) running.delete(pid);
+          clearTimeout(drain);
+          if (pid !== undefined) {
+            // The task is over, and nothing a stranger's brief started should outlive it.
+            signalGroup(pid, "SIGKILL");
+            running.delete(pid);
+          }
           if (running.size === 0) process.off("exit", kill);
           if (stopped !== undefined) return reject(new Error(stopped));
           if (code === 126 || code === 127) return reject(new Error(`The command exited with code ${code}: the shell could not ${code === 127 ? "find" : "run"} it`));
@@ -398,7 +455,7 @@ export function createWork(options: {
             delete attempt.tx;
             store.save();
           }
-          if (now + MARGIN_SEC >= task.deadline) {
+          if (attempt.result === undefined && now + MARGIN_SEC >= task.deadline) {
             finish(key);
             fail();
             log(`task ${task.id}: too close to the deadline to deliver; the poster is refunded`);
@@ -450,7 +507,8 @@ export function createWork(options: {
           const wait = RETRY_SEC[Math.min(attempt.failures - 1, RETRY_SEC.length - 1)]!;
           // The attempt may have run for many minutes, so the retry is timed from now.
           const now = await chain.now().catch(wall);
-          if (now + wait + MARGIN_SEC >= task.deadline) {
+          // A retry with the result in hand only has to deliver it, so the margin for running the command does not apply.
+          if (now + wait + (attempt.result === undefined ? MARGIN_SEC : 0n) >= task.deadline) {
             finish(key);
             log(`task ${task.id}: failed (${why}); no time left to retry, so the poster is refunded`);
             continue;
