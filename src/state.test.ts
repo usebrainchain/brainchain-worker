@@ -120,6 +120,17 @@ describe("lock", () => {
     expect(() => lock(file)).toThrow(`pid ${process.ppid}`);
   });
 
+  it("takes over a bare-pid lock nobody has touched, though a process now has its pid, as pid 1 does after a container restarts", () => {
+    for (const pid of [1, process.ppid]) {
+      const file = join(dir(), "worker.lock");
+      writeFileSync(file, String(pid));
+      utimesSync(file, minuteAgo(), minuteAgo());
+      const release = lock(file);
+      expect(lockPid(file)).toBe(process.pid);
+      release();
+    }
+  });
+
   it("takes over a lock its holder left behind, and releases it", () => {
     const file = join(dir(), "worker.lock");
     writeFileSync(file, String(spawnSync("true").pid));
@@ -263,6 +274,16 @@ describe("openStore", () => {
     expect(() => openStore(ADDRESS, MAINNET, undefined, folder)).toThrow(held(`${old}.lock`, process.ppid));
     expect(existsSync(`${old}.json`)).toBe(true);
     expect(openStore(ADDRESS, TESTNET, undefined, folder).state.done).toEqual([]);
+  });
+
+  it("moves state past a lock from before the move that nobody has touched, though a process now has its pid", () => {
+    const folder = dir();
+    const old = join(folder, ADDRESS);
+    writeFileSync(`${old}.json`, saved(MAINNET.contracts.taskBoard, ["5"]));
+    writeFileSync(`${old}.lock`, "1");
+    utimesSync(`${old}.lock`, minuteAgo(), minuteAgo());
+    expect(openStore(ADDRESS, MAINNET, vi.fn(), folder).state.done).toEqual(["5"]);
+    expect(existsSync(`${old}.lock`)).toBe(false);
   });
 
   it("runs one key on testnet and mainnet at once, each with its own lock and state", () => {
