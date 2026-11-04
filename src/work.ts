@@ -98,6 +98,17 @@ export function childEnv(extra: Record<string, string>): Record<string, string> 
   return { ...env, ...extra };
 }
 
+/** The program a shell command starts with, when it plainly starts with one; undefined for anything a shell has to interpret first. */
+export function firstProgram(command: string): string | undefined {
+  const word = /^\s*([^\s]+)/.exec(command)?.[1];
+  return word !== undefined && /^[\w./+-]+$/.test(word) ? word : undefined;
+}
+
+/** Whether the shell can find a program, for a warning at start; a typo otherwise only shows at the first hire. */
+export function programFound(program: string): boolean {
+  return spawnSync("sh", ["-c", 'command -v -- "$0" >/dev/null', program], { stdio: "ignore" }).status === 0;
+}
+
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
   try {
     process.kill(-pid, signal);
@@ -229,6 +240,7 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
           if (pid !== undefined) running.delete(pid);
           if (running.size === 0) process.off("exit", kill);
           if (stopped !== undefined) return reject(new Error(stopped));
+          if (code === 126 || code === 127) return reject(new Error(`The command exited with code ${code}: the shell could not ${code === 127 ? "find" : "run"} it`));
           if (code !== 0) return reject(new Error(signal ? `The command was stopped by ${signal}` : `The command exited with code ${code}`));
           try {
             resolve(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));

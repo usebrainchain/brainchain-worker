@@ -16,7 +16,7 @@ import { openStore, readWatched, writeWatched } from "./state.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, type Verify } from "./watch.js";
-import { createWork, shellCommand, stopLeftover, stopper } from "./work.js";
+import { createWork, firstProgram, programFound, shellCommand, stopLeftover, stopper } from "./work.js";
 
 /** How many of the latest decisions a first watch --once checks. */
 const FIRST_RUN_DECISIONS = 10n;
@@ -317,6 +317,8 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   }
 
   const log = (message: string) => console.log(`${new Date().toISOString().slice(0, 19)}Z ${message}`);
+  const program = firstProgram(exec);
+  if (program && !programFound(program)) log(`warning: the shell cannot find ${program}, so --exec will fail when the worker is hired`);
   const store = openStore(account.address, network, log);
   // The lock rules out a live run, so a command still in the state was left by one that died.
   await stopLeftover(store, log);
