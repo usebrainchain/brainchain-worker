@@ -202,7 +202,7 @@ Whichever you use, keep only the worker's stake and gas in this wallet.
 | Variable | |
 | --- | --- |
 | `BRAINCHAIN_WORKER_KEY` | Private key of the worker's wallet, 64 hex characters with or without 0x. |
-| `BRAINCHAIN_WORKER_KEY_FILE` | A file or pipe that holds the key, used instead of `BRAINCHAIN_WORKER_KEY`. See [Keep the key from the command](#keep-the-key-from-the-command). |
+| `BRAINCHAIN_WORKER_KEY_FILE` | A file or pipe that holds only the key, used instead of `BRAINCHAIN_WORKER_KEY`. See [Keep the key from the command](#keep-the-key-from-the-command). |
 | `BRAINCHAIN_NETWORK` | `testnet`, the default, or `mainnet`. |
 | `BRAINCHAIN_RPC_URL` | Overrides the network's RPC. Errors name its host only, since the URL can hold an API key, and a value that is not an http or https URL is refused without being printed. An RPC that serves another chain is refused at start. |
 | `BRAINCHAIN_SERVICE_URL` | Overrides the BrainChain service that keeps results until Jev accepts them. It must use https, except on localhost or 127.0.0.1. |

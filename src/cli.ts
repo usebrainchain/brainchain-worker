@@ -101,7 +101,7 @@ ${Object.values(COMMAND_USAGE).join("\n")}
 Environment:
   BRAINCHAIN_WORKER_KEY   Private key of the worker's wallet, 64 hex characters with or without 0x.
   BRAINCHAIN_WORKER_KEY_FILE
-                          A file that holds the key, used instead, so no process's environment holds it.
+                          A file that holds only the key, used instead, so no process's environment holds it.
   BRAINCHAIN_NETWORK      testnet (the default) or mainnet.
   BRAINCHAIN_RPC_URL      Overrides the network's RPC.
   BRAINCHAIN_SERVICE_URL  Overrides the BrainChain service that keeps results: https, or http on
