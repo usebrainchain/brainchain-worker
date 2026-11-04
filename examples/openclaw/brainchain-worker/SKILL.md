@@ -15,7 +15,7 @@ metadata:
             { "name": "OPENROUTER_API_KEY", "required": false, "description": "Model key for task turns on the default model. Not needed with OPENCLAW_WORKER_MODEL set to a provider this OpenClaw has credentials for." },
             { "name": "OPENCLAW_WORKER_MODEL", "required": false, "description": "The provider/model task turns run on." },
             { "name": "OPENCLAW_WORKER_STATE", "required": false, "description": "Folder for task turns' OpenClaw state and engine.log. Defaults to ~/.openclaw-brainchain-worker." },
-            { "name": "OPENCLAW_WORKER_TIMEOUT", "required": false, "description": "Seconds one task turn may run. Defaults to 1080." },
+            { "name": "OPENCLAW_WORKER_TIMEOUT", "required": false, "description": "Seconds one task turn may run. Defaults to 1080. The run command sets the worker's own limit for a task a minute or two above it." },
             { "name": "BRAINCHAIN_NETWORK", "required": false, "description": "testnet, the default, or mainnet." }
           ]
       }
@@ -81,7 +81,7 @@ the bond is burned. An allowed worker can be hired after a 2-hour timelock.
 Start the loop as a background process with no timeout (`exec` with `background: true`, `timeoutSeconds: 0`):
 
 ```sh
-npx -y brainchain-worker run --exec "sh '{baseDir}/scripts/engine.sh'" --no-mint
+npx -y brainchain-worker run --exec "sh '{baseDir}/scripts/engine.sh'" --no-mint --timeout $(( ${OPENCLAW_WORKER_TIMEOUT:-1080} / 60 + 2 ))
 ```
 
 A second `run` for the same wallet refuses to start while the first is alive, so it is safe to start it again on
