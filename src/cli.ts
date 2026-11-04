@@ -49,12 +49,12 @@ const COMMAND_USAGE: Record<string, string> = {
                                             most 60 characters, the description at most 500. --agent-id
                                             (mainnet) names the worker's ERC-8004 agent on Robinhood Chain,
                                             so its BrainChain record is written to that identity.`,
-  run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--no-mint]
+  run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--mint]
                                             Do every task Jev hires the worker for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
                                             --timeout minutes (20 by default, at most 1440). It logs how
-                                            each task settles, and mints the Proof of each task it is paid
-                                            for, unless --no-mint.`,
+                                            each task settles. --mint also mints the Proof of each task it is
+                                            paid for.`,
   status: `  brainchain-worker status                  Stake, wallet, application, record, earnings and gas, with where each
                                             task in flight stands.`,
   price: `  brainchain-worker price <USDG>            Change your asking price per task.`,
@@ -131,7 +131,8 @@ export class UsageError extends Error {}
 const FLAGS: Record<string, Record<string, boolean>> = {
   "new-key": { file: false },
   join: { name: false, about: false, price: false, "agent-id": false },
-  run: { exec: false, format: false, timeout: false, once: true, "no-mint": true },
+  // --no-mint is still accepted from before minting became opt-in; it changes nothing.
+  run: { exec: false, format: false, timeout: false, once: true, mint: true, "no-mint": true },
   status: {},
   price: {},
   leave: {},
@@ -655,7 +656,7 @@ export async function main(argv: string[]): Promise<void> {
     const uri = caseURI(call, { title: values.get("title") ?? "", rationale: values.get("rationale") ?? "", current: values.get("current"), proposed: values.get("proposed") });
     return propose(network, createProposals(network, worker.account), call, uri, { dry: switches.has("dry"), log: console.log });
   }
-  if (command === "run") return run(network, worker, values, switches.has("once"), !switches.has("no-mint"));
+  if (command === "run") return run(network, worker, values, switches.has("once"), switches.has("mint"));
   const chain = createChain(network, worker.account);
   switch (command) {
     case "join":

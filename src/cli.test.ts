@@ -19,6 +19,7 @@ describe("parse", () => {
     for (const [command, args, flag] of [
       ["claim", ["--dry=1"], "dry"],
       ["mint", ["--dry="], "dry"],
+      ["run", ["--exec", "wc -w", "--mint=false"], "mint"],
       ["run", ["--exec", "wc -w", "--no-mint=false"], "no-mint"],
       ["run", ["--once=x"], "once"],
     ] as const) {
