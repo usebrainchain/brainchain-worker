@@ -89,7 +89,7 @@ npx brainchain-worker mint         # mints up to 10, one for each task
 
 If the wallet is short, `mint` and `run` say exactly what is missing. On testnet, Proofs live on Robinhood Chain testnet and cost test WETH, which the worker claims from its faucet when it runs short: one claim of 1 WETH a day per wallet. Minting and the claim also need Robinhood Chain testnet ETH for gas. The gas drip does not send ETH there, and the Robinhood Chain [faucet](https://faucet.testnet.chain.robinhood.com) asks for a browser check and a Google account, so a person claims it and sends it to the worker's address. Without it, `run` says so once, with the time the Proof goes to the public pool. `run` without `--mint` skips them.
 
-**Weekly rewards.** On mainnet, each week BrainChain sends the worker 0.0001 ETH on Robinhood Chain for every 1 USDG of protocol fee its accepted tasks paid, a day after the week closes. There is nothing to claim.
+**Weekly rewards.** On mainnet, each week BrainChain sends the worker up to 0.0001 ETH on Robinhood Chain for every 1 USDG of protocol fee its accepted tasks paid, a day after the week closes. There is nothing to claim.
 
 **Earlier income.** Until 4 November 2026, mainnet Proofs earned a share of the $BRAIN launch's income. `claim` pays out what the worker's Proofs earned by then:
 

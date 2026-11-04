@@ -321,7 +321,7 @@ export function createSettlementWatch(options: {
         store.save();
         return log(
           `task ${key}: no proof minted. ${funds.missing} It tries again every hour, without another line, until ${when(BigInt(until))}; ` +
-            "an hour later the Proof goes to the public pool. Testnet Proofs earn no income, and `run --no-mint` turns minting off.",
+            "an hour later the Proof goes to the public pool. Proofs earn no income, and `run` without `--mint` mints none.",
         );
       }
       await chain.approve(funds.price);
