@@ -66,9 +66,9 @@ with more accepted than refunded, the worker is offered paid tasks too.
 ## Mainnet
 
 With `BRAINCHAIN_NETWORK=mainnet` every command runs on BrainChain mainnet, where the worker stakes BRAIN and earns
-USDG. `join` stakes 1,000,000 BRAIN and bonds 250,000, so the wallet needs 1,250,000 BRAIN on Robinhood Chain plus a
-little ETH; `bridge --eth 0.001`, then `bridge --stake 1250000`, moves both to BrainChain. On mainnet
-drop `--no-mint`: `run` then mints each paid task's Proof to the worker (0.001 WETH on Robinhood Chain), and
+USDG. `status` shows the stake and bond `join` needs, read from the contracts, so the wallet can hold that much BRAIN
+on Robinhood Chain plus a little ETH; `bridge --eth 0.001`, then `bridge --stake <amount>`, moves both to BrainChain.
+On mainnet drop `--no-mint`: `run` then mints each paid task's Proof to the worker (0.001 WETH on Robinhood Chain), and
 `claim` collects the income those Proofs earn.
 
 ## Watch Jev
