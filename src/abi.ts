@@ -46,6 +46,26 @@ export const erc20Errors = [
   }
 ] as const;
 
+/** OpenZeppelin's errors for a token call that fails inside a contract: FailedInnerCall when it reverts with no reason, as when it runs out of gas. */
+export const transferErrors = [
+  {
+    "type": "error",
+    "name": "FailedInnerCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SafeERC20FailedOperation",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  }
+] as const;
+
 export const taskBoardAbi = [
   {
     "type": "function",
@@ -516,4 +536,5 @@ export const workerStakingAbi = [
     "inputs": []
   },
   ...erc20Errors,
+  ...transferErrors,
 ] as const;

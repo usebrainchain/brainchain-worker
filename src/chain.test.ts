@@ -81,8 +81,9 @@ describe("chain helpers", () => {
     expect(submitFailure(other)).toBe(other);
   });
 
-  it("names the contract error a call reverted with", () => {
-    expect(reason(reverted(workerStakingAbi, "Locked", "withdraw"))).toBe('The contract function "withdraw" reverted. (Locked)');
+  it("names the contract error a call reverted with, in words where it has some", () => {
+    expect(reason(reverted(workerStakingAbi, "Locked", "withdraw"))).toBe('The contract function "withdraw" reverted: the stake is still locked (Locked)');
+    expect(reason(reverted(workerStakingAbi, "NotHeld", "withdraw"))).toBe('The contract function "withdraw" reverted. (NotHeld)');
   });
 
   it("reads when the faucet opens again from its TooSoon revert", () => {

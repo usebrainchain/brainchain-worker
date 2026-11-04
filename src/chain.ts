@@ -20,7 +20,7 @@ import {
   type PrivateKeyAccount,
 } from "viem";
 
-import { erc20Errors, taskBoardAbi, workerStakingAbi } from "./abi.js";
+import { erc20Errors, taskBoardAbi, transferErrors, workerStakingAbi } from "./abi.js";
 import { chainOf, parentChainOf, type Network } from "./network.js";
 import { memoryStore, type Store } from "./state.js";
 
@@ -44,12 +44,18 @@ export const bondsAbi = [
     "function bond() view returns (uint128)",
   ]),
   ...erc20Errors,
+  ...transferErrors,
 ] as const;
 
 export const executorAbi = parseAbi([
   "event Queued(uint256 indexed changeId, uint256 indexed decisionId, address indexed target, bytes data, uint64 eta)",
   "function getChange(uint256 changeId) view returns ((address target, bytes data, uint64 eta, bool executed, bool vetoed))",
   "function timelock() view returns (uint64)",
+]);
+
+/** The appeal terms of a task on set 3.5.0 and later; earlier boards have no appeals and no Ruled or Appealed status. */
+export const appealAbi = parseAbi([
+  "function appealOf(uint256 id) view returns ((uint64 window, uint16 bondBps, uint64 ruledAt, bool pays, bool confident, address appellant, uint128 bond, uint64 appealedAt))",
 ]);
 
 /** Mirrors TaskBoard.Status. */
@@ -207,22 +213,55 @@ function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutErr
   return `${host} answered ${status}${details ? ` (${details})` : ""}`;
 }
 
+const SHORT_OF_GAS = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
+
+
 /** Whether a send failed because the wallet cannot cover its gas: the RPC's gas estimate says so as a revert, and the send itself as insufficient funds. */
 function outOfGas(error: BaseError): boolean {
   return /gas required exceeds allowance/i.test(error.message) || error.walk((e) => e instanceof InsufficientFundsError) instanceof InsufficientFundsError;
 }
 
+/**
+ * A send that reverted, checked again as a call without the RPC's cap on gas.
+ * The RPC estimates a send with no more gas than the wallet pays for, and a
+ * token transfer inside it can run out and revert with FailedInnerCall; a call
+ * that passes uncapped failed only for want of gas.
+ */
+export async function explainRevert(error: unknown, uncapped: () => Promise<unknown>): Promise<unknown> {
+  if (!(error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError))) return error;
+  return (await uncapped().then(() => true, () => false)) ? new Error(SHORT_OF_GAS) : error;
+}
+
+/** The contract errors a worker's own sends can meet, in words. */
+const PLAIN: Record<string, string> = {
+  BadStatus: "the task is not at the step this needs",
+  TooLate: "its window has closed",
+  TooEarly: "its window has not closed yet",
+  NotWorker: "this wallet is not the worker hired for the task",
+  NotDisputant: "only the poster or the account that delivered can dispute the grade",
+  NotAppellant: "only the side the ruling went against can appeal it",
+  IsPaused: "the task board is paused",
+  TransferMismatch: "the token moved a different amount than the call asked for",
+  FailedInnerCall: "a token transfer inside the call failed without a reason",
+  SafeERC20FailedOperation: "a token transfer inside the call failed",
+  ERC20InsufficientAllowance: "the wallet has not approved enough of the token for the contract to take",
+  ERC20InsufficientBalance: "the wallet holds too little of the token",
+  Locked: "the stake is still locked",
+};
+
 /** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
 export function reason(error: unknown): string {
   if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error);
-  if (outOfGas(error)) return "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
+  if (outOfGas(error)) return SHORT_OF_GAS;
   // An RPC error with an HTTP status is a provider refusing the request, such as a bad key or a rate limit.
   const request = error.walk(
     (e) => e instanceof HttpRequestError || e instanceof TimeoutError || (e instanceof RpcRequestError && e.status !== undefined),
   );
   if (request instanceof HttpRequestError || request instanceof RpcRequestError || request instanceof TimeoutError) return requestFailure(request);
   const name = revertOf(error)?.errorName;
-  return name ? `${error.shortMessage} (${name})` : error.shortMessage;
+  if (name === undefined) return error.shortMessage;
+  const plain = Object.hasOwn(PLAIN, name) ? PLAIN[name] : undefined;
+  return plain ? `${error.shortMessage.replace(/\.$/, "")}: ${plain} (${name})` : `${error.shortMessage} (${name})`;
 }
 
 /** Why the BrainChain service failed its health check, or undefined when it passed. */
@@ -268,7 +307,9 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
   const origin = new URL(network.service).origin;
 
   async function send(request: Parameters<typeof wallet.writeContract>[0], sent?: (hash: Hex) => void): Promise<Hex> {
-    const hash = await wallet.writeContract(request);
+    const hash = await wallet.writeContract(request).catch(async (error: unknown) => {
+      throw await explainRevert(error, () => client.call({ account: account.address, to: request.address, data: encodeFunctionData(request as Parameters<typeof encodeFunctionData>[0]) }));
+    });
     sent?.(hash);
     const receipt = await client.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
     if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted`);
