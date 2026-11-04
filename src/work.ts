@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { toBytes, type Hex } from "viem";
 
 import { fetchBrief, PermanentError, reason, RECEIPT_MS, type HiredTask, type WorkerChain } from "./chain.js";
+import { ps, startTime } from "./proc.js";
 import { memoryStore, type Store, type TaskState } from "./state.js";
 
 /** The most the service accepts for one result. */
@@ -140,20 +141,6 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
     const { code } = error as NodeJS.ErrnoException;
     if (code !== "ESRCH" && code !== "EPERM") throw error;
   }
-}
-
-/** One field of `ps` for a process, or undefined when it is gone or ps cannot tell. */
-function ps(pid: number, field: "etime" | "pgid"): string | undefined {
-  const result = spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" });
-  return result.status === 0 ? result.stdout.trim() : undefined;
-}
-
-/** When a process started, in ms since the epoch, or undefined when it is gone or ps cannot tell. */
-function startTime(pid: number): number | undefined {
-  const elapsed = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(ps(pid, "etime") ?? "");
-  if (!elapsed) return undefined;
-  const [days, hours, minutes, seconds] = elapsed.slice(1).map((part) => Number(part ?? 0)) as [number, number, number, number];
-  return Date.now() - (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
 }
 
 function exists(pid: number): boolean {

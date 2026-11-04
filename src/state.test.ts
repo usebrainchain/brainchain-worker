@@ -125,14 +125,25 @@ describe("lock", () => {
     expect(() => lock(file)).toThrow(`pid ${process.ppid}`);
   });
 
-  it("takes over a bare-pid lock nobody has touched, though a process now has its pid, as pid 1 does after a container restarts", () => {
-    for (const pid of [1, process.ppid]) {
+  it("refuses while a run from 0.12 or earlier holds its lock, however long ago it wrote it", () => {
+    // Pid 1 started before the lock was written, as a 0.12 run did, and 0.12 never touched its lock again.
+    const file = join(dir(), "worker.lock");
+    writeFileSync(file, "1");
+    utimesSync(file, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000));
+    expect(() => lock(file)).toThrow("pid 1)");
+  });
+
+  it("takes over a bare-pid lock whose pid a process took up after it was written, as pid 1 does after a container restarts", () => {
+    const later = spawn("sleep", ["30"], { stdio: "ignore" });
+    try {
       const file = join(dir(), "worker.lock");
-      writeFileSync(file, String(pid));
+      writeFileSync(file, String(later.pid));
       utimesSync(file, minuteAgo(), minuteAgo());
       const release = lock(file);
       expect(lockPid(file)).toBe(process.pid);
       release();
+    } finally {
+      later.kill("SIGKILL");
     }
   });
 
@@ -281,14 +292,19 @@ describe("openStore", () => {
     expect(openStore(ADDRESS, TESTNET, undefined, folder).state.done).toEqual([]);
   });
 
-  it("moves state past a lock from before the move that nobody has touched, though a process now has its pid", () => {
-    const folder = dir();
-    const old = join(folder, ADDRESS);
-    writeFileSync(`${old}.json`, saved(MAINNET.contracts.taskBoard, ["5"]));
-    writeFileSync(`${old}.lock`, "1");
-    utimesSync(`${old}.lock`, minuteAgo(), minuteAgo());
-    expect(openStore(ADDRESS, MAINNET, vi.fn(), folder).state.done).toEqual(["5"]);
-    expect(existsSync(`${old}.lock`)).toBe(false);
+  it("moves state past a lock from before the move whose pid a process took up since", () => {
+    const later = spawn("sleep", ["30"], { stdio: "ignore" });
+    try {
+      const folder = dir();
+      const old = join(folder, ADDRESS);
+      writeFileSync(`${old}.json`, saved(MAINNET.contracts.taskBoard, ["5"]));
+      writeFileSync(`${old}.lock`, String(later.pid));
+      utimesSync(`${old}.lock`, minuteAgo(), minuteAgo());
+      expect(openStore(ADDRESS, MAINNET, vi.fn(), folder).state.done).toEqual(["5"]);
+      expect(existsSync(`${old}.lock`)).toBe(false);
+    } finally {
+      later.kill("SIGKILL");
+    }
   });
 
   it("runs one key on testnet and mainnet at once, each with its own lock and state", () => {

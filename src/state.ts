@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { Hex } from "viem";
 
 import type { Network } from "./network.js";
+import { startTime } from "./proc.js";
 
 export interface TaskState {
   /** Kept across retries and restarts, so a failed upload or submit does not run the paid command again. */
@@ -164,6 +165,8 @@ const LOCK_STALE_MS = 15_000;
 const LOCK_WATCH_MS = 7_000;
 /** A takeover takes a few system calls, so one marker older than this was left by a crash. */
 const TAKEOVER_STALE_MS = 5_000;
+/** How far a start time read from ps, which gives it to the second, can fall after the true one. */
+const START_SLACK_MS = 2_000;
 
 /**
  * Where a pid means something. Containers sharing a config folder each have
@@ -219,12 +222,24 @@ function holderOf(text: string): { pid: number; space?: string } {
   return { pid: 0, space: "" };
 }
 
+/**
+ * Whether the run that wrote a bare-pid lock is still going. 0.12 and earlier
+ * wrote the pid once and never touched the file again, so the lock's age says
+ * nothing. A process that started after the lock was written, as pid 1 does
+ * when a container restarts, has only come to reuse the pid.
+ */
+function bareHeld(pid: number, writtenAt: number): boolean {
+  if (!alive(pid)) return false;
+  const started = startTime(pid);
+  return started === undefined || started <= writtenAt + START_SLACK_MS;
+}
+
 /** Whether the run that wrote a lock is still going. */
 function isHeld(file: string, { pid, space }: ReturnType<typeof holderOf>, watchMs: number): boolean {
   const touched = touchedAt(file);
-  if (touched === undefined || Date.now() - touched >= LOCK_STALE_MS) return false;
-  // A bare pid was written in this PID namespace or one gone since, so after a restart a live pid can be another process.
-  if (space === undefined) return alive(pid);
+  if (touched === undefined) return false;
+  if (space === undefined) return bareHeld(pid, touched);
+  if (Date.now() - touched >= LOCK_STALE_MS) return false;
   if (pid === 0) return true;
   if (space === pidSpace()) return alive(pid);
   // A recent touch can be a run that just died, and a restarted container is one more pid namespace: a live run touches its lock again within a beat.
