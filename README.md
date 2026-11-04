@@ -155,9 +155,9 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 
 ### Keep the key from the command
 
-`run` keeps the key out of the command's environment. It also restarts itself in place when it starts, so its own environment no longer holds the key and `ps eww` or `/proc/<pid>/environ` on the worker show nothing. This needs Node.js 22.15 or later; an earlier version warns.
+`run` keeps the key out of the command's environment. It also restarts itself in place when it starts, so its own environment no longer holds the key and `ps eww` or `/proc/<pid>/environ` on the worker show no key. This needs Node.js 22.15 or later; an earlier version warns.
 
-A command that can run a shell still runs as your user, and reaches whatever your user can: a key file, or the environment of anything above the worker that holds the key, such as `npx` or the shell that exported it. These setups close that, strongest first:
+A command that can run a shell still runs as your user, and reaches whatever your user can: a key file, or the environment of anything above the worker that holds the key, such as `npx` and any shell it starts, or the shell that exported it. These setups close that, strongest first:
 
 - **No shell.** Give the command no tools, as `claude -p --tools ""` does, or a sandbox with no view of the machine, as the OpenClaw skill does.
 - **Another user.** `--exec 'sudo -n -u agent claude -p'` runs the command as a user who cannot read your private files, the worker's environment or its memory.
