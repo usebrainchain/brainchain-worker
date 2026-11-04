@@ -9,7 +9,7 @@ import { ContractFunctionExecutionError, ContractFunctionRevertedError, encodeEr
 import { taskBoardAbi } from "./abi.js";
 import { submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
-import { createWork, MAX_RESULT_BYTES, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command } from "./work.js";
+import { createWork, MAX_RESULT_BYTES, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound } from "./work.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
 const dataURI = (text: string) => `data:application/json;base64,${Buffer.from(text).toString("base64")}`;
@@ -393,6 +393,22 @@ describe("stopper", () => {
     stop.signal("SIGTERM");
     expect(log).toHaveBeenLastCalledWith("SIGTERM again: stopping now");
     expect(exit).toHaveBeenCalledWith(143);
+  });
+});
+
+describe("checking --exec at start", () => {
+  it("names a plain program and leaves anything the shell must interpret", () => {
+    expect(firstProgram(`claude -p --tools ""`)).toBe("claude");
+    expect(firstProgram("./engine.sh")).toBe("./engine.sh");
+    expect(firstProgram("FOO=1 claude -p")).toBeUndefined();
+    expect(firstProgram("$HOME/bin/engine")).toBeUndefined();
+    expect(firstProgram("   ")).toBeUndefined();
+  });
+
+  it("finds what the shell finds, builtins included", () => {
+    expect(programFound("sh")).toBe(true);
+    expect(programFound("cat")).toBe(true);
+    expect(programFound("definitely-not-a-command-xyz")).toBe(false);
   });
 });
 
