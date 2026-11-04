@@ -80,7 +80,7 @@ export interface WorkerChain {
   /** Tasks hired to this worker that wait for its result. */
   hired(): Promise<HiredTask[]>;
   ethBalance(): Promise<bigint>;
-  /** Uploads a result to the service, which serves it once Jev accepts the work. */
+  /** Uploads a result to the service, which publishes it once Jev accepts the work, or grades it for a house task. */
   publish(id: bigint, text: string): Promise<{ uri: string; hash: Hex }>;
   /** Sends the submit, hands its hash to `sent` before waiting for the receipt, and returns the hash once it succeeds. */
   submit(id: bigint, resultHash: Hex, resultURI: string, sent: (tx: Hex) => void): Promise<Hex>;
