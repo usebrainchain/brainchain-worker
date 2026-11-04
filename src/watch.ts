@@ -77,6 +77,8 @@ export interface WatchChain {
   open(changeId: bigint): Promise<boolean>;
   /** How many decisions the log holds. */
   decisions(): Promise<bigint>;
+  /** The account the guardian gate takes vetoes from; absent where the network has no gate. */
+  watcher?(): Promise<Address>;
   /** Vetoes through the guardian gate; absent where the network has no gate or the worker holds no watcher key. */
   veto?(changeId: bigint, reason: string): Promise<Hex>;
 }
@@ -111,6 +113,7 @@ export function createWatchChain(network: Network, account: PrivateKeyAccount): 
     decisions: () => client.readContract({ address: network.contracts.log, abi: logAbi, functionName: "count" }),
     ...(gate
       ? {
+          watcher: () => client.readContract({ address: gate, abi: gateAbi, functionName: "watcher" }),
           async veto(changeId: bigint, why: string) {
             const watcher = await client.readContract({ address: gate, abi: gateAbi, functionName: "watcher" });
             if (watcher.toLowerCase() !== account.address.toLowerCase()) throw new Error(`the gate's watcher is ${watcher}, not this worker`);
@@ -121,6 +124,21 @@ export function createWatchChain(network: Network, account: PrivateKeyAccount): 
         }
       : {}),
   };
+}
+
+/**
+ * Refuses a --veto run whose key is not the gate's watcher, which otherwise
+ * shows only when a veto is due. A read that fails does not stop the watch: a
+ * round outlasts a bad RPC, and each veto reads the watcher again.
+ */
+export async function requireWatcher(chain: WatchChain, log: (line: string) => void): Promise<void> {
+  const watcher = await chain.watcher?.().catch((error: unknown) => {
+    log(`could not read the gate's watcher (${reason(error)}); it is read again before any veto`);
+    return undefined;
+  });
+  if (watcher !== undefined && watcher.toLowerCase() !== chain.account.toLowerCase()) {
+    throw new Error(`This key cannot veto: the gate's watcher is ${watcher}, not ${chain.account}. Set BRAINCHAIN_WORKER_KEY to the watcher's key, or run watch without --veto.`);
+  }
 }
 
 /**

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContractFunctionExecutionError, ContractFunctionRevertedError, encodeErrorResult, keccak256, toBytes, type Hex } from "viem";
 
 import { taskBoardAbi } from "./abi.js";
-import { submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
+import { PermanentError, submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
 import { createWork, MAX_RESULT_BYTES, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound } from "./work.js";
 
@@ -141,6 +141,23 @@ describe("work", () => {
     await work.round();
     expect(chain.publish).not.toHaveBeenCalled();
     expect(lastLog(log)).toContain("at most 100000 are accepted");
+  });
+
+  it("runs the command again after a result over the limit, since the next run can print less", async () => {
+    const answers = ["x".repeat(MAX_RESULT_BYTES + 1), "short enough"];
+    const { chain, log, work, at } = setup(async () => answers.shift()!);
+    expect(await work.round()).toMatchObject({ failed: 1, delivered: 0 });
+    expect(lastLog(log)).toContain("retrying in 60 seconds");
+    at(2_000n);
+    expect(await work.round()).toMatchObject({ failed: 0, delivered: 1 });
+    expect(chain.publish).toHaveBeenCalledWith(7n, "short enough");
+  });
+
+  it("delivers a result that is over the limit only before whitespace and terminal codes are stripped", async () => {
+    const text = "x".repeat(MAX_RESULT_BYTES);
+    const { chain, work } = setup(async () => `\n\n${"\x1b[0m".repeat(10_000)}${text}${" ".repeat(10_000)}\n`);
+    expect(await work.round()).toMatchObject({ failed: 0, delivered: 1 });
+    expect(chain.publish).toHaveBeenCalledWith(7n, text);
   });
 
   it("never uploads a result that contains the worker's key, and does not try again", async () => {
@@ -443,8 +460,10 @@ describe("shellCommand", () => {
     await expect(shellCommand("printf '\\377\\376'").run("", {}, 5_000)).rejects.toThrow("not valid UTF-8");
   });
 
-  it("says where it cut off output that is too long", async () => {
-    await expect(shellCommand("yes | head -c 300000").run("", {}, 5_000)).rejects.toThrow(`more than ${MAX_RESULT_BYTES * 2} bytes`);
+  it("stops a command that prints too much, names the limit a result has, and leaves the task to retry", async () => {
+    const error = await shellCommand("yes | head -c 300000").run("", {}, 5_000).catch((e: unknown) => e);
+    expect((error as Error).message).toBe("The command printed too much and was stopped; at most 100000 bytes are accepted");
+    expect(error).not.toBeInstanceOf(PermanentError);
   });
 
   it("kills a command that ignores SIGTERM, with everything it started", async () => {

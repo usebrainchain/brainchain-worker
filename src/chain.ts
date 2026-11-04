@@ -333,6 +333,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       if (REFUSED.includes(response.status) && said !== undefined) throw new PermanentError(`The service refused the result ${why}`);
       if (!response.ok || !body?.uri) throw new Error(`Uploading the result failed ${why}`);
       if (body.hash?.toLowerCase() !== hash) throw new Error("The service stored different bytes than were sent");
+      // Not permanent: the address comes from how the service or BRAINCHAIN_SERVICE_URL is set, and the same result uploads again once that is fixed.
       if (!body.uri.startsWith(`${origin}/`)) throw new Error(`The service returned a result address outside ${origin}`);
       return { uri: body.uri, hash };
     },

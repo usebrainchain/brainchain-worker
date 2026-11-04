@@ -227,7 +227,7 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
         child.stdout.on("data", (chunk: Buffer) => {
           size += chunk.byteLength;
           if (size <= OUTPUT_CAP) return void chunks.push(chunk);
-          stop(`The command printed more than ${OUTPUT_CAP} bytes and was stopped; at most ${MAX_RESULT_BYTES} are accepted`);
+          stop(`The command printed too much and was stopped; at most ${MAX_RESULT_BYTES} bytes are accepted`);
         });
         child.on("error", (error) => {
           clearTimeout(timer);
@@ -419,6 +419,7 @@ export function createWork(options: {
               throw new PermanentError("The result contains the worker's private key, so it was not uploaded. Check what the command can read");
             }
             const bytes = toBytes(output).byteLength;
+            // Not permanent: a retry runs the command again, and a model's next answer can fit.
             if (bytes > MAX_RESULT_BYTES) throw new Error(`The result is ${bytes} bytes; at most ${MAX_RESULT_BYTES} are accepted`);
             attempt.result = output;
             state.tasks[key] = attempt;
