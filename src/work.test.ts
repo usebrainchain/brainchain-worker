@@ -8,6 +8,7 @@ import { ContractFunctionExecutionError, ContractFunctionRevertedError, encodeEr
 
 import { taskBoardAbi } from "./abi.js";
 import { PermanentError, submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
+import { TESTNET } from "./network.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
 import { createWork, MAX_RESULT_BYTES, npxUnderSupervisor, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
 
@@ -21,7 +22,7 @@ const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
 
 function setup(
   output: (at: (t: bigint) => void) => Promise<string>,
-  options: { format?: "prompt" | "json"; tasks?: HiredTask[]; store?: Store; stopping?: () => boolean; failed?: () => void; delivered?: (task: bigint) => void } = {},
+  options: { format?: "prompt" | "json"; tasks?: HiredTask[]; store?: Store; stopping?: () => boolean; failed?: () => void; delivered?: (task: bigint) => void; gasHelp?: string } = {},
 ) {
   let now = 1_000n;
   const at = (t: bigint) => void (now = t);
@@ -53,6 +54,7 @@ function setup(
     stopping: options.stopping,
     failed: options.failed,
     delivered: options.delivered,
+    gasHelp: options.gasHelp,
   });
   return { chain, command, log, work, at };
 }
@@ -222,12 +224,13 @@ describe("work", () => {
     expect(command.run.mock.calls.map(([, env]) => env.BRAINCHAIN_TASK_ID)).toEqual(["7"]);
   });
 
-  it("does not run a command without ETH to submit its result", async () => {
-    const { chain, command, log, work } = setup(async () => "ok");
+  it("does not run a command without ETH to submit its result, and says where the ETH comes from", async () => {
+    const { chain, command, log, work } = setup(async () => "ok", { gasHelp: TESTNET.gas("0x00000000000000000000000000000000000000C1") });
     chain.ethBalance.mockResolvedValue(0n);
     await work.round();
     expect(command.run).not.toHaveBeenCalled();
-    expect(lastLog(log)).toContain("no ETH");
+    expect(lastLog(log)).toMatch(/^task 7: failed \(The wallet has no ETH to pay gas for the submit\. Ask the testnet gas drip first: `curl -X POST https:\/\/brain\.testnet\.usebrainchain\.com\/testnet\/gas /);
+    expect(lastLog(log)).toContain("The task is tried again); retrying in 60 seconds");
   });
 
   it("is busy only while a task is in hand", async () => {
@@ -357,6 +360,17 @@ describe("work", () => {
     await work.round();
     expect(log.mock.calls[0]![0]).toBe('task 7: working on "Haiku now"');
     expect(printable("a\x00b\x7fc\x9bd")).toBe("abcd");
+  });
+
+  it("logs poster text without characters that hide or turn text around", async () => {
+    // A title built like the report's application name: an override that reverses "public" and zero-width spaces around "Jev".
+    const title = "Claude official \u202ecilbup\u202c \u200bJev\u200b";
+    const text = JSON.stringify({ title, brief: "b", levels: ["a"], passIndex: 0 });
+    const { log, work } = setup(async () => "ok", { tasks: [{ ...task, briefURI: dataURI(text), briefHash: keccak256(toBytes(text)) }] });
+    await work.round();
+    expect(log.mock.calls[0]![0]).toBe('task 7: working on "Claude official cilbup Jev"');
+    expect(printable("a\u2066b\u2069c\u200ed\u200fe\ufefff\u00adg")).toBe("abcdefg");
+    expect(printable("family \u{1F468}\u200d\u{1F467}")).toBe("family \u{1F468}\u200d\u{1F467}");
   });
 
   it("fences the task so the poster cannot close the fence", () => {

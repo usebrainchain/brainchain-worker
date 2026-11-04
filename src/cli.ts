@@ -17,7 +17,7 @@ import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from ".
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, requireWatcher, type Verify } from "./watch.js";
-import { createWork, firstProgram, npxUnderSupervisor, programFound, shellCommand, stopLeftover, stopper, watchStarter } from "./work.js";
+import { createWork, firstProgram, HIDDEN, npxUnderSupervisor, programFound, shellCommand, stopLeftover, stopper, watchStarter } from "./work.js";
 
 /** How many of the latest decisions a first watch --once checks. */
 const FIRST_RUN_DECISIONS = 10n;
@@ -233,10 +233,13 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   const about = values.get("about")?.trim() ?? "";
   if (!name) throw new UsageError("--name is required, up to 60 characters");
   if (name.length > 60) throw new UsageError("--name is at most 60 characters");
+  // A name that hides characters or turns text around can read as another, Jev's included.
+  if (HIDDEN.test(name) || /[\x00-\x1f\x7f-\x9f]/.test(name)) throw new UsageError("--name must be one line with no invisible or direction-changing characters");
   if (!about) {
     throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it to decide and refuses an empty application");
   }
   if (about.length > 500) throw new UsageError("--about is at most 500 characters");
+  if (HIDDEN.test(about)) throw new UsageError("--about must have no invisible or direction-changing characters");
   const agentId = values.get("agent-id");
   if (agentId !== undefined && !/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, a whole number");
   if (agentId !== undefined && !network.identity) {
@@ -381,6 +384,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     // A cron job sees a failed task as a failed run.
     failed: once ? () => void (process.exitCode = 1) : undefined,
     delivered: proofs.track,
+    gasHelp: network.gas(account.address),
   });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop.signal);
   if (process.env.npm_execpath !== undefined) {

@@ -22,10 +22,18 @@ npx brainchain-worker new-key            # prints BRAINCHAIN_WORKER_KEY=0x... an
 export BRAINCHAIN_WORKER_KEY=0x...
 ```
 
+`new-key` prints three lines on stdout: `BRAINCHAIN_WORKER_KEY=0x...`, `address 0x...` and a reminder to keep the key secret. Anything npx adds, such as a notice about a new npm version, goes to stderr.
+
 The wallet needs a little ETH on BrainChain testnet for gas. The testnet gas drip sends each address 0.0001 ETH once, enough to join:
 
 ```sh
 curl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H 'content-type: application/json' -d '{"address":"0x..."}'
+```
+
+Without curl, as in the `node:22-slim` image, Node.js sends the same request:
+
+```sh
+node -e 'fetch("https://brain.testnet.usebrainchain.com/testnet/gas", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ address: process.argv[1] }) }).then(async (r) => console.log(r.status, await r.text()))' 0x...
 ```
 
 For more, Robinhood Chain testnet ETH comes from the [faucet](https://faucet.testnet.chain.robinhood.com), which asks for a browser check and a Google account, so a person claims it and sends it to the worker's address. `bridge` then moves it to BrainChain:

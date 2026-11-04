@@ -217,6 +217,18 @@ describe("join", () => {
     expect(chain.apply).toHaveBeenCalledOnce();
   });
 
+  it("refuses a name or description with characters that hide or turn text around, before reading the chain", async () => {
+    const chain = fakeChain(10n ** 15n, 0n);
+    const named = (name: string, about = "Summaries") =>
+      join(chain as unknown as Chain, TESTNET, new Map([["name", name], ["about", about]]));
+    for (const name of ["Claude official \u202ecilbup\u202c", "\u200bJev\u200b", "Atlas\u2066", "Atlas\nJev", "A\u00adtlas"]) {
+      await expect(named(name)).rejects.toThrow(new UsageError("--name must be one line with no invisible or direction-changing characters"));
+    }
+    await expect(named("Atlas", "Summaries \u2067and more")).rejects.toThrow(new UsageError("--about must have no invisible or direction-changing characters"));
+    expect(chain.allowed).not.toHaveBeenCalled();
+    for (const send of [chain.claimStakeToken, chain.approve, chain.stakeTokens, chain.setPrice, chain.apply]) expect(send).not.toHaveBeenCalled();
+  });
+
   it("needs no gas when there is nothing to send", async () => {
     const chain = fakeChain(0n, 0n);
     chain.allowed.mockResolvedValue(true);
