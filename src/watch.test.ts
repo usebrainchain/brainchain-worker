@@ -3,7 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
 import { TESTNET } from "./network.js";
-import { argumentsOf, createReporter, createWatch, fetchProof, judge, REPORT_PREFIX, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
+import { argumentsOf, createReporter, createWatch, fetchProof, judge, REPORT_PREFIX, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
 
 const TX: Hex = `0x${"ab".repeat(32)}`;
 const BOARD: Address = TESTNET.contracts.taskBoard;
@@ -88,7 +88,7 @@ describe("watch", () => {
     lines.length = 0;
     const { chain, vetoes } = fakeChain({ queued: [change(1n, encodeFunctionData({ abi, functionName: "setWorkerAllowed", args: [BOARD, true] }))] });
     const watch = createWatch({ network: TESTNET, chain, veto: true, log });
-    expect(await watch.round()).toEqual({ findings: 0 });
+    expect(await watch.round()).toEqual({ findings: 0, incomplete: false });
     expect(lines[0]).toMatch(/^change 1: setWorkerAllowed on 0x7A7cC.*within the constitution, runs after 2027-01-15 08:00 UTC$/);
     expect(vetoes).toEqual([]);
     // A later round does not judge the same change again.
@@ -101,7 +101,7 @@ describe("watch", () => {
     const bad = encodeFunctionData({ abi, functionName: "setFee", args: [600, BOARD] });
     const { chain, vetoes } = fakeChain({ queued: [change(2n, bad)] });
     const watch = createWatch({ network: TESTNET, chain, veto: true, log });
-    expect(await watch.round()).toEqual({ findings: 1 });
+    expect(await watch.round()).toEqual({ findings: 1, incomplete: false });
     expect(vetoes).toEqual(["2: Breaks the constitution: a protocol fee above 5%"]);
     expect(lines).toEqual([
       "change 2: setFee on 0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4 breaks the constitution (a protocol fee above 5%), runs after 2027-01-15 08:00 UTC",
@@ -113,15 +113,62 @@ describe("watch", () => {
     lines.length = 0;
     const bad = encodeFunctionData({ abi, functionName: "setFee", args: [600, BOARD] });
     const reporting = fakeChain({ queued: [change(2n, bad)] });
-    expect(await createWatch({ network: TESTNET, chain: reporting.chain, veto: false, log }).round()).toEqual({ findings: 1 });
+    expect(await createWatch({ network: TESTNET, chain: reporting.chain, veto: false, log }).round()).toEqual({ findings: 1, incomplete: false });
     expect(reporting.vetoes).toEqual([]);
     const gateless = fakeChain({ queued: [change(2n, bad)], gate: false });
     await createWatch({ network: TESTNET, chain: gateless.chain, veto: true, log }).round();
     expect(lines.at(-1)).toBe("cannot veto: BrainChain testnet has no guardian gate this worker can reach");
-    const closed = fakeChain({ queued: [change(2n, bad)], open: false });
-    await createWatch({ network: TESTNET, chain: closed.chain, veto: true, log }).round();
+  });
+
+  it("does not count a change that has closed, with or without --veto, and says so in the past tense", async () => {
+    lines.length = 0;
+    const bad = encodeFunctionData({ abi, functionName: "setFee", args: [600, BOARD] });
+    const fine = encodeFunctionData({ abi, functionName: "setWorkerAllowed", args: [BOARD, true] });
+    for (const veto of [false, true]) {
+      const closed = fakeChain({ queued: [change(2n, bad), change(3n, fine)], open: false });
+      expect(await createWatch({ network: TESTNET, chain: closed.chain, veto, log }).round()).toEqual({ findings: 0, incomplete: false });
+      expect(closed.vetoes).toEqual([]);
+    }
+    expect(lines.slice(0, 2)).toEqual([
+      `change 2: setFee on ${BOARD} broke the constitution (a protocol fee above 5%); closed, it has run or was vetoed`,
+      `change 3: setWorkerAllowed on ${BOARD}; closed, it has run or was vetoed`,
+    ]);
+  });
+
+  it("tries a veto again every round until it lands, after a failed read or a failed send", async () => {
+    lines.length = 0;
+    const bad = encodeFunctionData({ abi, functionName: "setFee", args: [600, BOARD] });
+    const failing = fakeChain({ queued: [change(2n, bad)] });
+    vi.mocked(failing.chain.open).mockRejectedValueOnce(new Error("RPC hiccup"));
+    const afterRead = createWatch({ network: TESTNET, chain: failing.chain, veto: true, log });
+    await expect(afterRead.round()).rejects.toThrow("RPC hiccup");
+    await afterRead.round();
+    expect(failing.vetoes).toEqual(["2: Breaks the constitution: a protocol fee above 5%"]);
+
+    const refused = fakeChain({ queued: [change(2n, bad)] });
+    vi.mocked(refused.chain.veto!).mockRejectedValueOnce(new Error("nonce too low"));
+    const afterSend = createWatch({ network: TESTNET, chain: refused.chain, veto: true, log });
+    expect((await afterSend.round()).findings).toBe(1);
+    expect(lines.at(-1)).toBe("veto of change 2 failed, tried again next round: nonce too low");
+    expect((await afterSend.round()).findings).toBe(1);
+    expect(lines.at(-1)).toBe(`vetoed change 2 through the guardian gate: ${TX}`);
+    await afterSend.round();
+    expect(refused.vetoes).toHaveLength(1);
+  });
+
+  it("stops trying a veto once the change has closed", async () => {
+    lines.length = 0;
+    const bad = encodeFunctionData({ abi, functionName: "setFee", args: [600, BOARD] });
+    const { chain, vetoes } = fakeChain({ queued: [change(2n, bad)] });
+    vi.mocked(chain.veto!).mockRejectedValueOnce(new Error("nonce too low"));
+    const watch = createWatch({ network: TESTNET, chain, veto: true, log });
+    await watch.round();
+    vi.mocked(chain.open).mockResolvedValue(false);
+    await watch.round();
     expect(lines.at(-1)).toBe("change 2 is closed already, nothing to veto");
-    expect(closed.vetoes).toEqual([]);
+    await watch.round();
+    expect(chain.veto).toHaveBeenCalledOnce();
+    expect(vetoes).toEqual([]);
   });
 
   it("notes where the decision log stands, then re-verifies every new decision", async () => {
@@ -131,7 +178,7 @@ describe("watch", () => {
     const watch = createWatch({ network: TESTNET, chain, verify, veto: false, log });
     await watch.round();
     expect(lines).toEqual(["3 decisions recorded so far; new ones are checked from here"]);
-    expect(await watch.round()).toEqual({ findings: 1 });
+    expect(await watch.round()).toEqual({ findings: 1, incomplete: false });
     expect(verify.mock.calls.map((c) => c[0])).toEqual([4n, 5n]);
     expect(lines.slice(1)).toEqual(["decision 4 verified", "decision 5 does not verify: record hash: does not match payloadHash"]);
   });
@@ -158,6 +205,88 @@ describe("a one-shot run", () => {
     const verify = vi.fn(async () => ({ findings: [] }));
     await createWatch({ network: TESTNET, chain, verify, veto: false, log: () => {}, seenDecision: 34n, recent: 10n }).round();
     expect(verify.mock.calls.map((c) => (c as unknown as [bigint])[0])).toEqual([1n, 2n]);
+  });
+});
+
+describe("a round that cannot finish", () => {
+  const verified = { findings: [] };
+
+  it("stops at a decision it could not check, keeps its place there and says the round is incomplete", async () => {
+    const { chain } = fakeChain({ decisions: [5n] });
+    const lines: string[] = [];
+    const seen: bigint[] = [];
+    const verify = vi.fn(async (id: bigint) => {
+      if (id === 4n) throw new Error("Missing or invalid\n  parameters");
+      return verified;
+    });
+    const first = createWatch({ network: TESTNET, chain, verify, veto: false, log: (l) => lines.push(l), seenDecision: 2n, recent: 10n, saw: (n) => seen.push(n) });
+    expect(await first.round()).toEqual({ findings: 0, incomplete: true });
+    expect(verify.mock.calls.map((c) => c[0])).toEqual([3n, 4n]);
+    expect(seen).toEqual([3n]);
+    expect(lines.at(-1)).toBe("decision 4 could not be checked, so it is tried again next round: Missing or invalid parameters");
+
+    verify.mockClear();
+    const next = createWatch({ network: TESTNET, chain, verify: async (id) => (verify(id), verified), veto: false, log: () => {}, seenDecision: seen.at(-1), recent: 10n, saw: (n) => seen.push(n) });
+    expect(await next.round()).toEqual({ findings: 0, incomplete: false });
+    expect(seen.at(-1)).toBe(5n);
+  });
+
+  it("goes on to the next decision in a later round of a long watch", async () => {
+    const { chain } = fakeChain({ decisions: [2n, 4n, 4n] });
+    const verify = vi.fn(async (_id: bigint) => verified);
+    verify.mockImplementationOnce(async () => {
+      throw new Error("RPC down");
+    });
+    const watch = createWatch({ network: TESTNET, chain, verify, veto: false, log: () => {} });
+    await watch.round();
+    expect((await watch.round()).incomplete).toBe(true);
+    expect((await watch.round()).incomplete).toBe(false);
+    expect(verify.mock.calls.map((c) => c[0])).toEqual([3n, 3n, 4n]);
+  });
+
+  it("sends the report before saving its place, and only warns when the save fails", async () => {
+    const { chain } = fakeChain({ decisions: [2n] });
+    const lines: string[] = [];
+    const report = vi.fn(async () => "reported");
+    const watch = createWatch({
+      network: TESTNET,
+      chain,
+      verify: async () => ({ findings: [], record: new Uint8Array([1]) }),
+      report,
+      veto: false,
+      log: (l) => lines.push(l),
+      seenDecision: 0n,
+      recent: 10n,
+      saw: () => {
+        throw new Error("EACCES: permission denied");
+      },
+    });
+    expect(await watch.round()).toEqual({ findings: 0, incomplete: false });
+    expect(report).toHaveBeenCalledOnce();
+    expect(lines.slice(-2)).toEqual(["reported", "warning: could not save how far this got, so the next run checks these decisions again: EACCES: permission denied"]);
+  });
+
+  it("keeps its place when the report did not reach the service, and moves on when the service refused it", async () => {
+    const run = async (failure: Error) => {
+      const { chain } = fakeChain({ decisions: [2n] });
+      const seen: bigint[] = [];
+      const watch = createWatch({
+        network: TESTNET,
+        chain,
+        verify: async () => ({ findings: [], record: new Uint8Array([1]) }),
+        report: async () => {
+          throw failure;
+        },
+        veto: false,
+        log: () => {},
+        seenDecision: 0n,
+        recent: 10n,
+        saw: (n) => seen.push(n),
+      });
+      return { ...(await watch.round()), seen };
+    };
+    expect(await run(new Error("503 from the service"))).toEqual({ findings: 0, incomplete: true, seen: [0n] });
+    expect(await run(new ReportRefused("The report was signed too long ago."))).toEqual({ findings: 0, incomplete: false, seen: [2n] });
   });
 });
 
@@ -201,7 +330,7 @@ describe("reporting rounds", () => {
       verify: async (id) => (id === 4n ? { findings: ["record-hash: differs"] } : { findings: [], record }),
       report: async (checked, findings) => {
         reports.push([checked, findings]);
-        if (refuse) throw new Error("The report was signed too long ago.");
+        if (refuse) throw new ReportRefused("The report was signed too long ago.");
         return "reported";
       },
     });

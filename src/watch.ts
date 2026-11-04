@@ -158,6 +158,9 @@ export const fetchProof = (bytes: Uint8Array, worker: Address): Hex => keccak256
 
 export type Report = (checked: { id: bigint; proof: Hex }[], findings: { id: bigint; checks: string[] }[]) => Promise<string>;
 
+/** The service answered and will not take this report, so sending it again would not help. */
+export class ReportRefused extends Error {}
+
 /**
  * Sends a round's re-verified decisions to the service, signed by the worker,
  * so a staked worker's watchtower counts toward its mark in hire questions.
@@ -182,6 +185,7 @@ export function createReporter(network: Network, account: PrivateKeyAccount, fet
       signal: AbortSignal.timeout(20_000),
     });
     const body = (await response.json().catch(() => ({}))) as { error?: string; checked?: number; mark?: { since: string } | null; markAfter?: number };
+    if (response.status >= 400 && response.status < 500) throw new ReportRefused(body.error ?? `${response.status} from ${network.service}`);
     if (!response.ok) throw new Error(body.error ?? `${response.status} from ${network.service}`);
     return body.mark
       ? `reported to ${network.name}: ${body.checked} decisions re-verified in all, watchtower mark since ${body.mark.since}`
@@ -209,14 +213,17 @@ export function createWatch(options: {
   seenDecision?: bigint;
   /** With no count to pick up from, how many of the latest decisions the first round checks; without it, that round only notes where the log stands. */
   recent?: bigint;
-  /** Told the log's count after each round of checks. */
+  /** Told how far the checks have got after each round; it may throw, which costs only a repeat of those checks. */
   saw?: (count: bigint) => void;
 }) {
   const { network, chain, verify, log } = options;
   let nextBlock = options.fromBlock ?? network.fromBlock;
   let seenDecision = options.seenDecision;
   const judged = new Set<string>();
+  /** Vetoes due and not yet landed; each is tried every round until it lands or its change closes. */
+  const owed = new Map<string, { id: bigint; why: string }>();
   let findings = 0;
+  let incomplete = false;
 
   async function changes(): Promise<void> {
     const head = await chain.head();
@@ -227,34 +234,46 @@ export function createWatch(options: {
       for (const change of await chain.queued(from, to)) {
         const key = change.changeId.toString();
         if (judged.has(key)) continue;
-        judged.add(key);
         const { name, broken } = judge(change.data);
+        // A failed read leaves the change unjudged and the block range unread, so the next round comes back to it.
+        const open = await chain.open(change.changeId);
+        judged.add(key);
+        const why = broken.join("; ");
+        if (!open) {
+          log(`change ${change.changeId}: ${name} on ${change.target}${broken.length > 0 ? ` broke the constitution (${why})` : ""}; closed, it has run or was vetoed`);
+          continue;
+        }
         const runsAt = new Date(Number(change.eta) * 1000).toISOString().replace("T", " ").slice(0, 16);
         if (broken.length === 0) {
           log(`change ${change.changeId}: ${name} on ${change.target}, within the constitution, runs after ${runsAt} UTC`);
           continue;
         }
         findings += 1;
-        const why = broken.join("; ");
         log(`change ${change.changeId}: ${name} on ${change.target} breaks the constitution (${why}), runs after ${runsAt} UTC`);
-        if (!options.veto) continue;
-        if (!(await chain.open(change.changeId))) {
-          log(`change ${change.changeId} is closed already, nothing to veto`);
-          continue;
-        }
-        if (!chain.veto) {
-          log(`cannot veto: ${network.name} has no guardian gate this worker can reach`);
-          continue;
-        }
-        try {
-          const hash = await chain.veto(change.changeId, `Breaks the constitution: ${why}`);
-          log(`vetoed change ${change.changeId} through the guardian gate: ${hash}`);
-        } catch (error) {
-          log(`veto of change ${change.changeId} failed: ${reason(error)}`);
-        }
+        if (options.veto) owed.set(key, { id: change.changeId, why });
       }
     }
     nextBlock = head + 1n;
+  }
+
+  async function vetoes(): Promise<void> {
+    for (const [key, { id, why }] of owed) {
+      try {
+        if (!(await chain.open(id))) {
+          owed.delete(key);
+          log(`change ${id} is closed already, nothing to veto`);
+        } else if (!chain.veto) {
+          owed.delete(key);
+          log(`cannot veto: ${network.name} has no guardian gate this worker can reach`);
+        } else {
+          const hash = await chain.veto(id, `Breaks the constitution: ${why}`);
+          owed.delete(key);
+          log(`vetoed change ${id} through the guardian gate: ${hash}`);
+        }
+      } catch (error) {
+        log(`veto of change ${id} failed, tried again next round: ${reason(error)}`);
+      }
+    }
   }
 
   async function decisions(): Promise<void> {
@@ -270,6 +289,7 @@ export function createWatch(options: {
     }
     const checked: { id: bigint; proof: Hex }[] = [];
     const found: { id: bigint; checks: string[] }[] = [];
+    let reached = seenDecision;
     for (let id = seenDecision + 1n; id <= count; id++) {
       try {
         const { findings: wrong, record } = await verify(id);
@@ -281,25 +301,45 @@ export function createWatch(options: {
           found.push({ id, checks: wrong });
           log(`decision ${id} does not verify: ${wrong.join("; ")}`);
         }
+        reached = id;
       } catch (error) {
-        log(`decision ${id} could not be checked: ${reason(error)}`);
+        // The place stays here, so this decision and the ones after it are checked next time.
+        log(`decision ${id} could not be checked, so it is tried again next round: ${reason(error)}`.replace(/\s*\n\s*/g, " "));
+        incomplete = true;
+        break;
       }
     }
-    seenDecision = count;
-    options.saw?.(count);
-    if (!options.report || (checked.length === 0 && found.length === 0)) return;
+    // Before the place is saved, so a save that fails does not lose the round's work.
+    if (options.report && (checked.length > 0 || found.length > 0)) {
+      try {
+        log(await options.report(checked, found));
+      } catch (error) {
+        log(`report not taken: ${reason(error)}`);
+        // Only an answer from the service settles a report; these decisions are checked and sent again otherwise.
+        if (!(error instanceof ReportRefused)) {
+          incomplete = true;
+          reached = seenDecision;
+        }
+      }
+    }
+    seenDecision = reached;
     try {
-      log(await options.report(checked, found));
+      options.saw?.(reached);
     } catch (error) {
-      log(`report not taken: ${reason(error)}`);
+      log(`warning: could not save how far this got, so the next run checks these decisions again: ${reason(error)}`);
     }
   }
 
   return {
-    async round(): Promise<{ findings: number }> {
-      await changes();
+    async round(): Promise<{ findings: number; incomplete: boolean }> {
+      incomplete = false;
+      try {
+        await changes();
+      } finally {
+        await vetoes();
+      }
       await decisions();
-      return { findings };
+      return { findings, incomplete };
     },
   };
 }

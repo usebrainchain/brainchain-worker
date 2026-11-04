@@ -1,14 +1,16 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MAINNET, TESTNET } from "./network.js";
-import { fileStore, lock, openStore } from "./state.js";
+import { fileStore, lock, openStore, readWatched, writeWatched } from "./state.js";
 
 const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
+// Several tests overwrite a lock this process holds, which a run answers by exiting at its next touch.
+beforeAll(() => void vi.spyOn(process, "exit").mockImplementation((() => undefined) as never));
 const dir = () => mkdtempSync(join(tmpdir(), "brainchain-worker-"));
 
 describe("fileStore", () => {
@@ -94,8 +96,25 @@ describe("fileStore", () => {
   });
 });
 
+const lockPid = (file: string) => (JSON.parse(readFileSync(file, "utf8")) as { pid: number }).pid;
+const minuteAgo = () => new Date(Date.now() - 60_000);
+/** The PID space this process writes into a lock. */
+function ownSpace(): string {
+  const file = join(dir(), "probe.lock");
+  const release = lock(file);
+  const { space } = JSON.parse(readFileSync(file, "utf8")) as { space: string };
+  release();
+  return space;
+}
+
 describe("lock", () => {
   it("refuses while a live process holds it", () => {
+    const file = join(dir(), "worker.lock");
+    writeFileSync(file, JSON.stringify({ pid: process.ppid, space: ownSpace() }));
+    expect(() => lock(file)).toThrow(`pid ${process.ppid}`);
+  });
+
+  it("refuses while a live process holds a lock written before locks were touched", () => {
     const file = join(dir(), "worker.lock");
     writeFileSync(file, String(process.ppid));
     expect(() => lock(file)).toThrow(`pid ${process.ppid}`);
@@ -105,9 +124,89 @@ describe("lock", () => {
     const file = join(dir(), "worker.lock");
     writeFileSync(file, String(spawnSync("true").pid));
     const release = lock(file);
-    expect(readFileSync(file, "utf8")).toBe(String(process.pid));
+    expect(lockPid(file)).toBe(process.pid);
     release();
     expect(existsSync(file)).toBe(false);
+  });
+
+  it("takes over a lock nobody has touched, though some process now has its pid", () => {
+    const file = join(dir(), "worker.lock");
+    writeFileSync(file, JSON.stringify({ pid: process.ppid, space: ownSpace() }));
+    utimesSync(file, minuteAgo(), minuteAgo());
+    lock(file)();
+  });
+
+  it("refuses while a run in another PID namespace keeps touching its lock, whatever its pid means here", async () => {
+    const file = join(dir(), "worker.lock");
+    writeFileSync(file, JSON.stringify({ pid: spawnSync("true").pid, space: "another-namespace" }));
+    const toucher = spawn("sh", ["-c", `while :; do touch '${file}'; sleep 0.05; done`], { stdio: "ignore" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    try {
+      expect(() => lock(file, undefined, 300)).toThrow("in another container or PID namespace");
+    } finally {
+      toucher.kill("SIGKILL");
+    }
+  });
+
+  it("takes over at once a lock from another PID namespace that is long untouched, and after a beat one just left", () => {
+    const old = join(dir(), "worker.lock");
+    writeFileSync(old, JSON.stringify({ pid: process.ppid, space: "another-namespace" }));
+    utimesSync(old, minuteAgo(), minuteAgo());
+    const started = Date.now();
+    lock(old, undefined, 60_000)();
+    expect(Date.now() - started).toBeLessThan(5_000);
+
+    const recent = join(dir(), "worker.lock");
+    writeFileSync(recent, JSON.stringify({ pid: process.ppid, space: "another-namespace" }));
+    lock(recent, undefined, 50)();
+  });
+
+  it("counts a lock still being written as held, until it is left long enough to be stale", () => {
+    const file = join(dir(), "worker.lock");
+    writeFileSync(file, "");
+    expect(() => lock(file)).toThrow("Another run");
+    utimesSync(file, minuteAgo(), minuteAgo());
+    lock(file)();
+  });
+
+  it("gets past a takeover marker a crash left behind", () => {
+    const file = join(dir(), "worker.lock");
+    writeFileSync(file, String(spawnSync("true").pid));
+    writeFileSync(`${file}.takeover`, "");
+    utimesSync(`${file}.takeover`, minuteAgo(), minuteAgo());
+    lock(file)();
+    expect(existsSync(`${file}.takeover`)).toBe(false);
+  });
+
+  it("touches its lock while it runs, and says so when another run has taken it", () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const file = join(dir(), "worker.lock");
+      const lost = vi.fn();
+      lock(file, lost);
+      utimesSync(file, minuteAgo(), minuteAgo());
+      vi.advanceTimersByTime(5_000);
+      expect(Date.now() - statSync(file).mtimeMs).toBeLessThan(5_000);
+      expect(lost).not.toHaveBeenCalled();
+      writeFileSync(file, JSON.stringify({ pid: process.ppid, space: "another-namespace" }));
+      vi.advanceTimersByTime(5_000);
+      expect(lost).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("writeWatched", () => {
+  it("keeps the place, each write through a temp file of its own, since runs can overlap", () => {
+    const folder = dir();
+    const log = "0xABC";
+    // A fixed temp name is what two runs would fight over.
+    mkdirSync(join(folder, "watch.0xabc.json.tmp"));
+    writeWatched(log, 7n, folder);
+    writeWatched(log, 9n, folder);
+    expect(readWatched(log, folder)).toBe(9n);
+    expect(readdirSync(folder).filter((name) => name.endsWith(".tmp"))).toEqual(["watch.0xabc.json.tmp"]);
   });
 });
 
@@ -125,7 +224,7 @@ describe("openStore", () => {
     expect(openStore(ADDRESS, TESTNET, log, folder).state).toMatchObject({ done: ["5"], hired: { block: 1_234 } });
     expect(log.mock.calls).toEqual([[`moved ${old}.json to ${old}.testnet.json`]]);
     expect(readdirSync(folder).sort()).toEqual([`${ADDRESS}.testnet.json`, `${ADDRESS}.testnet.lock`]);
-    expect(readFileSync(`${old}.testnet.lock`, "utf8")).toBe(String(process.pid));
+    expect(lockPid(`${old}.testnet.lock`)).toBe(process.pid);
     openStore(ADDRESS, TESTNET, log, folder);
     expect(log).toHaveBeenCalledOnce();
   });
@@ -178,7 +277,7 @@ describe("openStore", () => {
     expect(mainnet.state).toEqual({ board: MAINNET.contracts.taskBoard.toLowerCase(), tasks: {}, done: [] });
     mainnet.state.hired = { block: 99, tasks: [] };
     mainnet.save();
-    expect(readFileSync(join(folder, `${ADDRESS}.mainnet.lock`), "utf8")).toBe(String(process.pid));
+    expect(lockPid(join(folder, `${ADDRESS}.mainnet.lock`))).toBe(process.pid);
     expect(readFileSync(join(folder, `${ADDRESS}.testnet.lock`), "utf8")).toBe(String(process.ppid));
     expect(fileStore(join(folder, `${ADDRESS}.testnet.json`), TESTNET.contracts.taskBoard).state.hired).toEqual({ block: 1_234, tasks: ["7"] });
   });

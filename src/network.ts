@@ -68,7 +68,7 @@ export interface Network {
   };
 }
 
-/** BrainChain testnet, release 3.4.0. */
+/** BrainChain testnet, release 3.5.0. */
 export const TESTNET: Network = {
   id: "testnet",
   name: "BrainChain testnet",
@@ -79,7 +79,7 @@ export const TESTNET: Network = {
   explorer: "https://usebrainchain.com/testnet",
   stakeSymbol: "tBRAIN",
   bountySymbol: "tUSDG",
-  gas: "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com and bridge some at https://usebrainchain.com/testnet",
+  gas: "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, then move it here with `npx brainchain-worker bridge --eth 0.001`",
   proofs: {
     chainId: 46630,
     name: "Robinhood Chain testnet",
@@ -130,7 +130,7 @@ export const MAINNET: Network = {
   explorer: "https://usebrainchain.com",
   stakeSymbol: "BRAIN",
   bountySymbol: "USDG",
-  gas: "Bridge some from Robinhood Chain at https://usebrainchain.com/network",
+  gas: "Send this address ETH on Robinhood Chain, then move it here with `npx brainchain-worker bridge --eth 0.001`",
   buyStake:
     "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
     `brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
