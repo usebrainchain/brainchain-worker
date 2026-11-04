@@ -3,19 +3,21 @@ import { describe, expect, it, vi } from "vitest";
 
 import { explainRevert, reason, Status } from "./chain.js";
 import { appeal, Appealed, dispute, Ruled, type DisputeChain, type DisputeTask } from "./dispute.js";
-import { TESTNET } from "./network.js";
+import { MAINNET, TESTNET } from "./network.js";
 
 const WORKER = "0x00000000000000000000000000000000000000c1" as Address;
 const POSTER = "0x00000000000000000000000000000000000000a1" as Address;
 const NOW = 1_800_000_000n;
 const TX = `0x${"ab".repeat(32)}` as Hex;
 const APPROVAL = `0x${"cd".repeat(32)}` as Hex;
+const CLAIM = `0x${"ef".repeat(32)}` as Hex;
 
 function fake(
   task: Partial<DisputeTask>,
   terms = { window: 3_600n, ruledAt: NOW - 60n, pays: false },
   balance = 10_000_000n,
-  gas: { eth?: bigint; allowance?: bigint } = {},
+  gas: { eth?: bigint; allowance?: bigint; sent?: number } = {},
+  faucet = { amount: 100_000_000n, opensAt: 0n },
 ) {
   const chain = {
     account: WORKER,
@@ -34,7 +36,10 @@ function fake(
     appealOf: vi.fn(async () => terms),
     appealBond: vi.fn(async () => 1_250_000n),
     bountyBalance: vi.fn(async () => balance),
+    bountyFaucet: vi.fn(async () => faucet),
+    claimBounty: vi.fn(async () => CLAIM),
     ethBalance: vi.fn(async () => gas.eth ?? parseEther("0.001")),
+    sent: vi.fn(async () => gas.sent ?? 5),
     gasPrice: vi.fn(async () => parseGwei("0.1")),
     allowance: vi.fn(async () => gas.allowance ?? 0n),
     approveBounty: vi.fn(async (): Promise<Hex | undefined> => APPROVAL),
@@ -85,9 +90,41 @@ describe("appeal", () => {
     await expect(appeal(TESTNET, fake({ status: Ruled }, { window: 3_600n, ruledAt: NOW - 3_601n, pays: false }), 7n, () => {})).rejects.toThrow("closed at");
   });
 
-  it("refuses before approving when the worker cannot cover the bond", async () => {
+  it("claims test USDG from its faucet first when the wallet holds less than the bond, and refuses while the faucet is closed", async () => {
+    // A worker's first task is rejected and it loses the dispute: it has never been paid, so it holds no tUSDG.
+    const chain = fake({ status: Ruled }, undefined, 0n);
+    const lines: string[] = [];
+    await appeal(TESTNET, chain, 7n, (l) => lines.push(l));
+    expect(chain.claimBounty).toHaveBeenCalledOnce();
+    expect(chain.claimBounty.mock.invocationCallOrder[0]).toBeLessThan(chain.approveBounty.mock.invocationCallOrder[0]!);
+    expect(chain.appeal).toHaveBeenCalledWith(7n);
+    expect(lines.slice(0, 2)).toEqual(["Claiming tUSDG from the testnet faucet for the bond...", `Claimed: ${CLAIM}`]);
+
+    const closed = fake({ status: Ruled }, undefined, 1_000_000n, {}, { amount: 100_000_000n, opensAt: NOW + 600n });
+    await expect(appeal(TESTNET, closed, 7n, () => {})).rejects.toThrow(
+      "The appeal bond is 1.25 tUSDG, and this wallet holds 1. The tUSDG faucet allows one claim a day, and this wallet can claim again at 2027-01-15T08:10:00Z. Run appeal again then, before the appeal window closes at 2027-01-15T08:59:00Z.",
+    );
+    const late = fake({ status: Ruled }, undefined, 0n, {}, { amount: 100_000_000n, opensAt: NOW + 7_200n });
+    await expect(appeal(TESTNET, late, 7n, () => {})).rejects.toThrow("can claim again at 2027-01-15T10:00:00Z, after the appeal window closes at 2027-01-15T08:59:00Z.");
+    for (const refused of [closed, late]) {
+      expect(refused.claimBounty).not.toHaveBeenCalled();
+      expect(refused.approveBounty).not.toHaveBeenCalled();
+    }
+  });
+
+  it("counts the faucet claim's gas before sending anything", async () => {
+    // Enough for the approval and the appeal, not for the claim before them.
+    const chain = fake({ status: Ruled }, undefined, 0n, { eth: parseEther("0.000039") });
+    await expect(appeal(TESTNET, chain, 7n, () => {})).rejects.toThrow(`${WORKER} holds 0.000039 ETH on BrainChain testnet; the appeal needs about 0.000047 ETH for gas.`);
+    expect(chain.claimBounty).not.toHaveBeenCalled();
+  });
+
+  it("sends a mainnet wallet short of the bond to the bridge", async () => {
     const chain = fake({ status: Ruled }, undefined, 1_000_000n);
-    await expect(appeal(TESTNET, chain, 7n, () => {})).rejects.toThrow("The appeal bond is 1.25 tUSDG, and the worker holds 1.");
+    await expect(appeal(MAINNET, chain, 7n, () => {})).rejects.toThrow(
+      "The appeal bond is 1.25 USDG, and this wallet holds 1. Bridge more with `npx brainchain-worker bridge --bounty <amount>`.",
+    );
+    expect(chain.claimBounty).not.toHaveBeenCalled();
     expect(chain.approveBounty).not.toHaveBeenCalled();
   });
 
@@ -96,7 +133,7 @@ describe("appeal", () => {
     const chain = fake({ status: Ruled }, undefined, undefined, { eth: parseEther("0.0000295") });
     const refusal = appeal(TESTNET, chain, 7n, () => {});
     await expect(refusal).rejects.toThrow(
-      `${WORKER} holds 0.0000295 ETH on BrainChain testnet; the appeal needs about 0.000039 ETH for gas. Ask the testnet gas drip first`,
+      `${WORKER} holds 0.0000295 ETH on BrainChain testnet; the appeal needs about 0.000039 ETH for gas. Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com`,
     );
     await expect(refusal).rejects.toThrow(/Nothing was sent\.$/);
     expect(chain.approveBounty).not.toHaveBeenCalled();

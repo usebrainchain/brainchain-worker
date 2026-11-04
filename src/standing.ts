@@ -4,7 +4,7 @@ import { ApplicationState, Status, type Chain, type Flight } from "./chain.js";
 import type { Network } from "./network.js";
 
 /** A token amount with thousands separators, such as 1,250,000; a fraction is kept as it is. */
-function grouped(amount: bigint, decimals: number): string {
+export function grouped(amount: bigint, decimals: number): string {
   const [whole, fraction] = formatUnits(amount, decimals).split(".");
   return `${whole!.replace(/\B(?=(\d{3})+$)/g, ",")}${fraction === undefined ? "" : `.${fraction}`}`;
 }
@@ -35,7 +35,7 @@ export async function snapshot(chain: Chain) {
 export type Snapshot = Awaited<ReturnType<typeof snapshot>>;
 
 /** The highest gas limit seen for each transaction join can send, across testnet and mainnet. */
-const GAS = { faucet: 76_000n, approve: 50_000n, stake: 120_000n, setPrice: 31_000n, apply: 240_000n };
+export const GAS = { faucet: 76_000n, approve: 50_000n, stake: 120_000n, setPrice: 31_000n, apply: 240_000n };
 /** The highest gas limit seen for delivering a result. */
 const SUBMIT_GAS = 104_000n;
 
@@ -119,15 +119,44 @@ export function wallet(
   return `${has}; join needs ${stake(network, need)}${reopens}${unstaking}${buy}`;
 }
 
-/** What a wallet short of gas holds and needs, for join's refusal and for `status`. */
-export const shortOfGas = (network: Network, address: string, gas: bigint, need: bigint, purpose: string) =>
-  `${formatEther(gas)} ETH on ${network.name}; ${purpose} needs about ${aboutEth(need)} ETH for gas. ${network.gas(address)}.`;
+/**
+ * Where a wallet gets ETH for gas, given what it holds and how many
+ * transactions it has sent. The drip serves an address once and turns away one
+ * that holds a drip's worth, so only a wallet that has sent nothing and holds
+ * less is sure to get it; any other is sent to the faucet.
+ */
+export function gasHelp(network: Network, address: string, gas: bigint, sent: number): string {
+  const { drip } = network;
+  if (!drip) return network.gas;
+  if (sent > 0 || gas >= drip.wei) return `${network.gas}. The gas drip serves each address once`;
+  const after = `${network.gas[0]!.toLowerCase()}${network.gas.slice(1)}`;
+  return `Ask the testnet gas drip first: ${drip.request(address)} sends ${formatEther(drip.wei)} ETH, enough to join, once per address. After that, ${after}`;
+}
 
-/** The wallet's ETH, and what more join or the next delivery needs, since a send the wallet cannot cover fails partway through. */
-export function gasLine(network: Network, address: string, s: Snapshot, gas: bigint, gasPrice: bigint, claims: boolean): string {
+/** What a wallet short of gas holds and needs, for join's refusal and for `status`. */
+export const shortOfGas = (network: Network, address: string, gas: bigint, sent: number, need: bigint, purpose: string) =>
+  `${formatEther(gas)} ETH on ${network.name}; ${purpose} needs about ${aboutEth(need)} ETH for gas. ${gasHelp(network, address, gas, sent)}.`;
+
+/** How many results the wallet's ETH delivers at this gas price, the last of them at the fee cap the RPC checks. */
+export function deliveriesLeft(gas: bigint, gasPrice: bigint): bigint {
+  const price = gasPrice > 0n ? gasPrice : 1n;
+  const last = ethNeeded([SUBMIT_GAS], price);
+  return gas < last ? 0n : (gas - last) / (SUBMIT_GAS * price) + 1n;
+}
+
+/** About how many results the wallet's ETH delivers, for `status` and `run`. */
+export const deliveries = (count: bigint) => `about ${count} ${count === 1n ? "delivery" : "deliveries"}`;
+
+/**
+ * The wallet's ETH, and what more join or the next delivery needs, since a
+ * send the wallet cannot cover fails partway through. A worker with nothing to
+ * join hears how many results its ETH delivers.
+ */
+export function gasLine(network: Network, address: string, s: Snapshot, gas: bigint, gasPrice: bigint, claims: boolean, sent: number): string {
   const limits = joinLimits(s, claims, false);
   const need = ethNeeded(limits.length > 0 ? limits : [SUBMIT_GAS], gasPrice);
-  return gas >= need ? `${formatEther(gas)} ETH` : shortOfGas(network, address, gas, need, limits.length > 0 ? "join" : "delivering a result");
+  if (gas < need) return shortOfGas(network, address, gas, sent, need, limits.length > 0 ? "join" : "delivering a result");
+  return limits.length > 0 ? `${formatEther(gas)} ETH` : `${formatEther(gas)} ETH, enough for ${deliveries(deliveriesLeft(gas, gasPrice))} at the current gas price`;
 }
 
 /** What join says when the wallet holds too little of a stake token that has no faucet. */

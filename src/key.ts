@@ -18,11 +18,11 @@ export const keyConfigured = (env: NodeJS.ProcessEnv = process.env) =>
 /** What is wrong with a key file's text, in words that never repeat any of it. */
 function keyFileProblem(text: string): string | undefined {
   if (text === "") return "is empty";
-  if (/^(0x)?[0-9a-fA-F]{64}$/.test(text)) return undefined;
+  if (/^(0x)?[0-9a-f]{64}$/i.test(text)) return undefined;
   if (/[\r\n]/.test(text)) return "holds more than one line";
   if (/^(export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=/.test(text)) return "holds a line in the form NAME=value";
   if (/^["'`]|["'`]$/.test(text)) return "holds the key in quotes";
-  const hex = text.startsWith("0x") ? text.slice(2) : text;
+  const hex = text.replace(/^0x/i, "");
   if (/^[0-9a-fA-F]+$/.test(hex)) return `holds ${hex.length} hex characters where a key has 64`;
   return "holds characters that are not hex digits";
 }

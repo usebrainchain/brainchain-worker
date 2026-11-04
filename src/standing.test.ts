@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { Status, type Flight } from "./chain.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { aboutEth, ethNeeded, flightLine, gasLine, hireable, joinLimits, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
+import { aboutEth, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
@@ -98,28 +98,46 @@ describe("gasLine", () => {
   const applying = { ...standing(), allowed: false, applying: true } as Snapshot;
   const staked = standing({ staked: 500n * BRAIN });
 
+  const FAUCET =
+    "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
+    "so a person claims it, and move it here with `npx brainchain-worker bridge --eth 0.001`";
+
   it("says what join needs when the wallet lacks it and join has something to do", () => {
-    expect(gasLine(TESTNET, WORKER, applying, 0n, GWEI_TENTH, true)).toBe(`0 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ${TESTNET.gas(WORKER)}.`);
-    expect(gasLine(MAINNET, WORKER, applying, 20_000_000_000_000n, GWEI_TENTH, false)).toBe(`0.00002 ETH on BrainChain; join needs about 0.00008 ETH for gas. ${MAINNET.gas(WORKER)}.`);
-    expect(gasLine(TESTNET, WORKER, standing({ staked: 100n * BRAIN }), 0n, GWEI_TENTH, false)).toContain("join needs about 0.000034 ETH");
+    expect(gasLine(TESTNET, WORKER, applying, 0n, GWEI_TENTH, true, 0)).toBe(`0 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ${gasHelp(TESTNET, WORKER, 0n, 0)}.`);
+    expect(gasLine(MAINNET, WORKER, applying, 20_000_000_000_000n, GWEI_TENTH, false, 0)).toBe(
+      `0.00002 ETH on BrainChain; join needs about 0.00008 ETH for gas. Send this address ETH on Robinhood Chain, then move it here with \`npx brainchain-worker bridge --eth 0.001\`.`,
+    );
+    expect(gasLine(TESTNET, WORKER, standing({ staked: 100n * BRAIN }), 0n, GWEI_TENTH, false, 3)).toContain("join needs about 0.000034 ETH");
   });
 
-  it("sends a testnet wallet to the gas drip with its own address first, then to the faucet and bridge", () => {
-    const line = gasLine(TESTNET, WORKER, applying, 0n, GWEI_TENTH, true);
+  it("sends a wallet that has never sent anything to the gas drip with its own address first, then to the faucet and bridge", () => {
+    const line = gasLine(TESTNET, WORKER, applying, 0n, GWEI_TENTH, true, 0);
     const drip = line.indexOf(`curl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H 'content-type: application/json' -d '{"address":"${WORKER}"}'`);
     expect(drip).toBeGreaterThan(0);
-    expect(line.indexOf("https://faucet.testnet.chain.robinhood.com")).toBeGreaterThan(drip);
+    expect(line).toContain("sends 0.0001 ETH, enough to join, once per address. After that, get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com");
     expect(line.indexOf("bridge --eth 0.001")).toBeGreaterThan(line.indexOf("https://faucet.testnet.chain.robinhood.com"));
-    expect(gasLine(MAINNET, WORKER, applying, 0n, GWEI_TENTH, false)).not.toContain("drip");
+    expect(gasLine(MAINNET, WORKER, applying, 0n, GWEI_TENTH, false, 0)).not.toContain("drip");
+  });
+
+  it("sends a wallet the drip has served, or would turn away, to the faucet and bridge only", () => {
+    // Sent transactions: the drip paid for its join, so it answers 409 now.
+    expect(gasHelp(TESTNET, WORKER, 0n, 6)).toBe(`${FAUCET}. The gas drip serves each address once`);
+    // A drip's worth or more: the drip turns it away whatever it has sent.
+    expect(gasHelp(TESTNET, WORKER, 100_000_000_000_000n, 0)).toBe(`${FAUCET}. The gas drip serves each address once`);
+    expect(gasHelp(TESTNET, WORKER, 99_999_999_999_999n, 0)).toMatch(/^Ask the testnet gas drip first/);
   });
 
   it("says what a delivery needs when join has nothing to do", () => {
-    expect(gasLine(TESTNET, WORKER, staked, 0n, GWEI_TENTH, false)).toBe(`0 ETH on BrainChain testnet; delivering a result needs about 0.000025 ETH for gas. ${TESTNET.gas(WORKER)}.`);
+    expect(gasLine(TESTNET, WORKER, staked, 0n, GWEI_TENTH, false, 6)).toBe(
+      `0 ETH on BrainChain testnet; delivering a result needs about 0.000025 ETH for gas. ${FAUCET}. The gas drip serves each address once.`,
+    );
   });
 
-  it("only gives the balance when the wallet has enough", () => {
-    expect(gasLine(TESTNET, WORKER, applying, 10n ** 15n, GWEI_TENTH, true)).toBe("0.001 ETH");
-    expect(gasLine(TESTNET, WORKER, staked, 10n ** 15n, GWEI_TENTH, false)).toBe("0.001 ETH");
+  it("gives the balance when the wallet has enough, and how many results it delivers once joined", () => {
+    expect(gasLine(TESTNET, WORKER, applying, 10n ** 15n, GWEI_TENTH, true, 0)).toBe("0.001 ETH");
+    expect(gasLine(TESTNET, WORKER, staked, 10n ** 15n, GWEI_TENTH, false, 6)).toBe("0.001 ETH, enough for about 94 deliveries at the current gas price");
+    // What a drip leaves after join, as the newcomer audit measured it.
+    expect(gasLine(TESTNET, WORKER, staked, 51_081_600_000_000n, GWEI_TENTH, false, 6)).toBe("0.0000510816 ETH, enough for about 3 deliveries at the current gas price");
   });
 });
 
@@ -215,5 +233,15 @@ describe("flightLine", () => {
   it("says a hired task's deadline and that a delivered one waits for its grade", () => {
     expect(flightLine(flight({ status: Status.Hired }))).toBe("task 45: hired, due by 2026-11-04T21:38:01Z");
     expect(flightLine(flight({ status: Status.Submitted }))).toBe("task 45: delivered, waiting for Jev's grade");
+  });
+});
+
+describe("deliveriesLeft", () => {
+  it("counts the results the ETH delivers, the last at the fee cap the RPC checks", () => {
+    const each = 104_000n * GWEI_TENTH;
+    expect(deliveriesLeft(0n, GWEI_TENTH)).toBe(0n);
+    expect(deliveriesLeft((each * 24n) / 10n - 1n, GWEI_TENTH)).toBe(0n);
+    expect(deliveriesLeft((each * 24n) / 10n, GWEI_TENTH)).toBe(1n);
+    expect(deliveriesLeft((each * 24n) / 10n + each, GWEI_TENTH)).toBe(2n);
   });
 });

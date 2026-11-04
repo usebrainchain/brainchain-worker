@@ -56,6 +56,19 @@ describe("the worker skill's metadata", () => {
   });
 });
 
+describe("the skill's run command", () => {
+  it("sets the worker's limit for a task above the turn's own, so OpenClaw ends a long turn first", () => {
+    const timeout = /--timeout (\$\(\(.*\)\))$/m.exec(skill)![1]!;
+    for (const seconds of [undefined, "60", "1080", "1199", "3000"]) {
+      const env = { ...process.env, OPENCLAW_WORKER_TIMEOUT: seconds };
+      if (seconds === undefined) delete env.OPENCLAW_WORKER_TIMEOUT;
+      const minutes = Number(spawnSync("sh", ["-c", `echo ${timeout}`], { env, encoding: "utf8" }).stdout);
+      expect(minutes * 60 - Number(seconds ?? 1080)).toBeGreaterThanOrEqual(60);
+      expect(minutes).toBeLessThanOrEqual(1440);
+    }
+  });
+});
+
 describe("running the skill's scripts", () => {
   it("always goes through sh, since ClawHub's zips carry no execute bit", () => {
     const repoReadme = readFileSync("README.md", "utf8");

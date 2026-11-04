@@ -1,9 +1,9 @@
 import { createPublicClient, createWalletClient, encodeFunctionData, formatUnits, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { erc20Errors, transferErrors } from "./abi.js";
-import { appealAbi, brainchainTransport, erc20Abi, explainRevert, reason, RECEIPT_MS, Status } from "./chain.js";
+import { appealAbi, brainchainTransport, erc20Abi, explainRevert, faucetReopens, reason, RECEIPT_MS, Status } from "./chain.js";
 import { chainOf, type Network } from "./network.js";
-import { ethNeeded, shortOfGas } from "./standing.js";
+import { ethNeeded, GAS, shortOfGas } from "./standing.js";
 
 /** TaskBoard statuses from set 3.5.0 on: a ruling that waits out its appeal window, and one under appeal. */
 export const { Ruled, Appealed } = Status;
@@ -52,7 +52,12 @@ export interface DisputeChain {
   appealOf(id: bigint): Promise<{ window: bigint; ruledAt: bigint; pays: boolean }>;
   appealBond(id: bigint): Promise<bigint>;
   bountyBalance(): Promise<bigint>;
+  /** What the bounty token's faucet gives, and from when this wallet can claim it; testnet only. */
+  bountyFaucet(): Promise<{ amount: bigint; opensAt: bigint }>;
+  claimBounty(): Promise<Hex>;
   ethBalance(): Promise<bigint>;
+  /** How many transactions the wallet has sent. */
+  sent(): Promise<number>;
   gasPrice(): Promise<bigint>;
   /** What the board may already take of the wallet's bounty token. */
   allowance(): Promise<bigint>;
@@ -90,7 +95,22 @@ export function createDisputeChain(network: Network, account: PrivateKeyAccount)
     appealOf: (id) => client.readContract({ ...board, functionName: "appealOf", args: [id] }),
     appealBond: (id) => client.readContract({ ...board, functionName: "appealBond", args: [id] }),
     bountyBalance: () => client.readContract({ ...token, functionName: "balanceOf", args: [account.address] }),
+    async bountyFaucet() {
+      const [amount, interval, last] = await Promise.all([
+        client.readContract({ ...token, functionName: "FAUCET_AMOUNT" }),
+        client.readContract({ ...token, functionName: "FAUCET_INTERVAL" }),
+        client.readContract({ ...token, functionName: "lastClaim", args: [account.address] }),
+      ]);
+      return { amount, opensAt: last === 0n ? 0n : last + interval };
+    },
+    async claimBounty() {
+      const hash = await wallet.writeContract({ ...token, functionName: "faucet" });
+      const receipt = await client.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
+      if (receipt.status !== "success") throw new Error(`The faucet claim ${hash} reverted`);
+      return hash;
+    },
     ethBalance: () => client.getBalance({ address: account.address }),
+    sent: () => client.getTransactionCount({ address: account.address }),
     gasPrice: () => client.getGasPrice(),
     allowance: () => client.readContract({ ...token, functionName: "allowance", args: [account.address, board.address] }),
     async approveBounty(amount) {
@@ -138,12 +158,40 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
   }
   const closes = terms.ruledAt + terms.window;
   if (now > closes) throw new Error(`The appeal window for task ${id} closed at ${at(closes)}.`);
-  const [bond, balance, eth, gasPrice, allowance] = await Promise.all([chain.appealBond(id), chain.bountyBalance(), chain.ethBalance(), chain.gasPrice(), chain.allowance()]);
+  const [bond, balance, eth, gasPrice, allowance, sent] = await Promise.all([
+    chain.appealBond(id),
+    chain.bountyBalance(),
+    chain.ethBalance(),
+    chain.gasPrice(),
+    chain.allowance(),
+    chain.sent(),
+  ]);
   const amount = `${formatUnits(bond, 6)} ${network.bountySymbol}`;
-  if (balance < bond) throw new Error(`The appeal bond is ${amount}, and the worker holds ${formatUnits(balance, 6)}. Bridge more with \`npx brainchain-worker bridge --bounty <amount>\`.`);
-  // Checked for both transactions before either is sent: an approval alone spends gas and leaves the bond approved.
-  const need = ethNeeded(allowance < bond ? [APPROVE_GAS, APPEAL_GAS] : [APPEAL_GAS], gasPrice);
-  if (eth < need) throw new Error(`${chain.account} holds ${shortOfGas(network, chain.account, eth, need, "the appeal")} Nothing was sent.`);
+  const holds = `The appeal bond is ${amount}, and this wallet holds ${formatUnits(balance, 6)}.`;
+  // Test USDG comes from its faucet, as tBRAIN does for join; only mainnet's USDG is bridged in.
+  const claims = balance < bond && network.bountyFaucet === true;
+  if (balance < bond && !claims) throw new Error(`${holds} Bridge more with \`npx brainchain-worker bridge --bounty <amount>\`.`);
+  const closed = (opensAt: bigint) =>
+    new Error(
+      `${holds} The ${network.bountySymbol} faucet allows one claim a day, and this wallet can claim again at ${at(opensAt)}` +
+        (opensAt > closes ? `, after the appeal window closes at ${at(closes)}.` : `. Run appeal again then, before the appeal window closes at ${at(closes)}.`),
+    );
+  if (claims) {
+    const faucet = await chain.bountyFaucet();
+    if (now < faucet.opensAt) throw closed(faucet.opensAt);
+    if (balance + faucet.amount < bond) throw new Error(`${holds} The faucet's ${formatUnits(faucet.amount, 6)} ${network.bountySymbol} a day would not make up the rest.`);
+  }
+  // Checked for every transaction before any is sent: an approval alone spends gas and leaves the bond approved.
+  const need = ethNeeded([...(claims ? [GAS.faucet] : []), ...(allowance < bond ? [APPROVE_GAS] : []), APPEAL_GAS], gasPrice);
+  if (eth < need) throw new Error(`${chain.account} holds ${shortOfGas(network, chain.account, eth, sent, need, "the appeal")} Nothing was sent.`);
+  if (claims) {
+    log(`Claiming ${network.bountySymbol} from the testnet faucet for the bond...`);
+    const claim = await chain.claimBounty().catch((error: unknown) => {
+      const opensAt = faucetReopens(error);
+      throw opensAt === undefined ? error : closed(opensAt);
+    });
+    log(`Claimed: ${claim}`);
+  }
   const approval = await chain.approveBounty(bond);
   const tx = await chain.appeal(id).catch((error: unknown) => {
     if (approval === undefined) throw error;

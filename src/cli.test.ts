@@ -2,12 +2,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { Address } from "viem";
+import { parseEther, type Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { asksHelp, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
+import { asksHelp, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
+import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
@@ -18,6 +19,7 @@ describe("parse", () => {
     for (const [command, args, flag] of [
       ["claim", ["--dry=1"], "dry"],
       ["mint", ["--dry="], "dry"],
+      ["run", ["--exec", "wc -w", "--mint=false"], "mint"],
       ["run", ["--exec", "wc -w", "--no-mint=false"], "no-mint"],
       ["run", ["--once=x"], "once"],
     ] as const) {
@@ -118,11 +120,12 @@ describe("watching", () => {
   });
 });
 
-function fakeChain(gas: bigint, balance: bigint) {
+function fakeChain(gas: bigint, balance: bigint, sent = 0) {
   const send = () => vi.fn(async () => undefined);
   return {
     account: ACCOUNT,
     ethBalance: vi.fn(async () => gas),
+    sent: vi.fn(async () => sent),
     gasPrice: vi.fn(async () => 100_000_000n),
     allowed: vi.fn(async () => false),
     stake: vi.fn(async () => ({ registered: false, staked: 0n, unstaking: 0n, unlocksAt: 0n, price: 0n })),
@@ -189,7 +192,8 @@ describe("join", () => {
     for (const chain of [allowed, stranger]) for (const send of [chain.approve, chain.stakeTokens, chain.setPrice, chain.apply]) expect(send).not.toHaveBeenCalled();
   });
 
-  const gas = (holds: string, need: string, network: Network = MAINNET) => `${ACCOUNT} holds ${holds} ETH on ${network.name}; join needs about ${need} ETH for gas. ${network.gas(ACCOUNT)}.`;
+  const gas = (holds: string, need: string, network: Network = MAINNET) =>
+    `${ACCOUNT} holds ${holds} ETH on ${network.name}; join needs about ${need} ETH for gas. ${gasHelp(network, ACCOUNT, parseEther(holds), 0)}.`;
   const short = `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${MAINNET.buyStake}`;
 
   it("tells a new mainnet worker with no ETH and no BRAIN both needs at once", async () => {
@@ -203,6 +207,16 @@ describe("join", () => {
 
   it("names only gas on testnet, where the faucet covers the stake", async () => {
     expect(await joinError(fakeChain(0n, 0n), TESTNET)).toBe(gas("0", "0.000088", TESTNET));
+  });
+
+  it("sends a wallet that has sent transactions, as one the drip paid for has, to the faucet and the bridge", async () => {
+    // A worker that joined on its drip, then left or was slashed, joins again.
+    const error = await joinError(fakeChain(20_000_000_000_000n, 0n, 6), TESTNET);
+    expect(error).toBe(
+      `${ACCOUNT} holds 0.00002 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ` +
+        "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
+        "so a person claims it, and move it here with `npx brainchain-worker bridge --eth 0.001`. The gas drip serves each address once.",
+    );
   });
 
   it("refuses a wallet with some ETH but not enough, before anything is sent", async () => {
@@ -226,12 +240,52 @@ describe("join", () => {
     const chain = fakeChain(10n ** 15n, 0n);
     const named = (name: string, about = "Summaries") =>
       join(chain as unknown as Chain, TESTNET, new Map([["name", name], ["about", about]]));
-    for (const name of ["Claude official \u202ecilbup\u202c", "\u200bJev\u200b", "Atlas\u2066", "Atlas\nJev", "A\u00adtlas"]) {
-      await expect(named(name)).rejects.toThrow(new UsageError("--name must be one line with no invisible or direction-changing characters"));
+    const hidden = {
+      "Claude official \u202ecilbup\u202c": "U+202E",
+      "\u200bJev\u200b": "U+200B",
+      "Atlas\u2066": "U+2066",
+      "Atlas\nJev": "U+000A",
+      "A\u00adtlas": "U+00AD",
+      "Jev\u200d": "U+200D",
+      "Jev\u200c": "U+200C",
+      "Atlas\u2028Jev": "U+2028",
+      "Atlas\u2029Jev": "U+2029",
+      "\u3164": "U+3164",
+      "\u2800": "U+2800",
+      "Jev\u{e0041}": "U+E0041",
+      "Je\u034fv": "U+034F",
+      "Jev\ufe0f": "U+FE0F",
+      "\u115f\u1160": "U+115F",
+      "Jev\uffa0": "U+FFA0",
+      "Jev\u180b": "U+180B",
+      "Jev\ufff9": "U+FFF9",
+      "Jev\x1b[0m": "U+001B",
+    };
+    for (const [name, code] of Object.entries(hidden)) {
+      await expect(named(name)).rejects.toThrow(new UsageError(`--name must be one line with no invisible or direction-changing characters, and it holds ${code}`));
     }
-    await expect(named("Atlas", "Summaries \u2067and more")).rejects.toThrow(new UsageError("--about must have no invisible or direction-changing characters"));
+    await expect(named("Atlas", "Summaries \u2067and more")).rejects.toThrow(
+      new UsageError("--about must have no invisible or direction-changing characters, and it holds U+2067"),
+    );
+    await expect(named("Atlas", "Official grader\u200d. Summaries")).rejects.toThrow(
+      new UsageError("--about must have no invisible or direction-changing characters, and it holds U+200D"),
+    );
+    await expect(named("Atlas", "Summaries\r and more")).rejects.toThrow(
+      new UsageError("--about must have no invisible or direction-changing characters, and it holds U+000D"),
+    );
     expect(chain.allowed).not.toHaveBeenCalled();
     for (const send of [chain.claimStakeToken, chain.approve, chain.stakeTokens, chain.setPrice, chain.apply]) expect(send).not.toHaveBeenCalled();
+  });
+
+  it("takes a description over several lines, and names in any script", async () => {
+    const chain = fakeChain(88_000_000_000_000n, 0n);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, TESTNET, new Map([["name", "Atlas 東京 Ünïcode 🤖"], ["about", "Summaries\nand code review,\twith tests"]]));
+    } finally {
+      log.mockRestore();
+    }
+    expect(chain.apply).toHaveBeenCalledOnce();
   });
 
   it("needs no gas when there is nothing to send", async () => {
@@ -259,6 +313,29 @@ describe("watchPlace", () => {
     expect(readWatched(watchPlace(LOG, undefined), folder)).toBe(100n);
     expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBe(94n);
     expect(readWatched(watchPlace(LOG, "0x00000000000000000000000000000000000000c2"), folder)).toBeUndefined();
+  });
+});
+
+describe("hireWatch", () => {
+  it("reads again every few minutes until the worker can be hired, and gives each new answer once", async () => {
+    let now = 0;
+    const answers = ["no: application 9 is waiting for Jev", undefined, "no: Jev allowed this worker; it can be hired after 2026-11-04T23:02:19Z", "yes"];
+    const check = vi.fn(async () => answers.shift());
+    const changed = hireWatch("no: application 9 is waiting for Jev", check, 300_000, () => now);
+    expect(await changed()).toBeUndefined();
+    expect(check).not.toHaveBeenCalled();
+    now += 300_000;
+    // The same answer, then one that could not be read: nothing to say.
+    expect(await changed()).toBeUndefined();
+    now += 300_000;
+    expect(await changed()).toBeUndefined();
+    now += 300_000;
+    expect(await changed()).toBe("no: Jev allowed this worker; it can be hired after 2026-11-04T23:02:19Z");
+    now += 300_000;
+    expect(await changed()).toBe("yes");
+    now += 3_600_000;
+    expect(await changed()).toBeUndefined();
+    expect(check).toHaveBeenCalledTimes(4);
   });
 });
 

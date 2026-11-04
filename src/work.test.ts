@@ -9,6 +9,7 @@ import { ContractFunctionExecutionError, ContractFunctionRevertedError, encodeEr
 import { taskBoardAbi } from "./abi.js";
 import { PermanentError, submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
 import { TESTNET } from "./network.js";
+import { gasHelp } from "./standing.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
 import { createWork, MAX_RESULT_BYTES, npxUnderSupervisor, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
 
@@ -22,7 +23,7 @@ const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
 
 function setup(
   output: (at: (t: bigint) => void) => Promise<string>,
-  options: { format?: "prompt" | "json"; tasks?: HiredTask[]; store?: Store; stopping?: () => boolean; failed?: () => void; delivered?: (task: bigint) => void; gasHelp?: string } = {},
+  options: { format?: "prompt" | "json"; tasks?: HiredTask[]; store?: Store; stopping?: () => boolean; failed?: () => void; delivered?: (task: bigint) => void; gasHelp?: () => Promise<string> } = {},
 ) {
   let now = 1_000n;
   const at = (t: bigint) => void (now = t);
@@ -225,11 +226,14 @@ describe("work", () => {
   });
 
   it("does not run a command without ETH to submit its result, and says where the ETH comes from", async () => {
-    const { chain, command, log, work } = setup(async () => "ok", { gasHelp: TESTNET.gas("0x00000000000000000000000000000000000000C1") });
+    // A worker that was hired has sent transactions, so the help is read when it is needed, not when the run starts.
+    const { chain, command, log, work } = setup(async () => "ok", { gasHelp: async () => gasHelp(TESTNET, "0x00000000000000000000000000000000000000C1", 0n, 6) });
     chain.ethBalance.mockResolvedValue(0n);
     await work.round();
     expect(command.run).not.toHaveBeenCalled();
-    expect(lastLog(log)).toMatch(/^task 7: failed \(The wallet has no ETH to pay gas for the submit\. Ask the testnet gas drip first: `curl -X POST https:\/\/brain\.testnet\.usebrainchain\.com\/testnet\/gas /);
+    expect(lastLog(log)).toMatch(
+      /^task 7: failed \(The wallet has no ETH to pay gas for the submit\. Get Robinhood Chain testnet ETH from https:\/\/faucet\.testnet\.chain\.robinhood\.com, .*\. The gas drip serves each address once\. /,
+    );
     expect(lastLog(log)).toContain("The task is tried again); retrying in 60 seconds");
   });
 

@@ -365,7 +365,7 @@ describe("run's settlement watch", () => {
         "A person can get Robinhood Chain testnet ETH for gas at https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
         "and send it to this address; BrainChain's gas drip sends ETH on BrainChain testnet only. The worker claims test WETH from the faucet once it has ETH. " +
         "It tries again every hour, without another line, until 2027-01-16T07:03:20Z; an hour later the Proof goes to the public pool. " +
-        "Testnet Proofs earn no income, and `run --no-mint` turns minting off.",
+        "Proofs earn no income, and `run` without `--mint` mints none.",
     ]);
     for (const hours of [1, 2, 3]) {
       t.at(300 + hours * 3_600);

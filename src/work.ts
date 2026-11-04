@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { toBytes, type Hex } from "viem";
 
 import { fetchBrief, PermanentError, reason, RECEIPT_MS, type HiredTask, type WorkerChain } from "./chain.js";
+import { ps, startTime } from "./proc.js";
 import { memoryStore, type Store, type TaskState } from "./state.js";
 
 /** The most the service accepts for one result. */
@@ -23,6 +24,22 @@ export const stripAnsi = (text: string) => text.replace(ANSI, "");
 
 /** Characters that show nothing or turn the text around them, so text that holds them can read as other text. */
 export const HIDDEN = /[\u00ad\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+
+/**
+ * What a worker's name and description may not hold: control, format and
+ * separator characters, and the default-ignorable code points Unicode files
+ * as letters or marks, which no property escape reaches, plus the blank
+ * braille pattern. Each shows nothing, breaks the line or turns the text
+ * around, so a name that holds one can read as another.
+ */
+const UNSEEN =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}͏ᅟᅠ឴឵᠋-᠏⁥⠀ㅤ︀-️ﾠ￰-￸\u{e0000}-\u{e0fff}]/u;
+
+/** The first character of `text` that UNSEEN refuses, as U+XXXX, or undefined when there is none. */
+export function unseen(text: string): string | undefined {
+  const found = UNSEEN.exec(text)?.[0];
+  return found === undefined ? undefined : `U+${found.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+}
 
 /** Text from strangers, made safe to print as one terminal line. */
 export const printable = (text: string) =>
@@ -124,20 +141,6 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
     const { code } = error as NodeJS.ErrnoException;
     if (code !== "ESRCH" && code !== "EPERM") throw error;
   }
-}
-
-/** One field of `ps` for a process, or undefined when it is gone or ps cannot tell. */
-function ps(pid: number, field: "etime" | "pgid"): string | undefined {
-  const result = spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" });
-  return result.status === 0 ? result.stdout.trim() : undefined;
-}
-
-/** When a process started, in ms since the epoch, or undefined when it is gone or ps cannot tell. */
-function startTime(pid: number): number | undefined {
-  const elapsed = /^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/.exec(ps(pid, "etime") ?? "");
-  if (!elapsed) return undefined;
-  const [days, hours, minutes, seconds] = elapsed.slice(1).map((part) => Number(part ?? 0)) as [number, number, number, number];
-  return Date.now() - (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
 }
 
 function exists(pid: number): boolean {
@@ -383,7 +386,7 @@ export function createWork(options: {
   /** Called as each result is delivered. */
   delivered?: (task: bigint) => void;
   /** Where the wallet gets ETH for gas, said when it has none. */
-  gasHelp?: string;
+  gasHelp?: () => Promise<string>;
   fetchBrief?: typeof fetchBrief;
 }) {
   const { chain, command } = options;
@@ -402,7 +405,8 @@ export function createWork(options: {
   };
   const needGas = async () => {
     if ((await chain.ethBalance()) === 0n) {
-      throw new Error(`The wallet has no ETH to pay gas for the submit${options.gasHelp ? `. ${options.gasHelp}` : ""}. The task is tried again`);
+      const help = await options.gasHelp?.().catch(() => undefined);
+      throw new Error(`The wallet has no ETH to pay gas for the submit${help ? `. ${help}` : ""}. The task is tried again`);
     }
   };
   const inTime = async (task: HiredTask) => {

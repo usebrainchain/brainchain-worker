@@ -93,6 +93,7 @@ function fakeChain(overrides: Partial<ProposalChain> = {}): ProposalChain {
     account: ME,
     now: vi.fn(async () => 1_800_000_000n),
     ethBalance: vi.fn(async () => parseEther("0.001")),
+    sent: vi.fn(async () => 2),
     stakeBalance: vi.fn(async () => parseEther("300000")),
     bond: vi.fn(async () => parseEther("250000")),
     decideWithin: vi.fn(async () => 604_800n),

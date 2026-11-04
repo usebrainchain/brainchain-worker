@@ -14,6 +14,7 @@ import {
 
 import { reason, RECEIPT_MS } from "./chain.js";
 import { chainOf, parentChainOf, type Network } from "./network.js";
+import { grouped } from "./standing.js";
 
 export type Asset = "eth" | "stake" | "bounty";
 
@@ -133,7 +134,8 @@ export async function bridge(
   const { decimals, symbol } = assetOf(network, asset);
   const amount = parseUnits(options.amount, decimals);
   if (amount <= 0n) throw new Error("the amount must be above zero");
-  const shown = `${formatUnits(amount, decimals)} ${symbol}`;
+  // Token amounts are grouped as status shows them; ETH amounts are small.
+  const shown = asset === "eth" ? `${formatUnits(amount, decimals)} ${symbol}` : `${grouped(amount, decimals)} ${symbol}`;
 
   let eth: bigint;
   try {
@@ -152,7 +154,7 @@ export async function bridge(
 
   const held = await chain.tokenBalance(asset);
   if (held < amount) {
-    throw new Error(`${chain.account} holds ${formatUnits(held, decimals)} ${symbol} on ${parent.name}, ${formatUnits(amount - held, decimals)} short of ${shown}`);
+    throw new Error(`${chain.account} holds ${grouped(held, decimals)} ${symbol} on ${parent.name}, ${grouped(amount - held, decimals)} short of ${shown}`);
   }
   const value = await chain.arrivalCost(asset, amount);
   if (eth < value + parseUnits("0.0001", 18)) {
