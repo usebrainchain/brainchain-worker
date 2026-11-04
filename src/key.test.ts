@@ -26,7 +26,7 @@ describe("keyText", () => {
   });
 
   it("reads a key file that holds the key alone, with or without 0x, around whitespace", () => {
-    for (const text of [`${KEY}\n`, KEY, KEY.slice(2), `  ${KEY}  \n`, `${KEY}\r\n`]) {
+    for (const text of [`${KEY}\n`, KEY, KEY.slice(2), `  ${KEY}  \n`, `${KEY}\r\n`, `0X${KEY.slice(2).toUpperCase()}`]) {
       expect(keyText({ BRAINCHAIN_WORKER_KEY_FILE: keyFile(text) })).toBe(text.trim());
     }
   });

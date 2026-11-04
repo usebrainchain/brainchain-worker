@@ -40,7 +40,8 @@ const { version } = createRequire(import.meta.url)("../package.json") as { versi
 /** Each command's lines in the usage text, in the order the text lists them. */
 const COMMAND_USAGE: Record<string, string> = {
   "new-key": `  brainchain-worker new-key [--file <path>] Print a fresh private key and its address. --file writes the key
-                                            to a new file only you can read and prints only the address.`,
+                                            to a new file only you can read and prints the file's path in
+                                            place of the key.`,
   join: `  brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>]
                                             Stake the minimum and apply to take tasks. The name is at
                                             most 60 characters, the description at most 500. --agent-id
@@ -204,7 +205,7 @@ interface Signer {
 function signer(): Signer {
   const raw = keyText()?.trim();
   if (!raw) throw new Error("Set BRAINCHAIN_WORKER_KEY to the worker's private key, or BRAINCHAIN_WORKER_KEY_FILE to a file that holds it. `npx brainchain-worker new-key` makes one.");
-  const hex = raw.startsWith("0x") ? raw.slice(2) : raw;
+  const hex = raw.replace(/^0x/i, "");
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("The worker's key must be 64 hex characters, with or without 0x");
   const key: Hex = `0x${hex.toLowerCase()}`;
   try {

@@ -47,7 +47,7 @@ describe("bridge", () => {
     const { chain, sent } = fakeChain({ cost: parseEther("0.0003") });
     const lines = await run(chain, "stake", "1250000");
     expect(sent).toEqual([`stake ${parseEther("1250000")} value ${parseEther("0.0003")}`]);
-    expect(lines[0]).toBe(`bridging 1250000 BRAIN from Robinhood Chain to ${ACCOUNT} on BrainChain (sending 0.0003 ETH for its arrival, the unused part refunded there)`);
+    expect(lines[0]).toBe(`bridging 1,250,000 BRAIN from Robinhood Chain to ${ACCOUNT} on BrainChain (sending 0.0003 ETH for its arrival, the unused part refunded there)`);
   });
 
   it("takes bounty amounts in 6 decimals and sends nothing on a dry run", async () => {
@@ -60,7 +60,7 @@ describe("bridge", () => {
 
   it("says exactly what the wallet lacks, and sends nothing", async () => {
     const short = fakeChain({ stake: parseEther("1000") });
-    await expect(run(short.chain, "stake", "1250000")).rejects.toThrow(`${ACCOUNT} holds 1000 BRAIN on Robinhood Chain, 1249000 short of 1250000 BRAIN`);
+    await expect(run(short.chain, "stake", "1250000")).rejects.toThrow(`${ACCOUNT} holds 1,000 BRAIN on Robinhood Chain, 1,249,000 short of 1,250,000 BRAIN`);
     const noGas = fakeChain({ eth: parseEther("0.0001") });
     await expect(run(noGas.chain, "bounty", "1")).rejects.toThrow(/holds 0.0001 ETH on Robinhood Chain; about 0.0004 ETH is needed/);
     await expect(run(noGas.chain, "eth", "0.001")).rejects.toThrow(/0.001 ETH plus gas is needed/);

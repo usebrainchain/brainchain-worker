@@ -4,7 +4,7 @@ import { ApplicationState, Status, type Chain, type Flight } from "./chain.js";
 import type { Network } from "./network.js";
 
 /** A token amount with thousands separators, such as 1,250,000; a fraction is kept as it is. */
-function grouped(amount: bigint, decimals: number): string {
+export function grouped(amount: bigint, decimals: number): string {
   const [whole, fraction] = formatUnits(amount, decimals).split(".");
   return `${whole!.replace(/\B(?=(\d{3})+$)/g, ",")}${fraction === undefined ? "" : `.${fraction}`}`;
 }
