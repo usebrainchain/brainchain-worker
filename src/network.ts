@@ -68,7 +68,7 @@ export interface Network {
   };
 }
 
-/** BrainChain testnet, release 3.4.0. */
+/** BrainChain testnet, release 3.5.0. */
 export const TESTNET: Network = {
   id: "testnet",
   name: "BrainChain testnet",

@@ -57,7 +57,8 @@ const COMMAND_USAGE: Record<string, string> = {
   bridge: `  brainchain-worker bridge --eth <ETH> | --stake <amount> | --bounty <amount> [--dry]
                                             Move ETH for gas, the stake token or the bounty token from Robinhood
                                             Chain to the worker's address on BrainChain; it arrives in about a
-                                            minute. --dry checks the balances and sends nothing.`,
+                                            minute. --eth works on both networks, the tokens on mainnet. --dry
+                                            checks the balances and sends nothing.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry]
                                             Bond the stake token and propose a change to BrainChain for Jev to
@@ -71,7 +72,8 @@ const COMMAND_USAGE: Record<string, string> = {
                                             worker's watchtower mark. --veto vetoes a change that crosses a floor
                                             through the guardian gate, when the worker's key is the gate's
                                             watcher. --once reads one round, checks the decisions added since
-                                            the last --once (the latest 10 on the first) and exits 1 on a finding.`,
+                                            the last --once (the latest 10 on the first) and exits 1 on a finding
+                                            or a decision it could not check.`,
   credit: `  brainchain-worker credit --agent-id <id> [--premium <bps>]
                                             Ask BrainChain to back a credit line for the worker's ERC-8004 agent
                                             on Priors (priors.trade): signs Priors' consent with the agent owner's

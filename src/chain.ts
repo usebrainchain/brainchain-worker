@@ -215,7 +215,7 @@ function outOfGas(error: BaseError): boolean {
 /** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
 export function reason(error: unknown): string {
   if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error);
-  if (outOfGas(error)) return "The wallet holds too little ETH to pay for this transaction's gas. Nothing was sent; `brainchain-worker status` shows its balance";
+  if (outOfGas(error)) return "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
   // An RPC error with an HTTP status is a provider refusing the request, such as a bad key or a rate limit.
   const request = error.walk(
     (e) => e instanceof HttpRequestError || e instanceof TimeoutError || (e instanceof RpcRequestError && e.status !== undefined),

@@ -168,6 +168,7 @@ function pidSpace(): string {
 }
 
 function alive(pid: number): boolean {
+  // A container restarts its process with the same pid, so our own pid in the file is a stale lock.
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
   try {
     process.kill(pid, 0);
@@ -277,12 +278,16 @@ export function lock(file: string, lost: () => void = () => process.exit(1), wat
     if (takeOver(file, mine, text)) break;
   }
   const beat = setInterval(() => {
-    if (readIfThere(file) !== mine) {
-      clearInterval(beat);
-      return lost();
+    try {
+      if (readIfThere(file) !== mine) {
+        clearInterval(beat);
+        return lost();
+      }
+      const now = new Date();
+      utimesSync(file, now, now);
+    } catch {
+      // A disk that fails for a moment is no reason to drop a task; the next beat tries again.
     }
-    const now = new Date();
-    utimesSync(file, now, now);
   }, LOCK_BEAT_MS);
   beat.unref();
   const release = () => {

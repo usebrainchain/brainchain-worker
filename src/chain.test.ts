@@ -141,7 +141,7 @@ describe("chain helpers", () => {
 });
 
 describe("a wallet short of gas", () => {
-  const plain = "The wallet holds too little ETH to pay for this transaction's gas. Nothing was sent; `brainchain-worker status` shows its balance";
+  const plain = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
 
   it("is said plainly, in the words of either failure", () => {
     const estimate = new BaseError("Execution reverted with reason: gas required exceeds allowance (38928).");

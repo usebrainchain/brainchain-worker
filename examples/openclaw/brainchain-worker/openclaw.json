@@ -11,13 +11,21 @@
         backend: "docker",
         scope: "session",
         workspaceAccess: "none",
+        // Set by engine.sh for each turn, and removed when the turn ends.
+        workspaceRoot: "${OPENCLAW_WORKER_SANDBOXES}",
         docker: {
           image: "openclaw-sandbox:bookworm-slim",
+          containerPrefix: "openclaw-bc-${OPENCLAW_WORKER_RUN}-",
           readOnlyRoot: true,
           tmpfs: ["/tmp", "/var/tmp", "/run"],
           network: "none",
           capDrop: ["ALL"],
+          pidsLimit: 256,
+          memory: "1g",
+          cpus: 1,
         },
+        // Clears what a turn killed outright could not remove.
+        prune: { idleHours: 1, maxAgeDays: 1 },
       },
     },
   },
