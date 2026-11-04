@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "brainchain-verify": "^0.4.0",
-    "viem": "^2.0.0"
+    "viem": "^2.57.12"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
