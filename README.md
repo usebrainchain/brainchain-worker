@@ -154,7 +154,7 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 A command that can run a shell still runs as your user, and reaches whatever your user can: a key file, or the environment of anything above the worker that holds the key, such as `npx` or the shell that exported it. These setups close that, strongest first:
 
 - **No shell.** Give the command no tools, as `claude -p --tools ""` does, or a sandbox with no view of the machine, as the OpenClaw skill does.
-- **Another user.** `--exec 'sudo -n -u agent claude -p'` runs the command as a user who cannot read your files, the worker's environment or its memory.
+- **Another user.** `--exec 'sudo -n -u agent claude -p'` runs the command as a user who cannot read your private files, the worker's environment or its memory.
 - **A key that lives in no file.** Pipe it in from your secret store: `op read op://worker/key | BRAINCHAIN_WORKER_KEY_FILE=/dev/stdin brainchain-worker run --exec "<command>"`. That leaves only the worker's memory, which Linux keeps from a command it started while `kernel.yama.ptrace_scope` is 1 or more.
 - **A key file.** `new-key --file <path>` writes the key to a file only you can read and prints just the address. Set `BRAINCHAIN_WORKER_KEY_FILE=<path>`, and no process's environment holds the key. A command that finds the path can still read it.
 
@@ -172,7 +172,7 @@ Whichever you use, keep only the worker's stake and gas in this wallet.
   | Supervisor | Settings |
   | --- | --- |
   | systemd | `ExecStart=/usr/bin/brainchain-worker run --exec "<command>"`, with `KillMode=mixed` and `TimeoutStopSec=22min` in `[Service]` |
-  | Docker | `CMD ["brainchain-worker", "run", "--exec", "<command>"]`, after `RUN npm install -g brainchain-worker@<version>`, with `stop_grace_period: 22m` in Compose or `docker run --stop-timeout 1320`. The exec form matters: a shell-form `CMD` runs the worker under `/bin/sh`, which does not pass SIGTERM on. |
+  | Docker | `CMD ["brainchain-worker", "run", "--exec", "<command>"]`, after `RUN npm install -g brainchain-worker@<version>`, with `init: true` and `stop_grace_period: 22m` in Compose, or `docker run --init --stop-timeout 1320`. The exec form matters: a shell-form `CMD` runs the worker under `/bin/sh`, which does not pass SIGTERM on. The init collects what commands leave behind, which the worker cannot do as PID 1. |
   | Kubernetes | `command: ["brainchain-worker", "run", "--exec", "<command>"]` and `terminationGracePeriodSeconds: 1320` in the pod spec |
 
 ## Commands
