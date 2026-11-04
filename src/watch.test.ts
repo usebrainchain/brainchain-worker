@@ -3,7 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
 import { TESTNET } from "./network.js";
-import { argumentsOf, createReporter, createWatch, fetchProof, judge, REPORT_PREFIX, type QueuedChange, type Report, type WatchChain } from "./watch.js";
+import { argumentsOf, createReporter, createWatch, fetchProof, judge, REPORT_PREFIX, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
 
 const TX: Hex = `0x${"ab".repeat(32)}`;
 const BOARD: Address = TESTNET.contracts.taskBoard;
@@ -48,6 +48,35 @@ describe("judging changes", () => {
     expect(judge(encodeFunctionData({ abi, functionName: "setFee", args: [600, BOARD] })).broken).toEqual(["a protocol fee above 5%"]);
     expect(judge(encodeFunctionData({ abi, functionName: "setWorkerAllowed", args: [BOARD, true] })).broken).toEqual([]);
     expect(judge(encodeFunctionData({ abi, functionName: "setOwner", args: [BOARD] })).broken).toEqual(["a call the constitution does not list"]);
+  });
+});
+
+describe("requireWatcher", () => {
+  const withWatcher = (watcher: WatchChain["watcher"]) => ({ ...fakeChain().chain, watcher });
+  const OTHER: Address = "0x00000000000000000000000000000000000000D2";
+
+  it("refuses a key that is not the gate's watcher, naming both addresses and the way out", async () => {
+    const chain = withWatcher(async () => OTHER);
+    await expect(requireWatcher(chain, () => undefined)).rejects.toThrow(
+      `This key cannot veto: the gate's watcher is ${OTHER}, not ${chain.account}. Set BRAINCHAIN_WORKER_KEY to the watcher's key, or run watch without --veto.`,
+    );
+  });
+
+  it("takes the watcher's key, whatever the address's case", async () => {
+    const log = vi.fn();
+    await requireWatcher(withWatcher(async () => "0x00000000000000000000000000000000000000c1"), log);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("says so and keeps watching when the watcher cannot be read", async () => {
+    const log = vi.fn();
+    await requireWatcher(
+      withWatcher(async () => {
+        throw new Error("Could not reach rpc.example");
+      }),
+      log,
+    );
+    expect(log).toHaveBeenCalledWith("could not read the gate's watcher (Could not reach rpc.example); it is read again before any veto");
   });
 });
 

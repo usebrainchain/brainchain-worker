@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MAINNET, TESTNET } from "./network.js";
-import { hireable, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
+import { gasLine, hireable, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
@@ -61,6 +61,22 @@ describe("wallet", () => {
       `0 BRAIN; join needs 1,250,000 BRAIN, and the 1,000,000 BRAIN unstaking can be withdrawn now. ${buy}`,
     );
     expect(wallet(MAINNET, mainnet(), 1_250_000n * BRAIN, 250_000n * BRAIN, undefined, now)).toBe("1,250,000 BRAIN, enough for the 1,250,000 BRAIN join needs");
+  });
+});
+
+describe("gasLine", () => {
+  const applying = { ...standing(), allowed: false, applying: true } as Snapshot;
+  const staked = standing({ staked: 500n * BRAIN });
+
+  it("says join needs ETH first when the wallet has none and join has something to do", () => {
+    expect(gasLine(TESTNET, applying, 0n)).toBe(`0 ETH; join needs ETH for gas first. ${TESTNET.gas}; 0.001 ETH is plenty.`);
+    expect(gasLine(MAINNET, applying, 0n)).toBe(`0 ETH; join needs ETH for gas first. ${MAINNET.gas}; 0.001 ETH is plenty.`);
+    expect(gasLine(TESTNET, standing({ staked: 100n * BRAIN }), 0n)).toContain("join needs ETH for gas first");
+  });
+
+  it("only gives the balance when the wallet has ETH or join has nothing to do", () => {
+    expect(gasLine(TESTNET, applying, 10n ** 15n)).toBe("0.001 ETH");
+    expect(gasLine(TESTNET, staked, 0n)).toBe("0 ETH");
   });
 });
 

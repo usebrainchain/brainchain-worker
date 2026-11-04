@@ -1,4 +1,4 @@
-import { formatUnits } from "viem";
+import { formatEther, formatUnits } from "viem";
 
 import { ApplicationState, type Chain } from "./chain.js";
 import type { Network } from "./network.js";
@@ -77,6 +77,13 @@ export function wallet(
     s.w.unstaking > 0n ? `, and the ${stake(network, s.w.unstaking)} unstaking can be withdrawn ${now >= s.w.unlocksAt ? "now" : `after ${when(s.w.unlocksAt)}`}` : "";
   const buy = network.buyStake ? `. ${network.buyStake}` : "";
   return `${has}; join needs ${stake(network, need)}${reopens}${unstaking}${buy}`;
+}
+
+/** The wallet's ETH. With none, and something for join to do, it says so: join can send nothing until the wallet has some. */
+export function gasLine(network: Network, s: Snapshot, gas: bigint): string {
+  const has = `${formatEther(gas)} ETH`;
+  if (gas > 0n || (s.toStake === 0n && !s.applying)) return has;
+  return `${has}; join needs ETH for gas first. ${network.gas}; 0.001 ETH is plenty.`;
 }
 
 /** What join says when the wallet holds too little of a stake token that has no faucet. */

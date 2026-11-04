@@ -2,7 +2,7 @@ import type { Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { join, parse, UsageError } from "./cli.js";
+import { asksHelp, join, main, parse, usage, UsageError, watching } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
@@ -24,6 +24,92 @@ describe("parse", () => {
     const { values, switches } = parse("mint", ["--count=3", "--dry"]);
     expect(values.get("count")).toBe("3");
     expect([...switches]).toEqual(["dry"]);
+  });
+});
+
+describe("help", () => {
+  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bridge", "propose", "proposal", "watch", "credit", "dispute", "appeal", "leave", "withdraw"];
+
+  async function printed(argv: string[]): Promise<string> {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await main(argv);
+      return log.mock.calls.map((call) => String(call[0])).join("\n");
+    } finally {
+      log.mockRestore();
+    }
+  }
+
+  it("counts -h and --help as a flag of their own, in any position", () => {
+    for (const [command, args] of [
+      ["price", ["--help"]],
+      ["price", ["-h"]],
+      ["price", ["0.25", "--help"]],
+      ["join", ["--name", "Atlas", "-h"]],
+      ["join", ["--name=Atlas", "--help"]],
+      ["watch", ["--once", "-h"]],
+      ["run", ["--exec", "--help"]],
+      ["run", ["--bogus", "-h"]],
+      ["new-key", ["-h"]],
+    ] as const) {
+      expect(asksHelp(command, [...args])).toBe(true);
+    }
+  });
+
+  it("leaves -h and --help alone as the value of another flag", () => {
+    for (const [command, args] of [
+      ["join", ["--name", "Atlas", "--about", "-h"]],
+      ["join", ["--about=-h"]],
+      ["join", ["--about=--help"]],
+      ["run", ["--exec", "cat", "--timeout", "-h"]],
+      ["propose", ["--title", "-h", "--rationale", "-h"]],
+    ] as const) {
+      expect(asksHelp(command, [...args])).toBe(false);
+    }
+    expect(parse("join", ["--about", "-h"]).values.get("about")).toBe("-h");
+  });
+
+  it("sends a flag's -h on to be validated instead of printing help", async () => {
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY", `0x${"4f".repeat(32)}`);
+    try {
+      const refused = main(["run", "--exec", "cat", "--timeout", "-h"]);
+      await expect(refused).rejects.toBeInstanceOf(UsageError);
+      await expect(refused).rejects.toThrow("--timeout is the most minutes");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("prints only the command's own lines for each command", async () => {
+    for (const command of COMMANDS) {
+      for (const argv of [[command, "--help"], [command, "-h"], ["help", command], ["--help", command]]) {
+        const text = await printed(argv);
+        expect(text).toBe(usage(command));
+        expect(text.startsWith(`Usage:\n  brainchain-worker ${command}`)).toBe(true);
+        expect(text.match(/^ {2}brainchain-worker /gm)).toHaveLength(1);
+      }
+    }
+    expect(await printed(["new-key", "--help"])).not.toContain("BRAINCHAIN_WORKER_KEY=");
+  });
+
+  it("prints everything with no command, or a name that is not a command", async () => {
+    for (const argv of [[], ["help"], ["--help"], ["-h"], ["nonsense", "--help"], ["constructor", "--help"], ["--version", "-h"], ["help", "nonsense"]]) {
+      expect(await printed(argv)).toBe(usage(undefined));
+    }
+    const all = usage(undefined);
+    for (const command of COMMANDS) expect(all).toContain(`  brainchain-worker ${command}`);
+    expect(all).toContain("Environment:");
+  });
+});
+
+describe("watching", () => {
+  it("names no address without a key", () => {
+    expect(watching(TESTNET, undefined, false)).toBe(`watching ${TESTNET.name} (read-only, no key)`);
+  });
+
+  it("names the worker with a key", () => {
+    expect(watching(TESTNET, ACCOUNT, false)).toBe(`watching ${TESTNET.name} as ${ACCOUNT}, reporting rounds to the service`);
+    expect(watching(TESTNET, ACCOUNT, true)).toBe(`watching ${TESTNET.name} as ${ACCOUNT}, vetoing through the guardian gate, reporting rounds to the service`);
   });
 });
 

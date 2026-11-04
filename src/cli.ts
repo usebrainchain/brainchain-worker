@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { verifyDecision } from "brainchain-verify";
 import { createPublicClient } from "viem";
 
-import { formatEther, parseUnits, type Hex, type PrivateKeyAccount } from "viem";
+import { parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { brainchainTransport, createChain, faucetReopens, reason, unhealthy, type Chain } from "./chain.js";
@@ -11,11 +11,11 @@ import { claim, createIncome } from "./claim.js";
 import { createProofMinter, createProofsChain, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
-import { hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
+import { gasLine, hireable, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore, readWatched, writeWatched } from "./state.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
-import { createReporter, createWatch, createWatchChain, type Verify } from "./watch.js";
+import { createReporter, createWatch, createWatchChain, requireWatcher, type Verify } from "./watch.js";
 import { createWork, firstProgram, programFound, shellCommand, stopLeftover, stopper } from "./work.js";
 
 /** How many of the latest decisions a first watch --once checks. */
@@ -32,61 +32,66 @@ async function fetchRecord(uri: string): Promise<Uint8Array> {
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
 
-const USAGE = `brainchain-worker ${version}
-
-Earn on BrainChain by doing tasks: stake, apply, and let Jev hire your agent.
-
-Usage:
-  brainchain-worker new-key                 Print a fresh private key and its address.
-  brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>]
+/** Each command's lines in the usage text, in the order the text lists them. */
+const COMMAND_USAGE: Record<string, string> = {
+  "new-key": `  brainchain-worker new-key                 Print a fresh private key and its address.`,
+  join: `  brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>]
                                             Stake the minimum and apply to take tasks. The name is at
                                             most 60 characters, the description at most 500. --agent-id
                                             (mainnet) names the worker's ERC-8004 agent on Robinhood Chain,
-                                            so its BrainChain record is written to that identity.
-  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--no-mint]
+                                            so its BrainChain record is written to that identity.`,
+  run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--no-mint]
                                             Do every task Jev hires the worker for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
                                             --timeout minutes (20 by default, at most 1440). The worker
-                                            mints the Proof of each task it is paid for, unless --no-mint.
-  brainchain-worker status                  Stake, wallet, application, record and earnings.
-  brainchain-worker price <USDG>            Change your asking price per task.
-  brainchain-worker mint [--count <n>] [--dry]
+                                            mints the Proof of each task it is paid for, unless --no-mint.`,
+  status: `  brainchain-worker status                  Stake, wallet, application, record and earnings.`,
+  price: `  brainchain-worker price <USDG>            Change your asking price per task.`,
+  mint: `  brainchain-worker mint [--count <n>] [--dry]
                                             Mint a Proof for each paid task waiting for one, up to 10 or
-                                            --count, at 0.001 WETH each on Robinhood Chain. --dry sends nothing.
-  brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
-                                            --dry lists what is due and sends nothing.
-  brainchain-worker bridge --eth <ETH> | --stake <amount> | --bounty <amount> [--dry]
+                                            --count, at 0.001 WETH each on Robinhood Chain. --dry sends nothing.`,
+  claim: `  brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
+                                            --dry lists what is due and sends nothing.`,
+  bridge: `  brainchain-worker bridge --eth <ETH> | --stake <amount> | --bounty <amount> [--dry]
                                             Move ETH for gas, the stake token or the bounty token from Robinhood
                                             Chain to the worker's address on BrainChain; it arrives in about a
-                                            minute. --dry checks the balances and sends nothing.
-  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
+                                            minute. --dry checks the balances and sends nothing.`,
+  propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry]
                                             Bond the stake token and propose a change to BrainChain for Jev to
                                             decide. --data <hex> gives the call as raw calldata instead of
-                                            --call and --args. --dry checks the call and sends nothing.
-  brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.
-  brainchain-worker watch [--veto] [--once]
+                                            --call and --args. --dry checks the call and sends nothing.`,
+  proposal: `  brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.`,
+  watch: `  brainchain-worker watch [--veto] [--once]
                                             Watch the chain: judge every queued change against the constitution
                                             and re-verify every new decision, reporting what disagrees. With the
                                             worker's key set, each round is reported to the service toward the
                                             worker's watchtower mark. --veto vetoes a change that crosses a floor
                                             through the guardian gate, when the worker's key is the gate's
                                             watcher. --once reads one round, checks the decisions added since
-                                            the last --once (the latest 10 on the first) and exits 1 on a finding.
-  brainchain-worker credit --agent-id <id> [--premium <bps>]
+                                            the last --once (the latest 10 on the first) and exits 1 on a finding.`,
+  credit: `  brainchain-worker credit --agent-id <id> [--premium <bps>]
                                             Ask BrainChain to back a credit line for the worker's ERC-8004 agent
                                             on Priors (priors.trade): signs Priors' consent with the agent owner's
                                             key and sends it. The line opens once the worker is proven on the
                                             board. --premium is the most the sponsor may charge per 30 days, in
-                                            basis points (default 0, at most 200). Mainnet only.
-  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
-                                            window. Jev rules on it; a confident ruling decides.
-  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
+                                            basis points (default 0, at most 200). Mainnet only.`,
+  dispute: `  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
+                                            window. Jev rules on it; a confident ruling decides.`,
+  appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
                                             appeal window, with the bond the task's terms fix (a quarter of the
                                             bounty). Jev rules again; the bond comes back unless Jev confidently
-                                            rules the same way. Testnet only for now.
-  brainchain-worker leave                   Start unstaking (3-day cooldown).
-  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.
+                                            rules the same way. Testnet only for now.`,
+  leave: `  brainchain-worker leave                   Start unstaking (3-day cooldown).`,
+  withdraw: `  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.`,
+};
+
+const USAGE = `brainchain-worker ${version}
+
+Earn on BrainChain by doing tasks: stake, apply, and let Jev hire your agent.
+
+Usage:
+${Object.values(COMMAND_USAGE).join("\n")}
   brainchain-worker --version               Print the version.
 
 Environment:
@@ -151,6 +156,26 @@ export function parse(command: string, args: string[]): { positional: string[]; 
   }
   if (positional.length > (POSITIONAL[command] ?? 0)) throw new UsageError(`Unexpected "${positional.at(-1)}" (see brainchain-worker --help)`);
   return { positional, values, switches };
+}
+
+/**
+ * Whether the arguments ask for help as a flag of their own. It reads them as
+ * parse does: `--about -h` is a description, and a flag's value never starts
+ * with --, so `--about --help` still asks.
+ */
+export function asksHelp(command: string, args: string[]): boolean {
+  const known = FLAGS[command] ?? {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--help" || arg === "-h") return true;
+    if (arg.startsWith("--") && !arg.includes("=") && known[arg.slice(2)] === false && !args[i + 1]?.startsWith("--")) i++;
+  }
+  return false;
+}
+
+/** One command's usage lines, or the whole text for anything else. A name from argv can match what every object inherits, such as constructor. */
+export function usage(command: string | undefined): string {
+  return command !== undefined && Object.hasOwn(COMMAND_USAGE, command) ? `Usage:\n${COMMAND_USAGE[command]}` : USAGE;
 }
 
 interface Signer {
@@ -303,7 +328,7 @@ async function status(chain: Chain, network: Network): Promise<void> {
   Price     ${w.registered ? `${usdg(network, w.price)} per task` : "not set until you join"}
   Record    ${record.accepted} accepted, ${record.refunded} refunded, ${record.inFlight} in flight${held > 0 ? " (stake held until they settle)" : ""}
   Earned    ${usdg(network, record.earned)} after fees; wallet holds ${usdg(network, bountyBalance)}
-  Gas       ${formatEther(gas)} ETH`);
+  Gas       ${gasLine(network, s, gas)}`);
 }
 
 async function run(network: Network, { key, account }: Signer, values: Map<string, string>, once: boolean, mints: boolean): Promise<void> {
@@ -390,10 +415,20 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   log("stopped");
 }
 
+/** What watch says at start. Without a key it names no address: the one its reads go through is a throwaway. */
+export function watching(network: Network, address: Address | undefined, veto: boolean): string {
+  if (address === undefined) return `watching ${network.name} (read-only, no key)`;
+  return `watching ${network.name} as ${address}${veto ? ", vetoing through the guardian gate" : ""}, reporting rounds to the service`;
+}
+
 export async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
-  if (command === undefined || command === "help" || argv.includes("--help") || argv.includes("-h")) {
-    console.log(USAGE);
+  if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+    console.log(usage(rest[0]));
+    return;
+  }
+  if (asksHelp(command, rest)) {
+    console.log(usage(command));
     return;
   }
   if (command === "--version" || command === "-v") {
@@ -459,9 +494,10 @@ export async function main(argv: string[]): Promise<void> {
       const record = findings.length === 0 && keyed && report.payloadURI ? await fetchRecord(report.payloadURI).catch(() => undefined) : undefined;
       return { findings, ...(record ? { record } : {}) };
     };
+    const chain = createWatchChain(network, account);
     const watch = createWatch({
       network,
-      chain: createWatchChain(network, account),
+      chain,
       verify,
       ...(keyed ? { report: createReporter(network, account) } : {}),
       veto,
@@ -470,7 +506,8 @@ export async function main(argv: string[]): Promise<void> {
       ...(once ? { seenDecision: readWatched(log), recent: FIRST_RUN_DECISIONS, saw: (count: bigint) => writeWatched(log, count) } : {}),
     });
     if (veto && !network.contracts.gate) throw new UsageError(`${network.name} has no guardian gate yet, so there is nothing to veto through`);
-    console.log(`watching ${network.name} as ${account.address}${veto ? ", vetoing through the guardian gate" : ""}${keyed ? ", reporting rounds to the service" : ""}`);
+    if (veto) await requireWatcher(chain, console.log);
+    console.log(watching(network, keyed ? account.address : undefined, veto));
     if (once) {
       const { findings } = await watch.round();
       if (findings > 0) process.exitCode = 1;
