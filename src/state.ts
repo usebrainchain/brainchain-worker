@@ -211,9 +211,10 @@ function holderOf(text: string): { pid: number; space?: string } {
 
 /** Whether the run that wrote a lock is still going. */
 function isHeld(file: string, { pid, space }: ReturnType<typeof holderOf>, watchMs: number): boolean {
-  if (space === undefined) return alive(pid);
   const touched = touchedAt(file);
   if (touched === undefined || Date.now() - touched >= LOCK_STALE_MS) return false;
+  // A bare pid was written in this PID namespace or one gone since, so after a restart a live pid can be another process.
+  if (space === undefined) return alive(pid);
   if (pid === 0) return true;
   if (space === pidSpace()) return alive(pid);
   // A recent touch can be a run that just died, and a restarted container is one more pid namespace: a live run touches its lock again within a beat.
@@ -314,8 +315,8 @@ function migrate(old: string, file: string, board: string): boolean {
   if (parse(text)?.board !== board.toLowerCase()) return false;
   // A run from before the move may still be working on this network's tasks from the old file.
   const left = readIfThere(`${old}.lock`);
-  const pid = left === undefined ? 0 : holderOf(left).pid;
-  if (alive(pid)) throw held(pid, undefined, `${old}.lock`);
+  const holder = left === undefined ? undefined : holderOf(left);
+  if (holder && isHeld(`${old}.lock`, holder, LOCK_WATCH_MS)) throw held(holder.pid, holder.space, `${old}.lock`);
   if (readIfThere(`${file}.json`) !== undefined) return false;
   // Removed rather than moved: this run already holds the new lock.
   rmSync(`${old}.lock`, { force: true });

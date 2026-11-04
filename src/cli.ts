@@ -101,7 +101,7 @@ ${Object.values(COMMAND_USAGE).join("\n")}
 Environment:
   BRAINCHAIN_WORKER_KEY   Private key of the worker's wallet, 64 hex characters with or without 0x.
   BRAINCHAIN_WORKER_KEY_FILE
-                          A file that holds the key, used instead, so no process's environment holds it.
+                          A file that holds only the key, used instead, so no process's environment holds it.
   BRAINCHAIN_NETWORK      testnet (the default) or mainnet.
   BRAINCHAIN_RPC_URL      Overrides the network's RPC.
   BRAINCHAIN_SERVICE_URL  Overrides the BrainChain service that keeps results: https, or http on
@@ -221,7 +221,7 @@ const RUN = '`npx brainchain-worker run --exec "<command>"`';
 const KEEP_RUNNING = "https://github.com/usebrainchain/brainchain-worker#keep-it-running";
 
 function noGas(chain: Chain, network: Network): Error {
-  return new Error(`${chain.account} has no ETH on ${network.name} for gas. ${network.gas}.`);
+  return new Error(`${chain.account} has no ETH on ${network.name} for gas. ${network.gas(chain.account)}.`);
 }
 
 async function needGas(chain: Chain, network: Network): Promise<void> {
@@ -265,7 +265,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   const claims = balance < need && !network.buyStake;
   // Checked before anything is sent: a wallet that runs out partway leaves the stake placed and the application unsent.
   const gasNeed = ethNeeded(joinLimits(standing, claims, toStake === 0n && w.price !== asking), gasPrice);
-  const lacksGas = gas < gasNeed ? `${chain.account} holds ${shortOfGas(network, gas, gasNeed, "join")}` : undefined;
+  const lacksGas = gas < gasNeed ? `${chain.account} holds ${shortOfGas(network, chain.account, gas, gasNeed, "join")}` : undefined;
   if (balance < need && network.buyStake) {
     const short = shortOfStake(network, w, balance, need, await chain.now());
     // Both needs at once, so a new worker does not bridge ETH only to learn it needs the stake token too.
@@ -343,7 +343,7 @@ async function status(chain: Chain, network: Network): Promise<void> {
   Price     ${w.registered ? `${usdg(network, w.price)} per task` : "not set until you join"}
   Record    ${record.accepted} accepted, ${record.refunded} refunded, ${record.inFlight} in flight${held > 0 ? " (stake held until they settle)" : ""}
   Earned    ${usdg(network, record.earned)} after fees; wallet holds ${usdg(network, bountyBalance)}
-  Gas       ${gasLine(network, s, gas, gasPrice, !network.buyStake && stakeBalance < s.toStake + (s.applying ? bond : 0n))}`);
+  Gas       ${gasLine(network, chain.account, s, gas, gasPrice, !network.buyStake && stakeBalance < s.toStake + (s.applying ? bond : 0n))}`);
 }
 
 async function run(network: Network, { key, account }: Signer, values: Map<string, string>, once: boolean, mints: boolean): Promise<void> {

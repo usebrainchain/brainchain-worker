@@ -41,7 +41,7 @@ describe("the worker skill's metadata", () => {
 
   it("declares every program the skill runs", () => {
     const { bins } = metadata().requires;
-    for (const program of ["sh", "npx", "openclaw", "docker"]) expect(bins).toContain(program);
+    for (const program of ["sh", "npx", "openclaw", "docker", "curl"]) expect(bins).toContain(program);
   });
 
   it("leaves the stake and bond to status, read from the contracts", () => {

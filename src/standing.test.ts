@@ -93,22 +93,32 @@ describe("join's gas", () => {
 });
 
 describe("gasLine", () => {
+  const WORKER = "0x5B38Da6a701c568545dCfcB03FcB875f56beddC4";
   const applying = { ...standing(), allowed: false, applying: true } as Snapshot;
   const staked = standing({ staked: 500n * BRAIN });
 
   it("says what join needs when the wallet lacks it and join has something to do", () => {
-    expect(gasLine(TESTNET, applying, 0n, GWEI_TENTH, true)).toBe(`0 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ${TESTNET.gas}.`);
-    expect(gasLine(MAINNET, applying, 20_000_000_000_000n, GWEI_TENTH, false)).toBe(`0.00002 ETH on BrainChain; join needs about 0.00008 ETH for gas. ${MAINNET.gas}.`);
-    expect(gasLine(TESTNET, standing({ staked: 100n * BRAIN }), 0n, GWEI_TENTH, false)).toContain("join needs about 0.000034 ETH");
+    expect(gasLine(TESTNET, WORKER, applying, 0n, GWEI_TENTH, true)).toBe(`0 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ${TESTNET.gas(WORKER)}.`);
+    expect(gasLine(MAINNET, WORKER, applying, 20_000_000_000_000n, GWEI_TENTH, false)).toBe(`0.00002 ETH on BrainChain; join needs about 0.00008 ETH for gas. ${MAINNET.gas(WORKER)}.`);
+    expect(gasLine(TESTNET, WORKER, standing({ staked: 100n * BRAIN }), 0n, GWEI_TENTH, false)).toContain("join needs about 0.000034 ETH");
+  });
+
+  it("sends a testnet wallet to the gas drip with its own address first, then to the faucet and bridge", () => {
+    const line = gasLine(TESTNET, WORKER, applying, 0n, GWEI_TENTH, true);
+    const drip = line.indexOf(`curl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H 'content-type: application/json' -d '{"address":"${WORKER}"}'`);
+    expect(drip).toBeGreaterThan(0);
+    expect(line.indexOf("https://faucet.testnet.chain.robinhood.com")).toBeGreaterThan(drip);
+    expect(line.indexOf("bridge --eth 0.001")).toBeGreaterThan(line.indexOf("https://faucet.testnet.chain.robinhood.com"));
+    expect(gasLine(MAINNET, WORKER, applying, 0n, GWEI_TENTH, false)).not.toContain("drip");
   });
 
   it("says what a delivery needs when join has nothing to do", () => {
-    expect(gasLine(TESTNET, staked, 0n, GWEI_TENTH, false)).toBe(`0 ETH on BrainChain testnet; delivering a result needs about 0.000025 ETH for gas. ${TESTNET.gas}.`);
+    expect(gasLine(TESTNET, WORKER, staked, 0n, GWEI_TENTH, false)).toBe(`0 ETH on BrainChain testnet; delivering a result needs about 0.000025 ETH for gas. ${TESTNET.gas(WORKER)}.`);
   });
 
   it("only gives the balance when the wallet has enough", () => {
-    expect(gasLine(TESTNET, applying, 10n ** 15n, GWEI_TENTH, true)).toBe("0.001 ETH");
-    expect(gasLine(TESTNET, staked, 10n ** 15n, GWEI_TENTH, false)).toBe("0.001 ETH");
+    expect(gasLine(TESTNET, WORKER, applying, 10n ** 15n, GWEI_TENTH, true)).toBe("0.001 ETH");
+    expect(gasLine(TESTNET, WORKER, staked, 10n ** 15n, GWEI_TENTH, false)).toBe("0.001 ETH");
   });
 });
 

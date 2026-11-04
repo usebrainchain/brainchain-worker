@@ -15,6 +15,18 @@ const expandHome = (path: string) => (path === "~" || path.startsWith("~/") ? jo
 export const keyConfigured = (env: NodeJS.ProcessEnv = process.env) =>
   Boolean(env[HANDOFF] || env.BRAINCHAIN_WORKER_KEY?.trim() || env.BRAINCHAIN_WORKER_KEY_FILE?.trim());
 
+/** What is wrong with a key file's text, in words that never repeat any of it. */
+function keyFileProblem(text: string): string | undefined {
+  if (text === "") return "is empty";
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(text)) return undefined;
+  if (/[\r\n]/.test(text)) return "holds more than one line";
+  if (/^(export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=/.test(text)) return "holds a line in the form NAME=value";
+  if (/^["'`]|["'`]$/.test(text)) return "holds the key in quotes";
+  const hex = text.startsWith("0x") ? text.slice(2) : text;
+  if (/^[0-9a-fA-F]+$/.test(hex)) return `holds ${hex.length} hex characters where a key has 64`;
+  return "holds characters that are not hex digits";
+}
+
 function fromFile(path: string, warn: (message: string) => void): string {
   const file = expandHome(path);
   let text: string;
@@ -25,8 +37,10 @@ function fromFile(path: string, warn: (message: string) => void): string {
   } catch (error) {
     throw new Error(`BRAINCHAIN_WORKER_KEY_FILE names ${file}, which could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
   }
-  // The file holds the key alone, or the line new-key prints.
-  return /^\s*(?:BRAINCHAIN_WORKER_KEY=)?(\S+)\s*$/m.exec(text)?.[1] ?? "";
+  const key = text.trim();
+  const problem = keyFileProblem(key);
+  if (problem) throw new Error(`BRAINCHAIN_WORKER_KEY_FILE names ${file}, which ${problem}. It must hold the key alone: 64 hex characters, with or without 0x`);
+  return key;
 }
 
 /** The text of the worker's key, from wherever the environment says it is; undefined when it names none. */

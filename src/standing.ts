@@ -120,14 +120,14 @@ export function wallet(
 }
 
 /** What a wallet short of gas holds and needs, for join's refusal and for `status`. */
-export const shortOfGas = (network: Network, gas: bigint, need: bigint, purpose: string) =>
-  `${formatEther(gas)} ETH on ${network.name}; ${purpose} needs about ${aboutEth(need)} ETH for gas. ${network.gas}.`;
+export const shortOfGas = (network: Network, address: string, gas: bigint, need: bigint, purpose: string) =>
+  `${formatEther(gas)} ETH on ${network.name}; ${purpose} needs about ${aboutEth(need)} ETH for gas. ${network.gas(address)}.`;
 
 /** The wallet's ETH, and what more join or the next delivery needs, since a send the wallet cannot cover fails partway through. */
-export function gasLine(network: Network, s: Snapshot, gas: bigint, gasPrice: bigint, claims: boolean): string {
+export function gasLine(network: Network, address: string, s: Snapshot, gas: bigint, gasPrice: bigint, claims: boolean): string {
   const limits = joinLimits(s, claims, false);
   const need = ethNeeded(limits.length > 0 ? limits : [SUBMIT_GAS], gasPrice);
-  return gas >= need ? `${formatEther(gas)} ETH` : shortOfGas(network, gas, need, limits.length > 0 ? "join" : "delivering a result");
+  return gas >= need ? `${formatEther(gas)} ETH` : shortOfGas(network, address, gas, need, limits.length > 0 ? "join" : "delivering a result");
 }
 
 /** What join says when the wallet holds too little of a stake token that has no faucet. */

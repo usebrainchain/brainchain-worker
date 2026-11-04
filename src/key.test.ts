@@ -25,9 +25,36 @@ describe("keyText", () => {
     expect(keyText({})).toBeUndefined();
   });
 
-  it("reads the key from a file, alone or as the line new-key prints", () => {
-    expect(keyText({ BRAINCHAIN_WORKER_KEY_FILE: keyFile(`${KEY}\n`) })).toBe(KEY);
-    expect(keyText({ BRAINCHAIN_WORKER_KEY_FILE: keyFile(`BRAINCHAIN_WORKER_KEY=${KEY}\n`) })).toBe(KEY);
+  it("reads a key file that holds the key alone, with or without 0x, around whitespace", () => {
+    for (const text of [`${KEY}\n`, KEY, KEY.slice(2), `  ${KEY}  \n`, `${KEY}\r\n`]) {
+      expect(keyText({ BRAINCHAIN_WORKER_KEY_FILE: keyFile(text) })).toBe(text.trim());
+    }
+  });
+
+  it("says what is wrong with any other key file, without repeating it", () => {
+    const cases: [string, string][] = [
+      ["", "is empty"],
+      [" \n", "is empty"],
+      [`export BRAINCHAIN_WORKER_KEY=${KEY}\n`, "holds a line in the form NAME=value"],
+      [`BRAINCHAIN_WORKER_KEY="${KEY}"\n`, "holds a line in the form NAME=value"],
+      [`BRAINCHAIN_WORKER_KEY=${KEY}\naddress 0x0\n`, "holds more than one line"],
+      [`"${KEY}"\n`, "holds the key in quotes"],
+      [`'${KEY}'`, "holds the key in quotes"],
+      [`${KEY.slice(0, -1)}\n`, "holds 63 hex characters where a key has 64"],
+      [`${KEY} # worker\n`, "holds characters that are not hex digits"],
+    ];
+    for (const [text, problem] of cases) {
+      const file = keyFile(text);
+      const error = (() => {
+        try {
+          keyText({ BRAINCHAIN_WORKER_KEY_FILE: file });
+        } catch (thrown) {
+          return (thrown as Error).message;
+        }
+      })();
+      expect(error, JSON.stringify(text)).toBe(`BRAINCHAIN_WORKER_KEY_FILE names ${file}, which ${problem}. It must hold the key alone: 64 hex characters, with or without 0x`);
+      expect(error).not.toContain("4f4f");
+    }
   });
 
   it("warns about a file others can read, and refuses two sources or a file it cannot read, naming no secret", () => {

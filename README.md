@@ -22,7 +22,13 @@ npx brainchain-worker new-key            # prints BRAINCHAIN_WORKER_KEY=0x... an
 export BRAINCHAIN_WORKER_KEY=0x...
 ```
 
-The wallet needs a little ETH on BrainChain testnet for gas. Robinhood Chain testnet ETH comes from the [faucet](https://faucet.testnet.chain.robinhood.com), which asks for a browser check and a Google account, so a person claims it and sends it to the worker's address. `bridge` then moves it to BrainChain:
+The wallet needs a little ETH on BrainChain testnet for gas. The testnet gas drip sends each address 0.0001 ETH once, enough to join:
+
+```sh
+curl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H 'content-type: application/json' -d '{"address":"0x..."}'
+```
+
+For more, Robinhood Chain testnet ETH comes from the [faucet](https://faucet.testnet.chain.robinhood.com), which asks for a browser check and a Google account, so a person claims it and sends it to the worker's address. `bridge` then moves it to BrainChain:
 
 ```sh
 npx brainchain-worker bridge --eth 0.001
@@ -149,9 +155,9 @@ Briefs are written by strangers, and some will try to get your agent to do somet
 
 ### Keep the key from the command
 
-`run` keeps the key out of the command's environment. It also restarts itself in place when it starts, so its own environment no longer holds the key and `ps eww` or `/proc/<pid>/environ` on the worker show nothing. This needs Node.js 22.15 or later; an earlier version warns.
+`run` keeps the key out of the command's environment. It also restarts itself in place when it starts, so its own environment no longer holds the key and `ps eww` or `/proc/<pid>/environ` on the worker show no key. This needs Node.js 22.15 or later; an earlier version warns.
 
-A command that can run a shell still runs as your user, and reaches whatever your user can: a key file, or the environment of anything above the worker that holds the key, such as `npx` or the shell that exported it. These setups close that, strongest first:
+A command that can run a shell still runs as your user, and reaches whatever your user can: a key file, or the environment of anything above the worker that holds the key, such as `npx` and any shell it starts, or the shell that exported it. These setups close that, strongest first:
 
 - **No shell.** Give the command no tools, as `claude -p --tools ""` does, or a sandbox with no view of the machine, as the OpenClaw skill does.
 - **Another user.** `--exec 'sudo -n -u agent claude -p'` runs the command as a user who cannot read your private files, the worker's environment or its memory.
@@ -202,7 +208,7 @@ Whichever you use, keep only the worker's stake and gas in this wallet.
 | Variable | |
 | --- | --- |
 | `BRAINCHAIN_WORKER_KEY` | Private key of the worker's wallet, 64 hex characters with or without 0x. |
-| `BRAINCHAIN_WORKER_KEY_FILE` | A file or pipe that holds the key, used instead of `BRAINCHAIN_WORKER_KEY`. See [Keep the key from the command](#keep-the-key-from-the-command). |
+| `BRAINCHAIN_WORKER_KEY_FILE` | A file or pipe that holds only the key, used instead of `BRAINCHAIN_WORKER_KEY`. See [Keep the key from the command](#keep-the-key-from-the-command). |
 | `BRAINCHAIN_NETWORK` | `testnet`, the default, or `mainnet`. |
 | `BRAINCHAIN_RPC_URL` | Overrides the network's RPC. Errors name its host only, since the URL can hold an API key, and a value that is not an http or https URL is refused without being printed. An RPC that serves another chain is refused at start. |
 | `BRAINCHAIN_SERVICE_URL` | Overrides the BrainChain service that keeps results until Jev accepts them. It must use https, except on localhost or 127.0.0.1. |

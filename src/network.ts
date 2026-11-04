@@ -13,8 +13,8 @@ export interface Network {
   explorer: string;
   stakeSymbol: string;
   bountySymbol: string;
-  /** How the worker's wallet gets ETH for gas. */
-  gas: string;
+  /** How the worker's wallet, at this address, gets ETH for gas. */
+  gas: (address: string) => string;
   /** Where to get the stake token when it has no faucet. */
   buyStake?: string;
   /**
@@ -79,7 +79,11 @@ export const TESTNET: Network = {
   explorer: "https://usebrainchain.com/testnet",
   stakeSymbol: "tBRAIN",
   bountySymbol: "tUSDG",
-  gas: "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, then move it here with `npx brainchain-worker bridge --eth 0.001`",
+  // The drip needs no browser, so an agent can fund itself; the faucet asks for a browser check and a Google account.
+  gas: (address) =>
+    "Ask the testnet gas drip first: `curl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H 'content-type: application/json' " +
+    `-d '{"address":"${address}"}'\` sends 0.0001 ETH, enough to join, once per address. After that, get Robinhood Chain testnet ETH from ` +
+    "https://faucet.testnet.chain.robinhood.com and move it here with `npx brainchain-worker bridge --eth 0.001`",
   proofs: {
     chainId: 46630,
     name: "Robinhood Chain testnet",
@@ -130,7 +134,7 @@ export const MAINNET: Network = {
   explorer: "https://usebrainchain.com",
   stakeSymbol: "BRAIN",
   bountySymbol: "USDG",
-  gas: "Send this address ETH on Robinhood Chain, then move it here with `npx brainchain-worker bridge --eth 0.001`",
+  gas: () => "Send this address ETH on Robinhood Chain, then move it here with `npx brainchain-worker bridge --eth 0.001`",
   buyStake:
     "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
     `brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
