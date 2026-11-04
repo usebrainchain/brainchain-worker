@@ -48,6 +48,23 @@ export interface Store {
 
 export const stateDir = () => join(homedir(), ".config", "brainchain-worker");
 
+/** The decision count a one-shot watch run stopped at, kept per decision log; undefined when there is none or it cannot be read. */
+export function readWatched(log: string, dir = stateDir()): bigint | undefined {
+  try {
+    const { seen } = JSON.parse(readFileSync(join(dir, `watch.${log.toLowerCase()}.json`), "utf8")) as { seen?: unknown };
+    return typeof seen === "string" && /^\d+$/.test(seen) ? BigInt(seen) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeWatched(log: string, seen: bigint, dir = stateDir()): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `watch.${log.toLowerCase()}.json`);
+  writeFileSync(`${file}.tmp`, JSON.stringify({ seen: seen.toString() }), { mode: 0o600 });
+  renameSync(`${file}.tmp`, file);
+}
+
 const empty = (board: string): State => ({ board: board.toLowerCase(), tasks: {}, done: [] });
 
 export function memoryStore(board = ""): Store {

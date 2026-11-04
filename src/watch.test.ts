@@ -108,6 +108,30 @@ describe("watch", () => {
   });
 });
 
+describe("a one-shot run", () => {
+  it("checks the latest decisions on a first run, then what was added since", async () => {
+    const { chain } = fakeChain({ decisions: [12n] });
+    const verify = vi.fn(async () => ({ findings: [] }));
+    const seen: bigint[] = [];
+    const first = createWatch({ network: TESTNET, chain, verify, veto: false, log: () => {}, recent: 3n, saw: (n) => seen.push(n) });
+    await first.round();
+    expect(verify.mock.calls.map((c) => (c as unknown as [bigint])[0])).toEqual([10n, 11n, 12n]);
+    expect(seen).toEqual([12n]);
+
+    verify.mockClear();
+    const next = fakeChain({ decisions: [14n] }).chain;
+    await createWatch({ network: TESTNET, chain: next, verify, veto: false, log: () => {}, seenDecision: 12n, recent: 3n }).round();
+    expect(verify.mock.calls.map((c) => (c as unknown as [bigint])[0])).toEqual([13n, 14n]);
+  });
+
+  it("starts over when the log has fewer decisions than the count it kept", async () => {
+    const { chain } = fakeChain({ decisions: [2n] });
+    const verify = vi.fn(async () => ({ findings: [] }));
+    await createWatch({ network: TESTNET, chain, verify, veto: false, log: () => {}, seenDecision: 34n, recent: 10n }).round();
+    expect(verify.mock.calls.map((c) => (c as unknown as [bigint])[0])).toEqual([1n, 2n]);
+  });
+});
+
 describe("reporting rounds", () => {
   const worker = privateKeyToAccount(`0x${"7".repeat(64)}`);
   const record = new TextEncoder().encode('{"kind":"hire"}');

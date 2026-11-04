@@ -102,7 +102,9 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
   try {
     process.kill(-pid, signal);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    // macOS answers EPERM for a group whose members are already exiting; the group is the worker's own child either way.
+    const { code } = error as NodeJS.ErrnoException;
+    if (code !== "ESRCH" && code !== "EPERM") throw error;
   }
 }
 
