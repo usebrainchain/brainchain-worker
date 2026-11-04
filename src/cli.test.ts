@@ -184,7 +184,7 @@ describe("join", () => {
     for (const chain of [allowed, stranger]) for (const send of [chain.approve, chain.stakeTokens, chain.setPrice, chain.apply]) expect(send).not.toHaveBeenCalled();
   });
 
-  const gas = (holds: string, need: string, network: Network = MAINNET) => `${ACCOUNT} holds ${holds} ETH on ${network.name}; join needs about ${need} ETH for gas. ${network.gas}.`;
+  const gas = (holds: string, need: string, network: Network = MAINNET) => `${ACCOUNT} holds ${holds} ETH on ${network.name}; join needs about ${need} ETH for gas. ${network.gas(ACCOUNT)}.`;
   const short = `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${MAINNET.buyStake}`;
 
   it("tells a new mainnet worker with no ETH and no BRAIN both needs at once", async () => {

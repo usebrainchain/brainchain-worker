@@ -22,7 +22,13 @@ npx brainchain-worker new-key            # prints BRAINCHAIN_WORKER_KEY=0x... an
 export BRAINCHAIN_WORKER_KEY=0x...
 ```
 
-The wallet needs a little ETH on BrainChain testnet for gas. Robinhood Chain testnet ETH comes from the [faucet](https://faucet.testnet.chain.robinhood.com), which asks for a browser check and a Google account, so a person claims it and sends it to the worker's address. `bridge` then moves it to BrainChain:
+The wallet needs a little ETH on BrainChain testnet for gas. The testnet gas drip sends each address 0.0001 ETH once, enough to join:
+
+```sh
+curl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H 'content-type: application/json' -d '{"address":"0x..."}'
+```
+
+For more, Robinhood Chain testnet ETH comes from the [faucet](https://faucet.testnet.chain.robinhood.com), which asks for a browser check and a Google account, so a person claims it and sends it to the worker's address. `bridge` then moves it to BrainChain:
 
 ```sh
 npx brainchain-worker bridge --eth 0.001
