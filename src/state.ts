@@ -1,5 +1,6 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { randomBytes } from "node:crypto";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { Hex } from "viem";
@@ -61,8 +62,10 @@ export function readWatched(log: string, dir = stateDir()): bigint | undefined {
 export function writeWatched(log: string, seen: bigint, dir = stateDir()): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, `watch.${log.toLowerCase()}.json`);
-  writeFileSync(`${file}.tmp`, JSON.stringify({ seen: seen.toString() }), { mode: 0o600 });
-  renameSync(`${file}.tmp`, file);
+  // Each write its own temp file: runs from cron overlap, and nothing else keeps them apart.
+  const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  writeFileSync(temp, JSON.stringify({ seen: seen.toString() }), { mode: 0o600 });
+  renameSync(temp, file);
 }
 
 const empty = (board: string): State => ({ board: board.toLowerCase(), tasks: {}, done: [] });
@@ -143,8 +146,28 @@ export function fileStore(file: string, board: string, warn: (message: string) =
   };
 }
 
+/** How often a run touches its lock. */
+const LOCK_BEAT_MS = 5_000;
+/** With no touch for this long a lock was left behind, whatever process now has its pid. */
+const LOCK_STALE_MS = 15_000;
+/** How long a lock from another PID namespace is watched for a touch, a little over one beat. */
+const LOCK_WATCH_MS = 7_000;
+/** A takeover takes a few system calls, so one marker older than this was left by a crash. */
+const TAKEOVER_STALE_MS = 5_000;
+
+/**
+ * Where a pid means something. Containers sharing a config folder each have
+ * their own numbering, so a holder's pid says nothing outside its own space.
+ */
+function pidSpace(): string {
+  try {
+    return `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}/${readlinkSync("/proc/self/ns/pid")}`;
+  } catch {
+    return hostname();
+  }
+}
+
 function alive(pid: number): boolean {
-  // A container restarts its process with the same pid, so our own pid in the file is a stale lock.
   if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
   try {
     process.kill(pid, 0);
@@ -154,28 +177,117 @@ function alive(pid: number): boolean {
   }
 }
 
-const holder = (file: string) => (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : 0);
+const sleep = (ms: number) => void Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-const held = (pid: number, file: string) =>
-  new Error(`Another run (pid ${pid}) is already working for this worker. Stop it before starting another; ${file} holds its lock.`);
+function readIfThere(file: string): string | undefined {
+  try {
+    return readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
 
-/** Takes the lock in `file` for this process until it exits; refuses while a live process holds it. */
-export function lock(file: string): () => void {
+function touchedAt(file: string): number | undefined {
+  try {
+    return statSync(file).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Who a lock's text names. A bare pid is a lock from 0.12 or earlier; text that is neither is a lock still being written. */
+function holderOf(text: string): { pid: number; space?: string } {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (typeof value === "number") return { pid: value };
+    if (isObject(value) && typeof value.pid === "number" && typeof value.space === "string") return { pid: value.pid, space: value.space };
+  } catch {
+    // Handled below.
+  }
+  return { pid: 0, space: "" };
+}
+
+/** Whether the run that wrote a lock is still going. */
+function isHeld(file: string, { pid, space }: ReturnType<typeof holderOf>, watchMs: number): boolean {
+  if (space === undefined) return alive(pid);
+  const touched = touchedAt(file);
+  if (touched === undefined || Date.now() - touched >= LOCK_STALE_MS) return false;
+  if (pid === 0) return true;
+  if (space === pidSpace()) return alive(pid);
+  // A recent touch can be a run that just died, and a restarted container is one more pid namespace: a live run touches its lock again within a beat.
+  sleep(watchMs);
+  return touchedAt(file) !== touched;
+}
+
+const held = (pid: number, space: string | undefined, file: string) =>
+  new Error(
+    `Another run (pid ${pid}${space === undefined || space === pidSpace() ? "" : " in another container or PID namespace"}) is already working for this worker. ` +
+      `Stop it before starting another; ${file} holds its lock.`,
+  );
+
+/**
+ * Replaces a lock left behind. The marker lets one start at a time judge and
+ * replace it, since removing the file another start has just written would give
+ * the lock to both.
+ */
+function takeOver(file: string, mine: string, judged: string): boolean {
+  const marker = `${file}.takeover`;
+  try {
+    writeFileSync(marker, "", { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const at = touchedAt(marker);
+    if (at !== undefined && Date.now() - at >= TAKEOVER_STALE_MS) rmSync(marker, { force: true });
+    sleep(20);
+    return false;
+  }
+  try {
+    if (readIfThere(file) !== judged) return false;
+    const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    writeFileSync(temp, mine, { mode: 0o600 });
+    renameSync(temp, file);
+    return true;
+  } finally {
+    rmSync(marker, { force: true });
+  }
+}
+
+/**
+ * Takes the lock in `file` for this process until it exits; refuses while another
+ * run holds it, in this PID namespace or another sharing the folder. The run
+ * touches the lock every few seconds, and `lost` is called if another took it
+ * over, as can happen to a run frozen for longer than a lock lasts.
+ */
+export function lock(file: string, lost: () => void = () => process.exit(1), watchMs = LOCK_WATCH_MS): () => void {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  const mine = JSON.stringify({ pid: process.pid, space: pidSpace(), run: randomBytes(4).toString("hex") });
   for (;;) {
     try {
-      writeFileSync(file, String(process.pid), { flag: "wx", mode: 0o600 });
+      writeFileSync(file, mine, { flag: "wx", mode: 0o600 });
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    // The holder may have released it since the write failed; then the next try takes it.
-    const pid = holder(file);
-    if (alive(pid)) throw held(pid, file);
-    rmSync(file, { force: true });
+    const text = readIfThere(file);
+    // The holder released it since the write failed, so the next try takes it.
+    if (text === undefined) continue;
+    const holder = holderOf(text);
+    if (isHeld(file, holder, watchMs)) throw held(holder.pid, holder.space, file);
+    if (takeOver(file, mine, text)) break;
   }
+  const beat = setInterval(() => {
+    if (readIfThere(file) !== mine) {
+      clearInterval(beat);
+      return lost();
+    }
+    const now = new Date();
+    utimesSync(file, now, now);
+  }, LOCK_BEAT_MS);
+  beat.unref();
   const release = () => {
-    if (existsSync(file) && readFileSync(file, "utf8") === String(process.pid)) rmSync(file, { force: true });
+    clearInterval(beat);
+    if (readIfThere(file) === mine) rmSync(file, { force: true });
   };
   process.once("exit", release);
   return release;
@@ -196,9 +308,10 @@ function migrate(old: string, file: string, board: string): boolean {
   }
   if (parse(text)?.board !== board.toLowerCase()) return false;
   // A run from before the move may still be working on this network's tasks from the old file.
-  const pid = holder(`${old}.lock`);
-  if (alive(pid)) throw held(pid, `${old}.lock`);
-  if (existsSync(`${file}.json`)) return false;
+  const left = readIfThere(`${old}.lock`);
+  const pid = left === undefined ? 0 : holderOf(left).pid;
+  if (alive(pid)) throw held(pid, undefined, `${old}.lock`);
+  if (readIfThere(`${file}.json`) !== undefined) return false;
   // Removed rather than moved: this run already holds the new lock.
   rmSync(`${old}.lock`, { force: true });
   renameSync(`${old}.json`, `${file}.json`);
@@ -213,7 +326,10 @@ function migrate(old: string, file: string, board: string): boolean {
 export function openStore(address: string, network: Network, log: (line: string) => void = console.log, dir = stateDir()): Store {
   const old = join(dir, address);
   const file = `${old}.${network.id}`;
-  lock(`${file}.lock`);
+  lock(`${file}.lock`, () => {
+    log(`another run took over ${file}.lock, so this one stops`);
+    process.exit(1);
+  });
   if (migrate(old, file, network.contracts.taskBoard)) log(`moved ${old}.json to ${file}.json`);
   return fileStore(`${file}.json`, network.contracts.taskBoard, (message) => log(`warning: ${message}`));
 }
