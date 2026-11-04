@@ -18,14 +18,20 @@ export interface TaskState {
   nextAt: number;
 }
 
-/** A delivered task waiting for its Proof: watched until it settles, then minted for at most once an hour. */
+/** A delivered task: watched until it settles, then, when paid, minted for at most once an hour. */
 export interface ProofTask {
   /** Wall-clock seconds when the result was delivered. */
   deliveredAt: number;
-  /** When the task was first seen paid. */
+  /** When the task was paid, by the time of the block that paid it. */
   paidAt?: number;
   /** Wall-clock seconds before which the task is not looked at again. */
   nextAt: number;
+  /** Set once the service has listed the task as waiting for its Proof. */
+  listed?: true;
+  /** Set once the worker has said the service does not list the task yet. */
+  waited?: true;
+  /** Set once the worker has said, on testnet, that it has no ETH to mint with. */
+  told?: true;
 }
 
 export interface State {
@@ -38,7 +44,7 @@ export interface State {
   hired?: { block: number; tasks: string[] };
   /** The command running for a task, so the next run can stop it if this one dies first. */
   command?: { pgid: number; startedAt: number };
-  /** Delivered tasks waiting for the worker to mint their Proof, by task id. */
+  /** Delivered tasks watched until they settle and, when paid, until their Proof is minted, by task id. */
   proofs?: Record<string, ProofTask>;
 }
 
@@ -86,9 +92,13 @@ function isTask(value: unknown): value is TaskState {
   return value.stored === undefined || (isObject(value.stored) && typeof value.stored.uri === "string" && isHash(value.stored.hash));
 }
 
+const isFlag = (value: unknown) => value === undefined || value === true;
+
 function isProofs(value: unknown): boolean {
   if (!isObject(value) || !isIds(Object.keys(value))) return false;
-  return Object.values(value).every((p) => isObject(p) && isCount(p.deliveredAt) && isCount(p.nextAt) && (p.paidAt === undefined || isCount(p.paidAt)));
+  return Object.values(value).every(
+    (p) => isObject(p) && isCount(p.deliveredAt) && isCount(p.nextAt) && (p.paidAt === undefined || isCount(p.paidAt)) && isFlag(p.listed) && isFlag(p.waited) && isFlag(p.told),
+  );
 }
 
 /** Whether a parsed file is a state this worker can go on from; any other shape fails every round that reads it. */

@@ -11,6 +11,7 @@ import {
   InsufficientFundsError,
   keccak256,
   parseAbi,
+  parseEventLogs,
   RpcRequestError,
   TimeoutError,
   toBytes,
@@ -62,6 +63,26 @@ export const appealAbi = parseAbi([
 export const Status = { Open: 1, Hired: 2, Submitted: 3, Graded: 4, Disputed: 5, Paid: 6, Refunded: 7, Ruled: 8, Appealed: 9 } as const;
 /** Mirrors ProposalBonds.State. */
 export const ApplicationState = { Open: 1, Returned: 2, Burned: 3 } as const;
+/** Why a task was refunded, by TaskBoard.RefundReason. */
+export const REFUND_REASONS = ["no worker was hired", "the result was not delivered in time", "Jev did not grade it in time", "Jev did not accept the work", "Jev ruled for the poster"];
+
+/** How a delivered task settled: paid, with what reached the wallet and when, or refunded, with why and any stake slashed. */
+export type Settlement = { paid: true; amount: bigint; at: bigint } | { paid: false; reason: number; slashed: bigint };
+
+/** A task of this worker's that has not settled, with the times that decide what happens next. */
+export interface Flight {
+  id: bigint;
+  status: number;
+  accepted: boolean;
+  disputedByModel: boolean;
+  deadline: bigint;
+  gradedAt: bigint;
+  disputedAt: bigint;
+  disputeWindow: bigint;
+  ruleWindow: bigint;
+  /** Read for a ruled or appealed task only. */
+  appeal?: { window: bigint; ruledAt: bigint; pays: boolean; appealedAt: bigint };
+}
 
 const LOG_RANGE = 50_000n;
 const MAX_BRIEF_BYTES = 256 * 1024;
@@ -507,26 +528,58 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       );
       return { applications, change };
     },
-    /** How a task settled, or undefined while it has not. */
-    async settled(task: bigint): Promise<"paid" | "refunded" | undefined> {
+    /** How a task settled, read from the events of its settlement, or undefined while it has not. */
+    async settlement(task: bigint): Promise<Settlement | undefined> {
       const { status } = await client.readContract({ ...board, functionName: "get", args: [task] });
-      return status === Status.Paid ? "paid" : status === Status.Refunded ? "refunded" : undefined;
+      if (status !== Status.Paid && status !== Status.Refunded) return undefined;
+      const latest = await client.getBlockNumber();
+      if (status === Status.Paid) {
+        const [log] = await scan(
+          (fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "BountyPaid", args: { id: task }, fromBlock, toBlock }),
+          network.fromBlock,
+          latest,
+        );
+        if (log === undefined) throw new Error(`Task ${task} is paid, but no BountyPaid event for it was found`);
+        const { timestamp } = await client.getBlock({ blockNumber: log.blockNumber });
+        return { paid: true, amount: log.args.bounty! - log.args.fee!, at: timestamp };
+      }
+      const [log] = await scan(
+        (fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "BountyRefunded", args: { id: task }, fromBlock, toBlock }),
+        network.fromBlock,
+        latest,
+      );
+      if (log === undefined) throw new Error(`Task ${task} is refunded, but no BountyRefunded event for it was found`);
+      // A worker that loses a dispute it opened is slashed in the transaction that settles the task.
+      const { logs } = await client.getTransactionReceipt({ hash: log.transactionHash });
+      const slashed = parseEventLogs({ abi: workerStakingAbi, eventName: "Slashed", args: { account: account.address }, logs })
+        .filter((slash) => slash.address.toLowerCase() === staking.toLowerCase())
+        .reduce((sum, slash) => sum + slash.args.amount, 0n);
+      return { paid: false, reason: log.args.reason!, slashed };
     },
-    /** Tasks this worker was hired for, by outcome, and what it was paid after fees. */
+    /** Tasks this worker was hired for, by outcome, what it was paid after fees, and each task still in flight. */
     async record() {
       const latest = await client.getBlockNumber();
       const ids = [...new Set((await hiredLogs(network.fromBlock, latest)).map((log) => log.args.id!))];
-      const tasks = await Promise.all(ids.map((task) => client.readContract({ ...board, functionName: "get", args: [task] })));
+      const tasks = await Promise.all(ids.map(async (task) => ({ id: task, ...(await client.readContract({ ...board, functionName: "get", args: [task] })) })));
       const paid = await scan(
         (fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "BountyPaid", args: { account: account.address }, fromBlock, toBlock }),
         network.fromBlock,
         latest,
       );
-      const count = (statuses: number[]) => tasks.filter((t) => statuses.includes(t.status)).length;
+      const open: number[] = [Status.Hired, Status.Submitted, Status.Graded, Status.Disputed, Status.Ruled, Status.Appealed];
+      const inFlight: Flight[] = await Promise.all(
+        tasks
+          .filter((t) => open.includes(t.status))
+          .map(async ({ id: task, status, accepted, disputedByModel, deadline, gradedAt, disputedAt, disputeWindow, ruleWindow }) => {
+            const flight: Flight = { id: task, status, accepted, disputedByModel, deadline, gradedAt, disputedAt, disputeWindow, ruleWindow };
+            if (status !== Status.Ruled && status !== Status.Appealed) return flight;
+            return { ...flight, appeal: await client.readContract({ address: taskBoard, abi: appealAbi, functionName: "appealOf", args: [task] }) };
+          }),
+      );
       return {
-        accepted: count([Status.Paid]),
+        paid: tasks.filter((t) => t.status === Status.Paid).length,
         refunded: tasks.filter((t) => t.status === Status.Refunded && t.model.toLowerCase() === id).length,
-        inFlight: count([Status.Hired, Status.Submitted, Status.Graded, Status.Disputed, Status.Ruled, Status.Appealed]),
+        inFlight: inFlight.sort((a, b) => (a.id < b.id ? -1 : 1)),
         earned: paid.reduce((sum, log) => sum + log.args.bounty! - log.args.fee!, 0n),
       };
     },

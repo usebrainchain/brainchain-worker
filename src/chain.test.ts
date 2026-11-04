@@ -15,12 +15,14 @@ import {
   HttpRequestError,
   keccak256,
   toBytes,
+  toFunctionSelector,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi, workerStakingAbi } from "./abi.js";
-import { createChain, erc20Abi, faucetReopens, fetchBrief, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
+import { appealAbi, createChain, erc20Abi, faucetReopens, fetchBrief, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
 import { resolveNetwork, TESTNET } from "./network.js";
+import { flightLine } from "./standing.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
 const briefHash = keccak256(toBytes(brief));
@@ -168,70 +170,199 @@ describe("requireChainId", () => {
   });
 });
 
+type RpcRequest = { id: number; method: string; params: [{ topics?: unknown[]; data?: string } | string, ...unknown[]] };
+
+/** A JSON-RPC server on this machine that answers each request with `answer`, or with its error when it returns one. */
+async function mockRpc(answer: (request: RpcRequest) => unknown) {
+  const reply = (request: RpcRequest) => {
+    const result = answer(request);
+    return result instanceof Error
+      ? { jsonrpc: "2.0", id: request.id, error: { code: 3, message: result.message, data: (result as Error & { data?: string }).data } }
+      : { jsonrpc: "2.0", id: request.id, result };
+  };
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const request = JSON.parse(body) as RpcRequest | RpcRequest[];
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(Array.isArray(request) ? request.map(reply) : reply(request)));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
+}
+
+const ZERO = `0x${"0".repeat(64)}` as const;
+const word = (n: bigint | number) => `0x${n.toString(16).padStart(64, "0")}`;
+const topicOf = (request: RpcRequest) => {
+  const first = (request.params[0] as { topics?: unknown[] }).topics?.[0];
+  return Array.isArray(first) ? first[0] : first;
+};
+const rpcLog = (address: string, topics: string[], data = "0x", blockNumber = "0x900") => ({
+  address,
+  topics,
+  data,
+  blockNumber,
+  transactionHash: `0x${"77".repeat(32)}`,
+  logIndex: "0x0",
+  blockHash: ZERO,
+  transactionIndex: "0x0",
+  removed: false,
+});
+
 describe("record", () => {
-  it("counts a ruled or appealed task as in flight, since the stake can still be at risk", async () => {
+  it("counts a ruled or appealed task as in flight, since the stake can still be at risk, and says what each waits for", async () => {
     const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
     const id = workerId(account.address);
     const hired = encodeEventTopics({ abi: taskBoardAbi, eventName: "WorkerHired" })[0];
-    const zero = `0x${"0".repeat(64)}` as const;
     let status: number = Status.Ruled;
-    const answer = ({ id: rpcId, method, params }: { id: number; method: string; params: [{ topics?: unknown[] }] }) => {
-      let result: unknown = "0x";
-      if (method === "eth_chainId") result = "0x430c6";
-      if (method === "eth_blockNumber") result = "0x1000";
-      if (method === "eth_getLogs") {
-        const first = params[0].topics?.[0];
-        const log = { address: TESTNET.contracts.taskBoard, data: "0x", blockNumber: "0x900", transactionHash: zero, logIndex: "0x0", blockHash: zero, transactionIndex: "0x0", removed: false };
-        result = (Array.isArray(first) ? first[0] : first) === hired ? [{ ...log, topics: [hired, `0x${"1".padStart(64, "0")}`, id, `0x${"1".padStart(64, "0")}`] }] : [];
+    const rpc = await mockRpc((request) => {
+      if (request.method === "eth_chainId") return "0x430c6";
+      if (request.method === "eth_blockNumber") return "0x1000";
+      if (request.method === "eth_getLogs") return topicOf(request) === hired ? [rpcLog(TESTNET.contracts.taskBoard, [hired, word(1), id, word(1)])] : [];
+      if (request.method !== "eth_call") return "0x";
+      const data = (request.params[0] as { data: string }).data;
+      if (data.startsWith(toFunctionSelector("appealOf(uint256)"))) {
+        const appeal = { window: 3600n, bondBps: 2500, ruledAt: 100n, pays: false, confident: false, appellant: account.address, bond: 250_000n, appealedAt: 200n };
+        return encodeFunctionResult({ abi: appealAbi, functionName: "appealOf", result: appeal });
       }
-      if (method === "eth_call") {
-        const task = {
-          poster: account.address,
-          bounty: 1_000_000n,
-          deadline: 2_000_000_000n,
-          status,
-          accepted: false,
-          disputed: true,
-          disputedByModel: true,
-          model: id,
-          briefHash: zero,
-          resultHash: zero,
-          submittedAt: 1n,
-          gradedAt: 2n,
-          disputedAt: 3n,
-          postedAt: 1n,
-          payee: account.address,
-          feeRecipient: account.address,
-          feeBps: 300,
-          hireThresholdBps: 1500,
-          gradeThresholdBps: 8000,
-          ruleThresholdBps: 8000,
-          gradeWindow: 3600n,
-          disputeWindow: 3600n,
-          ruleWindow: 3600n,
-        };
-        result = encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: task });
-      }
-      return { jsonrpc: "2.0", id: rpcId, result };
-    };
-    const rpc = createServer((req, res) => {
-      let body = "";
-      req.on("data", (chunk) => (body += chunk));
-      req.on("end", () => {
-        const request = JSON.parse(body) as Parameters<typeof answer>[0] | Parameters<typeof answer>[0][];
-        res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify(Array.isArray(request) ? request.map(answer) : answer(request)));
-      });
+      const task = {
+        poster: account.address,
+        bounty: 1_000_000n,
+        deadline: 2_000_000_000n,
+        status,
+        accepted: false,
+        disputed: true,
+        disputedByModel: true,
+        model: id,
+        briefHash: ZERO,
+        resultHash: ZERO,
+        submittedAt: 1n,
+        gradedAt: 2n,
+        disputedAt: 3n,
+        postedAt: 1n,
+        payee: account.address,
+        feeRecipient: account.address,
+        feeBps: 300,
+        hireThresholdBps: 1500,
+        gradeThresholdBps: 8000,
+        ruleThresholdBps: 8000,
+        gradeWindow: 3600n,
+        disputeWindow: 3600n,
+        ruleWindow: 21600n,
+      };
+      return encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: task });
     });
-    await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
     try {
-      const chain = createChain({ ...TESTNET, rpc: `http://127.0.0.1:${(rpc.address() as AddressInfo).port}` }, account);
+      const chain = createChain({ ...TESTNET, rpc: rpc.url }, account);
+      const lines: string[] = [];
       for (const each of [Status.Ruled, Status.Appealed, Status.Hired, Status.Disputed]) {
         status = each;
-        expect((await chain.record()).inFlight).toBe(1);
+        const { inFlight } = await chain.record();
+        expect(inFlight).toHaveLength(1);
+        lines.push(flightLine(inFlight[0]!));
       }
+      expect(lines).toEqual([
+        "task 1: the ruling refunds the poster after 1970-01-01T01:01:40Z unless appealed with `appeal 1`",
+        "task 1: ruling appealed, Jev rules again by 1970-01-01T06:03:20Z",
+        "task 1: hired, due by 2033-05-18T03:33:20Z",
+        "task 1: grade disputed by this worker, Jev rules by 1970-01-01T06:00:03Z",
+      ]);
       status = Status.Paid;
-      expect(await chain.record()).toMatchObject({ accepted: 1, inFlight: 0 });
+      expect(await chain.record()).toMatchObject({ paid: 1, inFlight: [] });
+    } finally {
+      rpc.close();
+    }
+  });
+});
+
+describe("settlement", () => {
+  const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+  const id = workerId(account.address);
+  const [paidTopic] = encodeEventTopics({ abi: taskBoardAbi, eventName: "BountyPaid" });
+  const [refundedTopic] = encodeEventTopics({ abi: taskBoardAbi, eventName: "BountyRefunded" });
+  const [slashedTopic] = encodeEventTopics({ abi: workerStakingAbi, eventName: "Slashed" });
+
+  async function settled(status: number) {
+    const refund = rpcLog(TESTNET.contracts.taskBoard, [refundedTopic, word(45), word(BigInt(account.address))], word(1_000_000) + word(3).slice(2));
+    const rpc = await mockRpc((request) => {
+      if (request.method === "eth_blockNumber") return "0x1000";
+      if (request.method === "eth_call") {
+        const task = { poster: account.address, bounty: 1_000_000n, deadline: 0n, status, accepted: false, disputed: false, disputedByModel: false, model: id, briefHash: ZERO, resultHash: ZERO, submittedAt: 0n, gradedAt: 0n, disputedAt: 0n, postedAt: 0n, payee: account.address, feeRecipient: account.address, feeBps: 250, hireThresholdBps: 0, gradeThresholdBps: 0, ruleThresholdBps: 0, gradeWindow: 0n, disputeWindow: 0n, ruleWindow: 0n };
+        return encodeFunctionResult({ abi: taskBoardAbi, functionName: "get", result: task });
+      }
+      if (request.method === "eth_getLogs") {
+        const topic = topicOf(request);
+        if (topic === paidTopic) return [rpcLog(TESTNET.contracts.taskBoard, [paidTopic, word(45), id, word(BigInt(account.address))], word(1_000_000) + word(25_000).slice(2))];
+        if (topic === refundedTopic) return [refund];
+        return [];
+      }
+      if (request.method === "eth_getBlockByNumber") return { number: "0x900", hash: ZERO, parentHash: ZERO, timestamp: "0x6909d7c2", transactions: [], logsBloom: null, nonce: null };
+      if (request.method === "eth_getTransactionReceipt") {
+        const slash = (who: string, amount: bigint, contract = TESTNET.contracts.staking) => rpcLog(contract, [slashedTopic, word(BigInt(who))], word(amount));
+        const logs = [
+          refund,
+          slash(account.address, 100n * 10n ** 18n),
+          slash("0x00000000000000000000000000000000000000d1", 7n),
+          slash(account.address, 9n, "0x00000000000000000000000000000000000000e1"),
+        ];
+        return { transactionHash: `0x${"77".repeat(32)}`, blockHash: ZERO, blockNumber: "0x900", status: "0x1", logs, from: account.address, to: TESTNET.contracts.taskBoard, gasUsed: "0x1", cumulativeGasUsed: "0x1", effectiveGasPrice: "0x1", transactionIndex: "0x0", type: "0x2", logsBloom: `0x${"0".repeat(512)}`, contractAddress: null };
+      }
+      return "0x";
+    });
+    try {
+      return await createChain({ ...TESTNET, rpc: rpc.url }, account).settlement(45n);
+    } finally {
+      rpc.close();
+    }
+  }
+
+  it("reads what a paid task paid after fees, and when", async () => {
+    expect(await settled(Status.Paid)).toEqual({ paid: true, amount: 975_000n, at: 0x6909d7c2n });
+  });
+
+  it("reads why a task was refunded, and the stake slashed from this worker in the same transaction", async () => {
+    expect(await settled(Status.Refunded)).toEqual({ paid: false, reason: 3, slashed: 100n * 10n ** 18n });
+  });
+
+  it("is undefined while the task has not settled", async () => {
+    expect(await settled(Status.Ruled)).toBeUndefined();
+  });
+});
+
+describe("a send the gas cap made revert", () => {
+  it("is read as a wallet short of gas when the same call passes without the cap, and keeps its own error when it does not", async () => {
+    const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+    let callPasses = true;
+    const failedInnerCall = toFunctionSelector("FailedInnerCall()");
+    const rpc = await mockRpc((request) => {
+      switch (request.method) {
+        case "eth_chainId":
+          return "0x430c6";
+        case "eth_getTransactionCount":
+          return "0x1";
+        case "eth_getBlockByNumber":
+          return { number: "0x900", hash: ZERO, parentHash: ZERO, timestamp: "0x1", baseFeePerGas: "0x5f5e100", transactions: [], logsBloom: null, nonce: null };
+        case "eth_maxPriorityFeePerGas":
+          return "0x0";
+        case "eth_estimateGas":
+          return Object.assign(new Error("execution reverted"), { data: failedInnerCall });
+        case "eth_call":
+          return callPasses ? "0x" : Object.assign(new Error("execution reverted"), { data: failedInnerCall });
+        default:
+          return "0x";
+      }
+    });
+    try {
+      const chain = createChain({ ...TESTNET, rpc: rpc.url }, account);
+      expect(reason(await chain.withdraw().catch((error: unknown) => error))).toBe(
+        "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds",
+      );
+      callPasses = false;
+      expect(reason(await chain.withdraw().catch((error: unknown) => error))).toBe(
+        'The contract function "withdraw" reverted: a token transfer inside the call failed without a reason (FailedInnerCall)',
+      );
     } finally {
       rpc.close();
     }

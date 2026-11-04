@@ -8,10 +8,10 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
 import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
 import { claim, createIncome } from "./claim.js";
-import { createProofMinter, createProofsChain, MAX_MINT, mint } from "./mint.js";
+import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
-import { ethNeeded, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
+import { ethNeeded, flightLine, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore, readWatched, writeWatched } from "./state.js";
 import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
@@ -21,6 +21,8 @@ import { createWork, firstProgram, HIDDEN, npxUnderSupervisor, programFound, she
 
 /** How many of the latest decisions a first watch --once checks. */
 const FIRST_RUN_DECISIONS = 10n;
+/** How long an idle run goes without a line before it says it is still waiting. */
+const HEARTBEAT_MS = 3_600_000;
 
 /** A published record's bytes as the service serves them, capped at a megabyte. */
 async function fetchRecord(uri: string): Promise<Uint8Array> {
@@ -45,9 +47,11 @@ const COMMAND_USAGE: Record<string, string> = {
   run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--no-mint]
                                             Do every task Jev hires the worker for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
-                                            --timeout minutes (20 by default, at most 1440). The worker
-                                            mints the Proof of each task it is paid for, unless --no-mint.`,
-  status: `  brainchain-worker status                  Stake, wallet, application, record and earnings.`,
+                                            --timeout minutes (20 by default, at most 1440). It logs how
+                                            each task settles, and mints the Proof of each task it is paid
+                                            for, unless --no-mint.`,
+  status: `  brainchain-worker status                  Stake, wallet, application, record and earnings, with where each
+                                            task in flight stands.`,
   price: `  brainchain-worker price <USDG>            Change your asking price per task.`,
   mint: `  brainchain-worker mint [--count <n>] [--dry]
                                             Mint a Proof for each paid task waiting for one, up to 10 or
@@ -344,7 +348,7 @@ async function status(chain: Chain, network: Network): Promise<void> {
   Stake     ${stake(network, w.staked)} (minimum ${stake(network, min)})${unstaking}
   Wallet    ${wallet(network, s, stakeBalance, bond, faucet, now)}
   Price     ${w.registered ? `${usdg(network, w.price)} per task` : "not set until you join"}
-  Record    ${record.accepted} accepted, ${record.refunded} refunded, ${record.inFlight} in flight${held > 0 ? " (stake held until they settle)" : ""}
+  Record    ${record.paid} paid, ${record.refunded} refunded, ${record.inFlight.length} in flight${held > 0 ? " (stake held until they settle)" : ""}${record.inFlight.map((f) => `\n            ${flightLine(f)}`).join("")}
   Earned    ${usdg(network, record.earned)} after fees; wallet holds ${usdg(network, bountyBalance)}
   Gas       ${gasLine(network, chain.account, s, gas, gasPrice, !network.buyStake && stakeBalance < s.toStake + (s.applying ? bond : 0n))}`);
 }
@@ -359,7 +363,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     throw new UsageError("--timeout is the most minutes the command may spend on one task: more than 0, at most 1440, and 20 by default");
   }
 
-  const log = (message: string) => console.log(`${new Date().toISOString().slice(0, 19)}Z ${message}`);
+  const { log, quietFor } = timedLog((line) => console.log(line));
   clearKeyFromEnvironment(key, log);
   const program = firstProgram(exec);
   if (program && !programFound(program)) log(`warning: the shell cannot find ${program}, so --exec will fail when the worker is hired`);
@@ -367,7 +371,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   // The lock rules out a live run, so a command still in the state was left by one that died.
   await stopLeftover(store, log);
   const chain = createChain(network, account, store);
-  const proofs = createProofMinter({ network, chain: createProofsChain(network.proofs, account), settled: chain.settled, store, log, enabled: mints });
+  const settlements = createSettlementWatch({ network, chain: createProofsChain(network.proofs, account), settlement: chain.settlement, store, log, mints });
 
   const command = shellCommand(exec);
   // An idle stop keeps the exit code of a task that failed earlier in a --once pass.
@@ -383,7 +387,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     stopping: stop.stopping,
     // A cron job sees a failed task as a failed run.
     failed: once ? () => void (process.exitCode = 1) : undefined,
-    delivered: proofs.track,
+    delivered: settlements.track,
     gasHelp: network.gas(account.address),
   });
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop.signal);
@@ -424,7 +428,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
       return undefined;
     });
     if (result?.hired === 0 && result.delivered === 0) log("no task is hired to this worker right now");
-    await proofs.round().catch((error: unknown) => log(`proofs round failed: ${reason(error)}`));
+    await settlements.round().catch((error: unknown) => log(`settlement round failed: ${reason(error)}`));
     return;
   }
   log("waiting for tasks (Ctrl-C to stop)");
@@ -432,15 +436,33 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   let minting: Promise<void> | undefined;
   while (!stop.stopping()) {
     await work.round().catch((error: unknown) => log(`round failed: ${reason(error)}`));
-    minting ??= proofs
+    minting ??= settlements
       .round()
-      .catch((error: unknown) => log(`proofs round failed: ${reason(error)}`))
+      .catch((error: unknown) => log(`settlement round failed: ${reason(error)}`))
       .finally(() => (minting = undefined));
+    if (quietFor() >= HEARTBEAT_MS && !work.busy() && !stop.stopping()) {
+      log(`still waiting for tasks; hireable: ${await snapshot(chain).then((s) => hireable(s, network, "run"), (error: unknown) => `could not check (${reason(error)})`)}`);
+    }
     for (let i = 0; i < 15 && !stop.stopping(); i++) await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   await minting;
   log("stopped");
 }
+
+/** Run's log, with each line's time, and how long it has been quiet, so an idle run can say it is still there. */
+export function timedLog(write: (line: string) => void, now = Date.now) {
+  let last = now();
+  return {
+    log(message: string) {
+      last = now();
+      write(`${new Date(last).toISOString().slice(0, 19)}Z ${message}`);
+    },
+    quietFor: () => now() - last,
+  };
+}
+
+/** Where watch --once keeps its place: a key's place counts toward its watchtower mark, so each key has its own, apart from runs without one. */
+export const watchPlace = (log: Address, key: Address | undefined) => (key === undefined ? log : `${log}.${key}`);
 
 /** What watch says at start. Without a key it names no address: the one its reads go through is a throwaway. */
 export function watching(network: Network, address: Address | undefined, veto: boolean): string {
@@ -516,6 +538,7 @@ export async function main(argv: string[]): Promise<void> {
     const account = keyed ? signer().account : privateKeyToAccount(generatePrivateKey());
     const client = createPublicClient({ chain: chainOf(network), transport: brainchainTransport(network) });
     const { taskBoard, executor, log } = network.contracts;
+    const place = watchPlace(log, keyed ? account.address : undefined);
     const verify: Verify = async (id) => {
       const report = await verifyDecision(
         {
@@ -540,7 +563,7 @@ export async function main(argv: string[]): Promise<void> {
       veto,
       log: console.log,
       // Each run of --once is a new process, so it keeps its place on disk; a first run checks the latest few.
-      ...(once ? { seenDecision: readWatched(log), recent: FIRST_RUN_DECISIONS, saw: (count: bigint) => writeWatched(log, count) } : {}),
+      ...(once ? { seenDecision: readWatched(place), recent: FIRST_RUN_DECISIONS, saw: (count: bigint) => writeWatched(place, count) } : {}),
     });
     if (veto && !network.contracts.gate) throw new UsageError(`${network.name} has no guardian gate yet, so there is nothing to veto through`);
     if (veto) await requireWatcher(chain, console.log);

@@ -12,10 +12,10 @@ import {
   type PrivateKeyAccount,
 } from "viem";
 
-import { reason, RECEIPT_MS } from "./chain.js";
+import { reason, RECEIPT_MS, REFUND_REASONS, type Settlement } from "./chain.js";
 import { proofsChainOf, proofsTransport, type Network } from "./network.js";
 import type { ProofTask, Store } from "./state.js";
-import { when } from "./standing.js";
+import { stake, usdg, when } from "./standing.js";
 
 export const collectionAbi = parseAbi([
   "function PRICE_QUOTE() view returns (uint256)",
@@ -41,13 +41,13 @@ export const MAX_MINT = 10;
 
 /** How often a delivered task's status is read until it settles. */
 const STATUS_SEC = 300;
-/** Grading, a dispute and its ruling take up to 6 hours each on mainnet, so a task unsettled after a day is left. */
-const WATCH_SEC = 86_400;
+/** Each step from grading to a ruling on appeal has a window of at most 6 hours, so a task unsettled two days after delivery is left. */
+const WATCH_SEC = 2 * 86_400;
 /** A day after payment the task joins the public pool, so the worker's own attempts stop an hour short of it. */
 const OWN_SEC = 23 * 3_600;
 /** The least time between two mint attempts for one task. */
 const RETRY_SEC = 3_600;
-/** The service lists a payment a round or two after it lands; a task still unlisted this long after has its piece. */
+/** The service lists a payment a round or two after it lands, which has taken over ten minutes: this long, the listing is read every minute. */
 const LISTING_SEC = 900;
 
 /** What minting needs from the chain the Proofs live on. */
@@ -154,7 +154,7 @@ async function afford(
   chain: ProofsChain,
   count: number,
   options: { dry: boolean; claiming: () => void; now: () => number },
-): Promise<{ price: bigint; missing?: string; claim?: true }> {
+): Promise<{ price: bigint; missing?: string; claim?: true; noEth?: true }> {
   const [price, eth] = await Promise.all([chain.price(), chain.ethBalance()]);
   const cost = price * BigInt(count);
   let weth = await chain.weth();
@@ -183,7 +183,11 @@ async function afford(
     );
   }
   const holds = `${chain.account} holds ${formatEther(weth)} WETH${needEth ? " and no ETH" : ""} on ${proofs.name}`;
-  return { price, missing: `${holds}, and ${proofCount(count)} cost${count === 1 ? "s" : ""} ${formatEther(cost)} WETH plus gas. ${fixes.join(" ")}` };
+  return {
+    price,
+    missing: `${holds}, and ${proofCount(count)} cost${count === 1 ? "s" : ""} ${formatEther(cost)} WETH plus gas. ${fixes.join(" ")}`,
+    ...(needEth ? { noEth: true as const } : {}),
+  };
 }
 
 /**
@@ -222,20 +226,22 @@ export async function mint(
 }
 
 /**
- * What `run` does for Proofs: it watches each task the worker delivers until
- * it settles and mints a piece for each paid one, at most once an hour per
- * task, and only while the service lists the task as waiting for a piece. The
- * watched tasks live in the state, so a restart neither forgets nor repeats a
- * mint. With `enabled` false, as under --no-mint, it does nothing.
+ * What `run` does once a task is delivered: it watches the task until it
+ * settles and logs how: paid and how much, or refunded, why and any stake
+ * slashed. With `mints`, it then mints a piece for each paid task, at most once
+ * an hour per task, while the service lists the task as waiting for one and
+ * the worker can still mint it. The watched tasks live in the state, so a
+ * restart neither forgets nor repeats a mint.
  */
-export function createProofMinter(options: {
+export function createSettlementWatch(options: {
   network: Network;
   chain: ProofsChain;
   /** How a task settled on BrainChain, or undefined while it has not. */
-  settled: (task: bigint) => Promise<"paid" | "refunded" | undefined>;
+  settlement: (task: bigint) => Promise<Settlement | undefined>;
   store: Store;
   log: (message: string) => void;
-  enabled: boolean;
+  /** False under --no-mint. */
+  mints: boolean;
   fetcher?: typeof fetch;
   /** Wall-clock seconds. */
   now?: () => number;
@@ -253,43 +259,71 @@ export function createProofMinter(options: {
     store.save();
   };
 
-  /** Reads whether a delivered task settled; true once it is paid. */
+  /** Reads whether a delivered task settled and logs how; true once it is paid and has a Proof to mint. */
   async function settle(key: string, entry: ProofTask): Promise<boolean> {
-    let outcome: "paid" | "refunded" | undefined;
+    let outcome: Settlement | undefined;
     try {
-      outcome = await options.settled(BigInt(key));
+      outcome = await options.settlement(BigInt(key));
     } catch (error) {
       later(entry, STATUS_SEC);
-      log(`task ${key}: could not read whether it was paid (${reason(error)})`);
-      return false;
-    }
-    if (outcome === "refunded") {
-      drop(key, "refunded to its poster, so it gets no proof");
+      log(`task ${key}: could not read whether it settled (${reason(error)})`);
       return false;
     }
     if (outcome === undefined) {
-      if (clock() - entry.deliveredAt >= WATCH_SEC) drop(key, "not settled a day after delivery, so the worker mints no proof for it");
+      if (clock() - entry.deliveredAt >= WATCH_SEC) drop(key, "not settled two days after delivery, so the worker stops watching it");
       else later(entry, STATUS_SEC);
       return false;
     }
-    entry.paidAt = clock();
+    if (!outcome.paid) {
+      const slashed = outcome.slashed > 0n ? `; ${stake(network, outcome.slashed)} of the worker's stake was slashed` : "";
+      drop(key, `refunded to its poster: ${REFUND_REASONS[outcome.reason] ?? `reason ${outcome.reason}`}${slashed}`);
+      return false;
+    }
+    log(`task ${key}: paid ${usdg(network, outcome.amount)}`);
+    if (!options.mints) {
+      drop(key);
+      return false;
+    }
+    entry.paidAt = Number(outcome.at);
     store.save();
     return true;
   }
 
   async function mintFor(key: string, entry: ProofTask, listed: bigint[] | Error): Promise<void> {
-    const paidAt = entry.paidAt!;
-    if (clock() - paidAt >= OWN_SEC) return drop(key, "no proof minted within a day of payment, so the task joins the public pool");
-    if (Array.isArray(listed) && !listed.includes(BigInt(key))) {
-      if (clock() - paidAt < LISTING_SEC) return later(entry, 60);
-      return drop(key, "the BrainChain service lists no proof waiting for it, so the worker mints none");
+    const until = entry.paidAt! + OWN_SEC;
+    if (clock() >= until) {
+      if (Array.isArray(listed) && !listed.includes(BigInt(key)) && !entry.listed) {
+        return drop(key, "the BrainChain service never listed it as waiting for a proof, so the worker minted none");
+      }
+      return drop(key, "no proof minted within a day of payment, so the task joins the public pool");
     }
+    if (Array.isArray(listed) && !listed.includes(BigInt(key))) {
+      // Once listed, a task leaves the list when it has its piece.
+      if (entry.listed) return drop(key, "the BrainChain service no longer lists it as waiting for a proof, so it has one");
+      if (clock() - entry.paidAt! < LISTING_SEC) return later(entry, 60);
+      if (!entry.waited) {
+        entry.waited = true;
+        log(`task ${key}: the BrainChain service does not list it as waiting for a proof yet; checking every ${STATUS_SEC / 60} minutes until ${when(BigInt(until))}`);
+      }
+      return later(entry, STATUS_SEC);
+    }
+    if (Array.isArray(listed)) entry.listed = true;
     // Counted before anything is sent, so a restart during the mint waits out the hour too.
     later(entry, RETRY_SEC);
     if (listed instanceof Error) return log(`task ${key}: no proof minted yet (${reason(listed)}); trying again in an hour`);
     try {
       const funds = await afford(network.proofs, chain, 1, { dry: false, claiming: () => log("claiming test WETH from the faucet"), now: clock });
-      if (funds.missing) return log(`task ${key}: no proof minted yet. ${funds.missing} Trying again in an hour.`);
+      if (funds.missing) {
+        if (network.id !== "testnet" || !funds.noEth) return log(`task ${key}: no proof minted yet. ${funds.missing} Trying again in an hour.`);
+        // No agent route leads to ETH on Robinhood Chain testnet, so the hourly retries say nothing new.
+        if (entry.told) return;
+        entry.told = true;
+        store.save();
+        return log(
+          `task ${key}: no proof minted. ${funds.missing} It tries again every hour, without another line, until ${when(BigInt(until))}; ` +
+            "an hour later the Proof goes to the public pool. Testnet Proofs earn no income, and `run --no-mint` turns minting off.",
+        );
+      }
       await chain.approve(funds.price);
       const { tokenId, tx } = await chain.mint();
       drop(key);
@@ -302,18 +336,22 @@ export function createProofMinter(options: {
   return {
     /** Watches a task the worker just delivered. */
     track(task: bigint): void {
-      if (!options.enabled) return;
       const now = clock();
       watched()[task.toString()] = { deliveredAt: now, nextAt: now + STATUS_SEC };
       store.save();
     },
-    /** Reads every watched task that is due, and mints for each paid one. */
+    /** Reads every watched task that is due, logs each that settled, and mints for each paid one. */
     async round(): Promise<void> {
-      if (!options.enabled || store.state.proofs === undefined) return;
+      if (store.state.proofs === undefined) return;
       const due = Object.entries(watched()).filter(([, entry]) => clock() >= entry.nextAt);
       const paid: [string, ProofTask][] = [];
       for (const [key, entry] of due) if (entry.paidAt !== undefined || (await settle(key, entry))) paid.push([key, entry]);
       if (paid.length === 0) return;
+      // A run under --no-mint after one that minted leaves those tasks' Proofs to `mint`.
+      if (!options.mints) {
+        for (const [key] of paid) drop(key);
+        return;
+      }
       const listed = await pendingTasks(network, chain.account, options.fetcher).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
       for (const [key, entry] of paid) await mintFor(key, entry, listed);
     },

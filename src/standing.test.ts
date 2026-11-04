@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { Status, type Flight } from "./chain.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { aboutEth, ethNeeded, gasLine, hireable, joinLimits, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
+import { aboutEth, ethNeeded, flightLine, gasLine, hireable, joinLimits, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
@@ -167,5 +168,52 @@ describe("shortOfStake", () => {
       `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${buy} Or run withdraw after 1970-01-01T00:33:20Z and join with the 1,000,000 BRAIN it returns.`,
     );
     expect(shortOfStake(MAINNET, w, 0n, 1_250_000n * BRAIN, 2_000n)).toContain("Or run withdraw now and join");
+  });
+});
+
+describe("flightLine", () => {
+  // Task 45 and 46 of the report, read at each step.
+  const GRADED = 1_793_806_740n;
+  const flight = (overrides: Partial<Flight>): Flight => ({
+    id: 45n,
+    status: Status.Graded,
+    accepted: true,
+    disputedByModel: false,
+    deadline: 1_793_828_281n,
+    gradedAt: GRADED,
+    disputedAt: 0n,
+    disputeWindow: 3_600n,
+    ruleWindow: 21_600n,
+    ...overrides,
+  });
+
+  it("says an accepted task is paid after its dispute window, unless the grade is disputed", () => {
+    expect(flightLine(flight({}))).toBe("task 45: accepted, paid after 2026-11-04T16:39:00Z unless the grade is disputed");
+  });
+
+  it("says a rejected task can still be disputed, and an open dispute when Jev rules", () => {
+    expect(flightLine(flight({ id: 46n, accepted: false }))).toBe(
+      "task 46: not accepted, refunded to the poster after 2026-11-04T16:39:00Z unless the grade is disputed with `dispute 46`",
+    );
+    expect(flightLine(flight({ id: 46n, status: Status.Disputed, accepted: false, disputedByModel: true, disputedAt: GRADED + 600n }))).toBe(
+      "task 46: grade disputed by this worker, Jev rules by 2026-11-04T21:49:00Z",
+    );
+    expect(flightLine(flight({ id: 46n, status: Status.Disputed, disputedAt: GRADED + 600n }))).toBe("task 46: grade disputed by the poster, Jev rules by 2026-11-04T21:49:00Z");
+  });
+
+  it("says what a ruling does and until when it can be appealed", () => {
+    const appeal = { window: 3_600n, ruledAt: GRADED + 700n, pays: false, appealedAt: 0n };
+    expect(flightLine(flight({ id: 46n, status: Status.Ruled, appeal }))).toBe("task 46: the ruling refunds the poster after 2026-11-04T16:50:40Z unless appealed with `appeal 46`");
+    expect(flightLine(flight({ id: 46n, status: Status.Ruled, appeal: { ...appeal, pays: true } }))).toBe(
+      "task 46: the ruling pays this worker after 2026-11-04T16:50:40Z unless the poster appeals",
+    );
+    expect(flightLine(flight({ id: 46n, status: Status.Appealed, appeal: { ...appeal, appealedAt: GRADED + 800n } }))).toBe(
+      "task 46: ruling appealed, Jev rules again by 2026-11-04T21:52:20Z",
+    );
+  });
+
+  it("says a hired task's deadline and that a delivered one waits for its grade", () => {
+    expect(flightLine(flight({ status: Status.Hired }))).toBe("task 45: hired, due by 2026-11-04T21:38:01Z");
+    expect(flightLine(flight({ status: Status.Submitted }))).toBe("task 45: delivered, waiting for Jev's grade");
   });
 });

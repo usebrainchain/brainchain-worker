@@ -1,9 +1,14 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import type { Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { asksHelp, join, main, parse, usage, UsageError, watching } from "./cli.js";
+import { asksHelp, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
+import { readWatched, writeWatched } from "./state.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
 const BRAIN = 10n ** 18n;
@@ -240,6 +245,33 @@ describe("join", () => {
     } finally {
       log.mockRestore();
     }
+  });
+});
+
+describe("watchPlace", () => {
+  const LOG: Address = "0x4E4cB48f3802bD519E0Eed896dF82197B0ecBc09";
+
+  it("keeps a place for each key apart from the place of runs without one", () => {
+    const folder = mkdtempSync(path.join(tmpdir(), "brainchain-watch-"));
+    writeWatched(watchPlace(LOG, undefined), 100n, folder);
+    expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBeUndefined();
+    writeWatched(watchPlace(LOG, ACCOUNT), 94n, folder);
+    expect(readWatched(watchPlace(LOG, undefined), folder)).toBe(100n);
+    expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBe(94n);
+    expect(readWatched(watchPlace(LOG, "0x00000000000000000000000000000000000000c2"), folder)).toBeUndefined();
+  });
+});
+
+describe("timedLog", () => {
+  it("stamps each line and says how long the log has been quiet", () => {
+    let now = Date.UTC(2026, 10, 4, 12, 37, 48);
+    const lines: string[] = [];
+    const { log, quietFor } = timedLog((line) => lines.push(line), () => now);
+    now += 3_600_000;
+    expect(quietFor()).toBe(3_600_000);
+    log("waiting for tasks");
+    expect(lines).toEqual(["2026-11-04T13:37:48Z waiting for tasks"]);
+    expect(quietFor()).toBe(0);
   });
 });
 
