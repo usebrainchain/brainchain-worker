@@ -434,6 +434,8 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     ...work,
     account: account.address,
     gasPrice: () => client.getGasPrice(),
+    /** How many transactions the wallet has sent. */
+    sent: () => client.getTransactionCount({ address: account.address }),
     stakeBalance: () => client.readContract({ address: stakeToken, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     bountyBalance: () => client.readContract({ address: bountyToken, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     stake: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "get", args: [account.address] }),

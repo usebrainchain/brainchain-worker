@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { verifyDecision } from "brainchain-verify";
 import { createPublicClient, http } from "viem";
 
-import { parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { formatEther, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
@@ -11,7 +11,7 @@ import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
-import { ethNeeded, flightLine, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
+import { deliveries, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore, readWatched, writeWatched } from "./state.js";
 import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
@@ -23,6 +23,8 @@ import { createWork, firstProgram, npxUnderSupervisor, programFound, shellComman
 const FIRST_RUN_DECISIONS = 10n;
 /** How long an idle run goes without a line before it says it is still waiting. */
 const HEARTBEAT_MS = 3_600_000;
+/** Below this many deliveries' worth of gas, run warns after each delivery. */
+const LOW_DELIVERIES = 3n;
 
 /** A published record's bytes as the service serves them, capped at a megabyte. */
 async function fetchRecord(uri: string): Promise<Uint8Array> {
@@ -50,7 +52,7 @@ const COMMAND_USAGE: Record<string, string> = {
                                             --timeout minutes (20 by default, at most 1440). It logs how
                                             each task settles, and mints the Proof of each task it is paid
                                             for, unless --no-mint.`,
-  status: `  brainchain-worker status                  Stake, wallet, application, record and earnings, with where each
+  status: `  brainchain-worker status                  Stake, wallet, application, record, earnings and gas, with where each
                                             task in flight stands.`,
   price: `  brainchain-worker price <USDG>            Change your asking price per task.`,
   mint: `  brainchain-worker mint [--count <n>] [--dry]
@@ -88,8 +90,9 @@ const COMMAND_USAGE: Record<string, string> = {
                                             window. Jev rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
                                             appeal window, with the bond the task's terms fix (a quarter of the
-                                            bounty). Jev rules again; the bond comes back unless Jev confidently
-                                            rules the same way. Testnet only for now.`,
+                                            bounty), claimed from the test USDG faucet when the wallet holds less.
+                                            Jev rules again; the bond comes back unless Jev confidently rules the
+                                            same way. Testnet only for now.`,
   leave: `  brainchain-worker leave                   Start unstaking (3-day cooldown).`,
   withdraw: `  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.`,
 };
@@ -224,12 +227,12 @@ function price(value: string): bigint {
 const RUN = '`npx brainchain-worker run --exec "<command>"`';
 const KEEP_RUNNING = "https://github.com/usebrainchain/brainchain-worker#keep-it-running";
 
-function noGas(chain: Chain, network: Network): Error {
-  return new Error(`${chain.account} has no ETH on ${network.name} for gas. ${network.gas(chain.account)}.`);
+async function noGas(chain: Chain, network: Network): Promise<Error> {
+  return new Error(`${chain.account} has no ETH on ${network.name} for gas. ${gasHelp(network, chain.account, 0n, await chain.sent())}.`);
 }
 
 async function needGas(chain: Chain, network: Network): Promise<void> {
-  if ((await chain.ethBalance()) === 0n) throw noGas(chain, network);
+  if ((await chain.ethBalance()) === 0n) throw await noGas(chain, network);
 }
 
 export async function join(chain: Chain, network: Network, values: Map<string, string>): Promise<void> {
@@ -270,12 +273,19 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   // A worker that has staked keeps its price unless --price changes it.
   const asking = requested ?? (w.registered ? w.price : price(DEFAULT_PRICE));
 
-  const [gas, gasPrice, bond, balance, timelock] = await Promise.all([chain.ethBalance(), chain.gasPrice(), chain.bond(), chain.stakeBalance(), chain.timelock()]);
+  const [gas, gasPrice, bond, balance, timelock, sent] = await Promise.all([
+    chain.ethBalance(),
+    chain.gasPrice(),
+    chain.bond(),
+    chain.stakeBalance(),
+    chain.timelock(),
+    chain.sent(),
+  ]);
   const need = toStake + (applying ? bond : 0n);
   const claims = balance < need && !network.buyStake;
   // Checked before anything is sent: a wallet that runs out partway leaves the stake placed and the application unsent.
   const gasNeed = ethNeeded(joinLimits(standing, claims, toStake === 0n && w.price !== asking), gasPrice);
-  const lacksGas = gas < gasNeed ? `${chain.account} holds ${shortOfGas(network, chain.account, gas, gasNeed, "join")}` : undefined;
+  const lacksGas = gas < gasNeed ? `${chain.account} holds ${shortOfGas(network, chain.account, gas, sent, gasNeed, "join")}` : undefined;
   if (balance < need && network.buyStake) {
     const short = shortOfStake(network, w, balance, need, await chain.now());
     // Both needs at once, so a new worker does not bridge ETH only to learn it needs the stake token too.
@@ -331,9 +341,10 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
 }
 
 async function status(chain: Chain, network: Network): Promise<void> {
-  const [gas, gasPrice, s, held, record, bountyBalance, stakeBalance, bond, faucet, now] = await Promise.all([
+  const [gas, gasPrice, sent, s, held, record, bountyBalance, stakeBalance, bond, faucet, now] = await Promise.all([
     chain.ethBalance(),
     chain.gasPrice(),
+    chain.sent(),
     snapshot(chain),
     chain.held(),
     chain.record(),
@@ -353,7 +364,7 @@ async function status(chain: Chain, network: Network): Promise<void> {
   Price     ${w.registered ? `${usdg(network, w.price)} per task` : "not set until you join"}
   Record    ${record.paid} paid, ${record.refunded} refunded, ${record.inFlight.length} in flight${held > 0 ? " (stake held until they settle)" : ""}${record.inFlight.map((f) => `\n            ${flightLine(f)}`).join("")}
   Earned    ${usdg(network, record.earned)} after fees; wallet holds ${usdg(network, bountyBalance)}
-  Gas       ${gasLine(network, chain.account, s, gas, gasPrice, !network.buyStake && stakeBalance < s.toStake + (s.applying ? bond : 0n))}`);
+  Gas       ${gasLine(network, chain.account, s, gas, gasPrice, !network.buyStake && stakeBalance < s.toStake + (s.applying ? bond : 0n), sent)}`);
 }
 
 async function run(network: Network, { key, account }: Signer, values: Map<string, string>, once: boolean, mints: boolean): Promise<void> {
@@ -390,9 +401,21 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     stopping: stop.stopping,
     // A cron job sees a failed task as a failed run.
     failed: once ? () => void (process.exitCode = 1) : undefined,
-    delivered: settlements.track,
-    gasHelp: network.gas(account.address),
+    delivered(task) {
+      settlements.track(task);
+      void lowGas();
+    },
+    gasHelp: async () => gasHelp(network, account.address, 0n, await chain.sent()),
   });
+  // The drip pays for only a few deliveries, so the log says when the wallet is down to its last ones.
+  const lowGas = async () => {
+    const [gas, price, sent] = await Promise.all([chain.ethBalance(), chain.gasPrice(), chain.sent()]).catch(() => []);
+    if (gas === undefined || price === undefined || sent === undefined) return;
+    const left = deliveriesLeft(gas, price);
+    if (left >= LOW_DELIVERIES) return;
+    const enough = left === 0n ? "not enough for another delivery" : `enough for about ${left} more ${left === 1n ? "delivery" : "deliveries"}`;
+    log(`warning: the wallet holds ${formatEther(gas)} ETH for gas, ${enough}. ${gasHelp(network, account.address, gas, sent)}.`);
+  };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop.signal);
   if (process.env.npm_execpath !== undefined) {
     watchStarter(() => {
@@ -414,15 +437,17 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     }
     log(`could not read the wallet's ETH balance: ${reason(error)}`);
   }
-  if (gas === 0n) throw noGas(chain, network);
-  const [line, sick] = await Promise.all([
+  if (gas === 0n) throw await noGas(chain, network);
+  const held = gas;
+  const [line, sick, left] = await Promise.all([
     snapshot(chain).then(
       (s) => hireable(s, network, "run"),
       (error: unknown) => `could not check (${reason(error)})`,
     ),
     unhealthy(network.service),
+    held === undefined ? undefined : chain.gasPrice().then((price) => deliveriesLeft(held, price), () => undefined),
   ]);
-  log(`worker ${chain.account} on ${network.name}; hireable: ${line}`);
+  log(`worker ${chain.account} on ${network.name}; hireable: ${line}${left === undefined ? "" : `; gas for ${deliveries(left)}`}`);
   if (sick) log(`warning: ${sick}`);
   if (once) {
     const result = await work.round().catch((error: unknown) => {

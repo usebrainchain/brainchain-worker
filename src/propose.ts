@@ -25,7 +25,7 @@ import {
 import { erc20Errors } from "./abi.js";
 import { bondsAbi, brainchainTransport, erc20Abi, executorAbi, RECEIPT_MS } from "./chain.js";
 import { chainOf, type Network } from "./network.js";
-import { stake, when } from "./standing.js";
+import { gasHelp, stake, when } from "./standing.js";
 
 /** Every call the executor can be asked to make, by the contract it calls. */
 export const GOVERNED = {
@@ -217,6 +217,8 @@ export interface ProposalChain {
   account: Address;
   now(): Promise<bigint>;
   ethBalance(): Promise<bigint>;
+  /** How many transactions the wallet has sent. */
+  sent(): Promise<number>;
   stakeBalance(): Promise<bigint>;
   bond(): Promise<bigint>;
   decideWithin(): Promise<bigint>;
@@ -264,6 +266,7 @@ export function createProposals(network: Network, account: PrivateKeyAccount): P
     account: account.address,
     now: async () => (await client.getBlock()).timestamp,
     ethBalance: () => client.getBalance({ address: account.address }),
+    sent: () => client.getTransactionCount({ address: account.address }),
     stakeBalance: () => client.readContract({ address: stakeToken, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     bond: () => client.readContract({ ...proposals, functionName: "bond" }),
     decideWithin: () => client.readContract({ ...proposals, functionName: "decideWithin" }),
@@ -365,7 +368,7 @@ export async function propose(
     const buy = network.buyStake ? ` ${network.buyStake}` : "";
     throw new Error(`The wallet holds ${stake(network, balance)} of the ${stake(network, bond)} bond.${buy}`);
   }
-  if (gas === 0n) throw new Error(`${chain.account} has no ETH on ${network.name} for gas. ${network.gas(chain.account)}.`);
+  if (gas === 0n) throw new Error(`${chain.account} has no ETH on ${network.name} for gas. ${gasHelp(network, chain.account, 0n, await chain.sent())}.`);
   log(`Bonding ${stake(network, bond)} and proposing...`);
   const { id, tx } = await chain.propose(call, uri, bond);
   log(`Proposal ${id} is waiting for Jev (${tx}). Follow it with \`npx brainchain-worker proposal ${id}\`.`);

@@ -386,7 +386,7 @@ export function createWork(options: {
   /** Called as each result is delivered. */
   delivered?: (task: bigint) => void;
   /** Where the wallet gets ETH for gas, said when it has none. */
-  gasHelp?: string;
+  gasHelp?: () => Promise<string>;
   fetchBrief?: typeof fetchBrief;
 }) {
   const { chain, command } = options;
@@ -405,7 +405,8 @@ export function createWork(options: {
   };
   const needGas = async () => {
     if ((await chain.ethBalance()) === 0n) {
-      throw new Error(`The wallet has no ETH to pay gas for the submit${options.gasHelp ? `. ${options.gasHelp}` : ""}. The task is tried again`);
+      const help = await options.gasHelp?.().catch(() => undefined);
+      throw new Error(`The wallet has no ETH to pay gas for the submit${help ? `. ${help}` : ""}. The task is tried again`);
     }
   };
   const inTime = async (task: HiredTask) => {
