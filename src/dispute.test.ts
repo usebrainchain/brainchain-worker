@@ -1,7 +1,7 @@
-import type { Address, Hex } from "viem";
+import { BaseError, ContractFunctionExecutionError, ContractFunctionRevertedError, encodeErrorResult, InsufficientFundsError, parseAbi, parseEther, parseGwei, type Address, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { Status } from "./chain.js";
+import { explainRevert, reason, Status } from "./chain.js";
 import { appeal, Appealed, dispute, Ruled, type DisputeChain, type DisputeTask } from "./dispute.js";
 import { TESTNET } from "./network.js";
 
@@ -9,8 +9,14 @@ const WORKER = "0x00000000000000000000000000000000000000c1" as Address;
 const POSTER = "0x00000000000000000000000000000000000000a1" as Address;
 const NOW = 1_800_000_000n;
 const TX = `0x${"ab".repeat(32)}` as Hex;
+const APPROVAL = `0x${"cd".repeat(32)}` as Hex;
 
-function fake(task: Partial<DisputeTask>, terms = { window: 3_600n, ruledAt: NOW - 60n, pays: false }, balance = 10_000_000n) {
+function fake(
+  task: Partial<DisputeTask>,
+  terms = { window: 3_600n, ruledAt: NOW - 60n, pays: false },
+  balance = 10_000_000n,
+  gas: { eth?: bigint; allowance?: bigint } = {},
+) {
   const chain = {
     account: WORKER,
     now: vi.fn(async () => NOW),
@@ -28,7 +34,10 @@ function fake(task: Partial<DisputeTask>, terms = { window: 3_600n, ruledAt: NOW
     appealOf: vi.fn(async () => terms),
     appealBond: vi.fn(async () => 1_250_000n),
     bountyBalance: vi.fn(async () => balance),
-    approveBounty: vi.fn(async () => undefined),
+    ethBalance: vi.fn(async () => gas.eth ?? parseEther("0.001")),
+    gasPrice: vi.fn(async () => parseGwei("0.1")),
+    allowance: vi.fn(async () => gas.allowance ?? 0n),
+    approveBounty: vi.fn(async (): Promise<Hex | undefined> => APPROVAL),
     dispute: vi.fn(async () => TX),
     appeal: vi.fn(async () => TX),
   } satisfies DisputeChain;
@@ -80,5 +89,72 @@ describe("appeal", () => {
     const chain = fake({ status: Ruled }, undefined, 1_000_000n);
     await expect(appeal(TESTNET, chain, 7n, () => {})).rejects.toThrow("The appeal bond is 1.25 tUSDG, and the worker holds 1.");
     expect(chain.approveBounty).not.toHaveBeenCalled();
+  });
+
+  it("refuses before sending anything when the wallet cannot pay the gas of both the approval and the appeal", async () => {
+    // What the wallet in the report held: enough for the approval, not for the appeal after it.
+    const chain = fake({ status: Ruled }, undefined, undefined, { eth: parseEther("0.0000295") });
+    const refusal = appeal(TESTNET, chain, 7n, () => {});
+    await expect(refusal).rejects.toThrow(
+      `${WORKER} holds 0.0000295 ETH on BrainChain testnet; the appeal needs about 0.000039 ETH for gas. Ask the testnet gas drip first`,
+    );
+    await expect(refusal).rejects.toThrow(/Nothing was sent\.$/);
+    expect(chain.approveBounty).not.toHaveBeenCalled();
+    expect(chain.appeal).not.toHaveBeenCalled();
+
+    // With the bond already approved only the appeal is sent, so only its gas counts.
+    const approved = fake({ status: Ruled }, undefined, undefined, { eth: parseEther("0.000034"), allowance: 1_250_000n });
+    approved.approveBounty.mockResolvedValue(undefined);
+    await appeal(TESTNET, approved, 7n, () => {});
+    expect(approved.appeal).toHaveBeenCalledWith(7n);
+
+    // The report's second attempt: the bond approved, 0.0000208 ETH left, and a raw selector where words belonged.
+    const second = fake({ status: Ruled }, undefined, undefined, { eth: parseEther("0.0000208345"), allowance: 1_250_000n });
+    await expect(appeal(TESTNET, second, 7n, () => {})).rejects.toThrow(`${WORKER} holds 0.0000208345 ETH on BrainChain testnet; the appeal needs about 0.000034 ETH for gas.`);
+    expect(second.appeal).not.toHaveBeenCalled();
+  });
+
+  it("says the approval went through when the appeal after it fails", async () => {
+    const chain = fake({ status: Ruled });
+    chain.appeal.mockRejectedValue(new BaseError("Execution reverted with reason: gas required exceeds allowance (86810).", { cause: new InsufficientFundsError() }));
+    const failure = appeal(TESTNET, chain, 7n, () => {});
+    await expect(failure).rejects.toThrow(`The board was approved to take the 1.25 tUSDG bond (${APPROVAL}), and then the appeal failed: The wallet holds too little ETH`);
+    await expect(failure).rejects.toThrow("The approval stands, so running appeal again before 2027-01-15T08:59:00Z sends only the appeal.");
+    await expect(failure).rejects.not.toThrow("Nothing was sent");
+
+    // Nothing was approved this time, so the appeal's own error stands alone.
+    const again = fake({ status: Ruled }, undefined, undefined, { allowance: 1_250_000n });
+    again.approveBounty.mockResolvedValue(undefined);
+    again.appeal.mockRejectedValue(new Error("Transaction reverted"));
+    await expect(appeal(TESTNET, again, 7n, () => {})).rejects.toThrow(/^Transaction reverted$/);
+  });
+});
+
+describe("the board's errors", () => {
+  const abi = parseAbi(["error FailedInnerCall()", "error NotAppellant()"]);
+  const reverted = (errorName: "FailedInnerCall" | "NotAppellant") =>
+    new ContractFunctionExecutionError(new ContractFunctionRevertedError({ abi, data: encodeErrorResult({ abi, errorName }), functionName: "appeal" }), {
+      abi,
+      functionName: "appeal",
+    });
+
+  it("reads a revert that only the gas cap caused as a wallet short of gas, and leaves a real one as it is", async () => {
+    // The RPC runs the estimate with no more gas than the wallet pays for, and the bond's transfer runs out inside it.
+    expect(reason(await explainRevert(reverted("FailedInnerCall"), async () => "0x"))).toBe(
+      "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds",
+    );
+    const real = reverted("NotAppellant");
+    expect(
+      await explainRevert(real, async () => {
+        throw real;
+      }),
+    ).toBe(real);
+    expect(reason(real)).toBe('The contract function "appeal" reverted: only the side the ruling went against can appeal it (NotAppellant)');
+    expect(reason(reverted("FailedInnerCall"))).toBe('The contract function "appeal" reverted: a token transfer inside the call failed without a reason (FailedInnerCall)');
+    const other = new Error("fetch failed");
+    expect(await explainRevert(other, async () => "0x")).toBe(other);
+    // A selector no ABI here knows is still a revert to check.
+    const unknown = new ContractFunctionExecutionError(new ContractFunctionRevertedError({ abi: [], data: "0x12345678", functionName: "appeal" }), { abi: [], functionName: "appeal" });
+    expect(reason(await explainRevert(unknown, async () => "0x"))).toMatch(/^The wallet holds too little ETH/);
   });
 });

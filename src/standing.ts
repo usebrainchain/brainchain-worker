@@ -1,6 +1,6 @@
 import { formatEther, formatUnits } from "viem";
 
-import { ApplicationState, type Chain } from "./chain.js";
+import { ApplicationState, Status, type Chain, type Flight } from "./chain.js";
 import type { Network } from "./network.js";
 
 /** A token amount with thousands separators, such as 1,250,000; a fraction is kept as it is. */
@@ -135,4 +135,32 @@ export function shortOfStake(network: Network, w: Snapshot["w"], balance: bigint
   const withdraw = now >= w.unlocksAt ? "now" : `after ${when(w.unlocksAt)}`;
   const unstaking = w.unstaking > 0n ? ` Or run withdraw ${withdraw} and join with the ${stake(network, w.unstaking)} it returns.` : "";
   return `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs. ${network.buyStake}${unstaking}`;
+}
+
+/** Where a task in flight stands and what happens next, for `status`. */
+export function flightLine(f: Flight): string {
+  const task = `task ${f.id}`;
+  switch (f.status) {
+    case Status.Hired:
+      return `${task}: hired, due by ${when(f.deadline)}`;
+    case Status.Submitted:
+      return `${task}: delivered, waiting for Jev's grade`;
+    case Status.Graded: {
+      const closes = when(f.gradedAt + f.disputeWindow);
+      return f.accepted
+        ? `${task}: accepted, paid after ${closes} unless the grade is disputed`
+        : `${task}: not accepted, refunded to the poster after ${closes} unless the grade is disputed with \`dispute ${f.id}\``;
+    }
+    case Status.Disputed:
+      return `${task}: grade disputed by ${f.disputedByModel ? "this worker" : "the poster"}, Jev rules by ${when(f.disputedAt + f.ruleWindow)}`;
+    case Status.Ruled: {
+      const a = f.appeal!;
+      const closes = when(a.ruledAt + a.window);
+      return a.pays
+        ? `${task}: the ruling pays this worker after ${closes} unless the poster appeals`
+        : `${task}: the ruling refunds the poster after ${closes} unless appealed with \`appeal ${f.id}\``;
+    }
+    default:
+      return `${task}: ruling appealed, Jev rules again by ${when(f.appeal!.appealedAt + f.ruleWindow)}`;
+  }
 }

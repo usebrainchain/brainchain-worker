@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { encodeAbiParameters, encodeEventTopics, parseAbi, parseEther, zeroAddress, type Address, type Hex, type Log } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { collectionAbi, createProofMinter, mint, mintedToken, type ProofsChain } from "./mint.js";
+import type { Settlement } from "./chain.js";
+import { collectionAbi, createSettlementWatch, mint, mintedToken, type ProofsChain } from "./mint.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
 
@@ -181,96 +182,143 @@ describe("mintedToken", () => {
   });
 });
 
-describe("run's proof minter", () => {
-  function setup(options: { store?: Store; enabled?: boolean; network?: Network; fetcher?: ReturnType<typeof listing>; chain?: ReturnType<typeof fakeChain> } = {}) {
+describe("run's settlement watch", () => {
+  const PAID: Settlement = { paid: true, amount: 975_000n, at: BigInt(NOW + 200) };
+
+  function setup(options: { store?: Store; mints?: boolean; network?: Network; fetcher?: ReturnType<typeof listing>; chain?: ReturnType<typeof fakeChain> } = {}) {
     let now = NOW;
-    let outcome: "paid" | "refunded" | undefined;
+    let outcome: Settlement | undefined;
     const { chain, sent } = options.chain ?? fakeChain();
-    const settled = vi.fn(async (_task: bigint) => outcome);
+    const settlement = vi.fn(async (_task: bigint) => outcome);
     const log = vi.fn<(message: string) => void>();
     const fetcher = options.fetcher ?? listing({ tasks: ["7"] });
     const store = options.store ?? memoryStore(BOARD);
-    const minter = createProofMinter({ network: options.network ?? MAINNET, chain, settled, store, log, enabled: options.enabled ?? true, fetcher, now: () => now });
+    const watch = createSettlementWatch({ network: options.network ?? MAINNET, chain, settlement, store, log, mints: options.mints ?? true, fetcher, now: () => now });
     return {
-      minter,
+      watch,
       chain,
       sent,
-      settled,
+      settlement,
       log,
       fetcher,
       store,
       at: (seconds: number) => void (now = NOW + seconds),
-      settle: (value: typeof outcome) => void (outcome = value),
+      settle: (value: Settlement | undefined) => void (outcome = value),
     };
   }
   const logged = (log: ReturnType<typeof vi.fn>) => log.mock.calls.map((call) => String(call[0]));
   const stateFile = () => join(mkdtempSync(join(tmpdir(), "brainchain-worker-")), "worker.json");
 
-  it("mints once for a delivered task when it is paid, and a restart does not mint it again", async () => {
+  it("logs the payment, mints once for the paid task, and a restart does not mint it again", async () => {
     const file = stateFile();
     const first = setup({ store: fileStore(file, BOARD) });
-    first.minter.track(7n);
-    await first.minter.round();
-    expect(first.settled).not.toHaveBeenCalled();
+    first.watch.track(7n);
+    await first.watch.round();
+    expect(first.settlement).not.toHaveBeenCalled();
 
     first.at(300);
-    await first.minter.round();
-    expect(first.settled).toHaveBeenCalledWith(7n);
+    await first.watch.round();
+    expect(first.settlement).toHaveBeenCalledWith(7n);
     expect(first.fetcher).not.toHaveBeenCalled();
 
-    first.settle("paid");
+    first.settle(PAID);
     first.at(600);
-    await first.minter.round();
+    await first.watch.round();
     expect(first.fetcher.mock.calls[0]![0]).toBe(PENDING);
     expect(first.sent).toEqual([`approve ${PRICE}`, "mint"]);
-    expect(logged(first.log)).toEqual([`minted proof 29 for task 7 (${TX})`]);
+    expect(logged(first.log)).toEqual(["task 7: paid 0.975 USDG", `minted proof 29 for task 7 (${TX})`]);
     expect(first.store.state.proofs).toEqual({});
 
     const second = setup({ store: fileStore(file, BOARD) });
-    second.settle("paid");
+    second.settle(PAID);
     second.at(4_000);
-    await second.minter.round();
-    expect(second.settled).not.toHaveBeenCalled();
+    await second.watch.round();
+    expect(second.settlement).not.toHaveBeenCalled();
     expect(second.chain.mint).not.toHaveBeenCalled();
   });
 
   it("tries a task at most once an hour, across a restart", async () => {
     const file = stateFile();
     const first = setup({ store: fileStore(file, BOARD) });
-    first.minter.track(7n);
-    first.settle("paid");
+    first.watch.track(7n);
+    first.settle(PAID);
     first.at(300);
     first.chain.mint.mockRejectedValueOnce(new Error("The worker was killed here"));
-    await first.minter.round();
-    expect(logged(first.log)).toEqual(["task 7: minting its proof failed (The worker was killed here); trying again in an hour"]);
+    await first.watch.round();
+    expect(logged(first.log)).toEqual(["task 7: paid 0.975 USDG", "task 7: minting its proof failed (The worker was killed here); trying again in an hour"]);
 
     const second = setup({ store: fileStore(file, BOARD) });
     second.at(300 + 1_800);
-    await second.minter.round();
+    await second.watch.round();
     expect(second.chain.mint).not.toHaveBeenCalled();
     expect(second.fetcher).not.toHaveBeenCalled();
 
     second.at(300 + 3_600);
-    await second.minter.round();
+    await second.watch.round();
     expect(second.chain.mint).toHaveBeenCalledOnce();
     expect(logged(second.log)).toEqual([`minted proof 29 for task 7 (${TX})`]);
   });
 
-  it("leaves a task the service no longer lists, as when a mint that seemed to fail landed", async () => {
+  it("waits for a late listing as long as the worker can still mint, and says so once", async () => {
+    // The report's service listed a payment 10.5 minutes after it landed; the worker once gave up after 15.
     const t = setup({ fetcher: listing({ tasks: [] }) });
-    t.minter.track(7n);
-    t.settle("paid");
+    t.watch.track(7n);
+    t.settle(PAID);
     t.at(300);
-    await t.minter.round();
+    await t.watch.round();
+    t.at(200 + 900);
+    await t.watch.round();
+    t.at(200 + 900 + 300);
+    await t.watch.round();
     expect(t.store.state.proofs?.["7"]).toBeDefined();
-    t.at(300 + 900);
-    await t.minter.round();
-    expect(t.chain.mint).not.toHaveBeenCalled();
-    expect(t.store.state.proofs).toEqual({});
-    expect(logged(t.log)).toEqual(["task 7: the BrainChain service lists no proof waiting for it, so the worker mints none"]);
+    expect(logged(t.log)).toEqual([
+      "task 7: paid 0.975 USDG",
+      "task 7: the BrainChain service does not list it as waiting for a proof yet; checking every 5 minutes until 2027-01-16T07:03:20Z",
+    ]);
+
+    t.fetcher.mockImplementation(async () => Response.json({ tasks: ["7"] }));
+    t.at(200 + 2 * 3_600);
+    await t.watch.round();
+    expect(t.chain.mint).toHaveBeenCalledOnce();
+    expect(logged(t.log).at(-1)).toBe(`minted proof 29 for task 7 (${TX})`);
   });
 
-  it("says why it mints nothing: no WETH, no ETH or a service that does not list the tasks yet", async () => {
+  it("leaves a task once the service stops listing it, which it does when the task has its piece", async () => {
+    const t = setup({ chain: fakeChain({ weth: 0n }) });
+    t.watch.track(7n);
+    t.settle(PAID);
+    t.at(300);
+    await t.watch.round();
+    expect(t.chain.mint).not.toHaveBeenCalled();
+    t.fetcher.mockImplementation(async () => Response.json({ tasks: [] }));
+    t.at(300 + 3_600);
+    await t.watch.round();
+    expect(t.store.state.proofs).toEqual({});
+    expect(logged(t.log).at(-1)).toBe("task 7: the BrainChain service no longer lists it as waiting for a proof, so it has one");
+  });
+
+  it("stops trying 23 hours after payment, and says whether the service ever listed the task", async () => {
+    const never = setup({ fetcher: listing({ tasks: [] }) });
+    never.watch.track(7n);
+    never.settle(PAID);
+    never.at(300);
+    await never.watch.round();
+    never.at(200 + 23 * 3_600);
+    await never.watch.round();
+    expect(never.store.state.proofs).toEqual({});
+    expect(logged(never.log).at(-1)).toBe("task 7: the BrainChain service never listed it as waiting for a proof, so the worker minted none");
+
+    const broke = setup({ chain: fakeChain({ weth: 0n }) });
+    broke.watch.track(7n);
+    broke.settle(PAID);
+    broke.at(300);
+    await broke.watch.round();
+    broke.at(200 + 23 * 3_600);
+    await broke.watch.round();
+    expect(logged(broke.log).at(-1)).toBe("task 7: no proof minted within a day of payment, so the task joins the public pool");
+  });
+
+  it("says why it mints nothing on mainnet each hour: no WETH, no ETH or a service that does not list the tasks yet", async () => {
     const cases = [
       {
         chain: fakeChain({ weth: 0n }),
@@ -290,54 +338,104 @@ describe("run's proof minter", () => {
     ];
     for (const { chain, fetcher, line } of cases) {
       const t = setup({ chain, fetcher });
-      t.minter.track(7n);
-      t.settle("paid");
+      t.watch.track(7n);
+      t.settle(PAID);
       t.at(300);
-      await t.minter.round();
-      expect(logged(t.log)).toEqual([line]);
+      await t.watch.round();
+      expect(logged(t.log)).toEqual(["task 7: paid 0.975 USDG", line]);
       expect(t.sent).toEqual([]);
       t.at(300 + 3_599);
-      await t.minter.round();
-      expect(t.log).toHaveBeenCalledOnce();
+      await t.watch.round();
+      expect(t.log).toHaveBeenCalledTimes(2);
+      t.at(300 + 3_600);
+      await t.watch.round();
+      expect(logged(t.log).at(-1)).toBe(line);
     }
+  });
+
+  it("says once on testnet that minting needs Robinhood Chain testnet ETH no agent route provides, and when the Proof goes to the pool", async () => {
+    const t = setup({ network: TESTNET, chain: fakeChain({ weth: 0n, eth: 0n }), fetcher: listing({ tasks: ["7"] }) });
+    t.watch.track(7n);
+    t.settle(PAID);
+    t.at(300);
+    await t.watch.round();
+    expect(logged(t.log)).toEqual([
+      "task 7: paid 0.975 tUSDG",
+      `task 7: no proof minted. ${ACCOUNT} holds 0 WETH and no ETH on Robinhood Chain testnet, and 1 Proof costs 0.001 WETH plus gas. ` +
+        "A person can get Robinhood Chain testnet ETH for gas at https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
+        "and send it to this address; BrainChain's gas drip sends ETH on BrainChain testnet only. The worker claims test WETH from the faucet once it has ETH. " +
+        "It tries again every hour, without another line, until 2027-01-16T07:03:20Z; an hour later the Proof goes to the public pool. " +
+        "Testnet Proofs earn no income, and `run --no-mint` turns minting off.",
+    ]);
+    for (const hours of [1, 2, 3]) {
+      t.at(300 + hours * 3_600);
+      await t.watch.round();
+    }
+    expect(t.chain.ethBalance).toHaveBeenCalledTimes(4);
+    expect(t.log).toHaveBeenCalledTimes(2);
+    expect(t.sent).toEqual([]);
   });
 
   it("claims test WETH from the faucet on testnet", async () => {
     const t = setup({ network: TESTNET, chain: fakeChain({ weth: 0n }), fetcher: listing({ tasks: ["7"] }) });
-    t.minter.track(7n);
-    t.settle("paid");
+    t.watch.track(7n);
+    t.settle(PAID);
     t.at(300);
-    await t.minter.round();
+    await t.watch.round();
     expect(t.sent).toEqual(["faucet", `approve ${PRICE}`, "mint"]);
-    expect(logged(t.log)).toEqual(["claiming test WETH from the faucet", `minted proof 29 for task 7 (${TX})`]);
+    expect(logged(t.log)).toEqual(["task 7: paid 0.975 tUSDG", "claiming test WETH from the faucet", `minted proof 29 for task 7 (${TX})`]);
   });
 
-  it("stops watching a refunded task, and one that has not settled a day after delivery", async () => {
-    const refunded = setup();
-    refunded.minter.track(7n);
-    refunded.settle("refunded");
+  it("logs why a task was refunded and any stake slashed, and stops watching one unsettled two days after delivery", async () => {
+    const refunded = setup({ network: TESTNET });
+    refunded.watch.track(7n);
+    refunded.settle({ paid: false, reason: 3, slashed: 0n });
     refunded.at(300);
-    await refunded.minter.round();
-    expect(logged(refunded.log)).toEqual(["task 7: refunded to its poster, so it gets no proof"]);
+    await refunded.watch.round();
+    expect(logged(refunded.log)).toEqual(["task 7: refunded to its poster: Jev did not accept the work"]);
     expect(refunded.store.state.proofs).toEqual({});
 
+    const slashed = setup({ network: TESTNET });
+    slashed.watch.track(46n);
+    slashed.settle({ paid: false, reason: 4, slashed: 100n * 10n ** 18n });
+    slashed.at(300);
+    await slashed.watch.round();
+    expect(logged(slashed.log)).toEqual(["task 46: refunded to its poster: Jev ruled for the poster; 100 tBRAIN of the worker's stake was slashed"]);
+
     const stuck = setup();
-    stuck.minter.track(7n);
+    stuck.watch.track(7n);
     stuck.at(86_400);
-    await stuck.minter.round();
-    expect(logged(stuck.log)).toEqual(["task 7: not settled a day after delivery, so the worker mints no proof for it"]);
+    await stuck.watch.round();
+    expect(stuck.log).not.toHaveBeenCalled();
+    stuck.at(2 * 86_400);
+    await stuck.watch.round();
+    expect(logged(stuck.log)).toEqual(["task 7: not settled two days after delivery, so the worker stops watching it"]);
     expect(stuck.fetcher).not.toHaveBeenCalled();
   });
 
-  it("watches and mints nothing under --no-mint", async () => {
-    const t = setup({ enabled: false });
-    t.minter.track(7n);
-    t.settle("paid");
-    t.at(3_600);
-    await t.minter.round();
-    expect(t.store.state.proofs).toBeUndefined();
-    expect(t.settled).not.toHaveBeenCalled();
+  it("still logs each outcome under --no-mint, and mints nothing", async () => {
+    const t = setup({ mints: false });
+    t.watch.track(7n);
+    t.watch.track(8n);
+    t.at(300);
+    t.settlement.mockImplementation(async (task) => (task === 7n ? PAID : { paid: false, reason: 1, slashed: 0n }));
+    await t.watch.round();
+    expect(logged(t.log)).toEqual(["task 7: paid 0.975 USDG", "task 8: refunded to its poster: the result was not delivered in time"]);
+    expect(t.store.state.proofs).toEqual({});
     expect(t.fetcher).not.toHaveBeenCalled();
     expect(t.sent).toEqual([]);
+  });
+
+  it("says when it cannot read whether a task settled, and reads again later", async () => {
+    const t = setup();
+    t.watch.track(7n);
+    t.at(300);
+    t.settlement.mockRejectedValueOnce(new Error("Could not reach rpc.example.com"));
+    await t.watch.round();
+    expect(logged(t.log)).toEqual(["task 7: could not read whether it settled (Could not reach rpc.example.com)"]);
+    t.at(600);
+    t.settle(PAID);
+    await t.watch.round();
+    expect(logged(t.log).at(-2)).toBe("task 7: paid 0.975 USDG");
   });
 });

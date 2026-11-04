@@ -6,7 +6,7 @@ export interface Network {
   name: string;
   chainId: number;
   rpc: string;
-  /** The BrainChain service, which keeps a worker's result private until Jev accepts it. */
+  /** The BrainChain service, which keeps a worker's results and publishes each once Jev accepts it, or grades it for a house task. */
   service: string;
   /** First block of the deployment, where event scans start. */
   fromBlock: bigint;
@@ -92,7 +92,10 @@ export const TESTNET: Network = {
     collection: "0x324B52EE2182641ec29652076ab541bc9F9907d2",
     weth: "0x1F852eF3Afa13156b807204d838BbB46B4b452eb",
     faucet: true,
-    gas: "Get Robinhood Chain testnet ETH for gas at https://faucet.testnet.chain.robinhood.com",
+    // The gas drip funds BrainChain testnet only, and this faucet asks for a browser check, so a person has to claim it.
+    gas:
+      "A person can get Robinhood Chain testnet ETH for gas at https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
+      "and send it to this address; BrainChain's gas drip sends ETH on BrainChain testnet only",
   },
   bridge: {
     chainId: 46630,

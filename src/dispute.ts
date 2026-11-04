@@ -1,18 +1,37 @@
-import { createPublicClient, createWalletClient, formatUnits, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { createPublicClient, createWalletClient, encodeFunctionData, formatUnits, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
-import { brainchainTransport, erc20Abi, RECEIPT_MS, Status } from "./chain.js";
+import { erc20Errors, transferErrors } from "./abi.js";
+import { appealAbi, brainchainTransport, erc20Abi, explainRevert, reason, RECEIPT_MS, Status } from "./chain.js";
 import { chainOf, type Network } from "./network.js";
+import { ethNeeded, shortOfGas } from "./standing.js";
 
 /** TaskBoard statuses from set 3.5.0 on: a ruling that waits out its appeal window, and one under appeal. */
 export const { Ruled, Appealed } = Status;
 
-const boardAbi = parseAbi([
-  "function get(uint256 id) view returns ((address poster, uint128 bounty, uint64 deadline, uint8 status, bool accepted, bool disputed, bool disputedByModel, bytes32 model, bytes32 briefHash, bytes32 resultHash, uint64 submittedAt, uint64 gradedAt, uint64 disputedAt, uint64 postedAt, address payee, address feeRecipient, uint16 feeBps, uint16 hireThresholdBps, uint16 gradeThresholdBps, uint16 ruleThresholdBps, uint64 gradeWindow, uint64 disputeWindow, uint64 ruleWindow))",
-  "function appealOf(uint256 id) view returns ((uint64 window, uint16 bondBps, uint64 ruledAt, bool pays, bool confident, address appellant, uint128 bond, uint64 appealedAt))",
-  "function appealBond(uint256 id) view returns (uint128)",
-  "function dispute(uint256 id)",
-  "function appeal(uint256 id)",
-]);
+const boardAbi = [
+  ...parseAbi([
+    "function get(uint256 id) view returns ((address poster, uint128 bounty, uint64 deadline, uint8 status, bool accepted, bool disputed, bool disputedByModel, bytes32 model, bytes32 briefHash, bytes32 resultHash, uint64 submittedAt, uint64 gradedAt, uint64 disputedAt, uint64 postedAt, address payee, address feeRecipient, uint16 feeBps, uint16 hireThresholdBps, uint16 gradeThresholdBps, uint16 ruleThresholdBps, uint64 gradeWindow, uint64 disputeWindow, uint64 ruleWindow))",
+    "function appealBond(uint256 id) view returns (uint128)",
+    "function dispute(uint256 id)",
+    "function appeal(uint256 id)",
+    "error BadStatus()",
+    "error TooLate()",
+    "error NotDisputant()",
+    "error NotAppellant()",
+    "error TransferMismatch()",
+  ]),
+  ...appealAbi,
+  ...erc20Errors,
+  ...transferErrors,
+] as const;
+
+/** The highest gas limit seen for the bond's approval. */
+const APPROVE_GAS = 50_000n;
+/**
+ * The appeal was estimated at 112,355 gas, yet the RPC refused it to a wallet
+ * that held 2.8 times that at the going price, so it is counted high.
+ */
+const APPEAL_GAS = 140_000n;
 
 export interface DisputeTask {
   status: number;
@@ -33,7 +52,12 @@ export interface DisputeChain {
   appealOf(id: bigint): Promise<{ window: bigint; ruledAt: bigint; pays: boolean }>;
   appealBond(id: bigint): Promise<bigint>;
   bountyBalance(): Promise<bigint>;
-  approveBounty(amount: bigint): Promise<void>;
+  ethBalance(): Promise<bigint>;
+  gasPrice(): Promise<bigint>;
+  /** What the board may already take of the wallet's bounty token. */
+  allowance(): Promise<bigint>;
+  /** Approves the board to take `amount`, unless it already may, and returns the approval's hash when one was sent. */
+  approveBounty(amount: bigint): Promise<Hex | undefined>;
   dispute(id: bigint): Promise<Hex>;
   appeal(id: bigint): Promise<Hex>;
 }
@@ -47,7 +71,9 @@ export function createDisputeChain(network: Network, account: PrivateKeyAccount)
   const token = { address: network.contracts.bountyToken, abi: erc20Abi } as const;
 
   async function send(functionName: "dispute" | "appeal", id: bigint): Promise<Hex> {
-    const hash = await wallet.writeContract({ ...board, functionName, args: [id] });
+    const hash = await wallet.writeContract({ ...board, functionName, args: [id] }).catch(async (error: unknown) => {
+      throw await explainRevert(error, () => client.call({ account: account.address, to: board.address, data: encodeFunctionData({ abi: boardAbi, functionName, args: [id] }) }));
+    });
     const receipt = await client.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
     if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted`);
     return hash;
@@ -64,12 +90,16 @@ export function createDisputeChain(network: Network, account: PrivateKeyAccount)
     appealOf: (id) => client.readContract({ ...board, functionName: "appealOf", args: [id] }),
     appealBond: (id) => client.readContract({ ...board, functionName: "appealBond", args: [id] }),
     bountyBalance: () => client.readContract({ ...token, functionName: "balanceOf", args: [account.address] }),
+    ethBalance: () => client.getBalance({ address: account.address }),
+    gasPrice: () => client.getGasPrice(),
+    allowance: () => client.readContract({ ...token, functionName: "allowance", args: [account.address, board.address] }),
     async approveBounty(amount) {
       const current = await client.readContract({ ...token, functionName: "allowance", args: [account.address, board.address] });
-      if (current >= amount) return;
+      if (current >= amount) return undefined;
       const hash = await wallet.writeContract({ ...token, functionName: "approve", args: [board.address, amount] });
       const receipt = await client.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
       if (receipt.status !== "success") throw new Error(`Approval ${hash} reverted`);
+      return hash;
     },
     dispute: (id) => send("dispute", id),
     appeal: (id) => send("appeal", id),
@@ -108,11 +138,20 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
   }
   const closes = terms.ruledAt + terms.window;
   if (now > closes) throw new Error(`The appeal window for task ${id} closed at ${at(closes)}.`);
-  const [bond, balance] = await Promise.all([chain.appealBond(id), chain.bountyBalance()]);
+  const [bond, balance, eth, gasPrice, allowance] = await Promise.all([chain.appealBond(id), chain.bountyBalance(), chain.ethBalance(), chain.gasPrice(), chain.allowance()]);
   const amount = `${formatUnits(bond, 6)} ${network.bountySymbol}`;
   if (balance < bond) throw new Error(`The appeal bond is ${amount}, and the worker holds ${formatUnits(balance, 6)}. Bridge more with \`npx brainchain-worker bridge --bounty <amount>\`.`);
-  await chain.approveBounty(bond);
-  const tx = await chain.appeal(id);
+  // Checked for both transactions before either is sent: an approval alone spends gas and leaves the bond approved.
+  const need = ethNeeded(allowance < bond ? [APPROVE_GAS, APPEAL_GAS] : [APPEAL_GAS], gasPrice);
+  if (eth < need) throw new Error(`${chain.account} holds ${shortOfGas(network, chain.account, eth, need, "the appeal")} Nothing was sent.`);
+  const approval = await chain.approveBounty(bond);
+  const tx = await chain.appeal(id).catch((error: unknown) => {
+    if (approval === undefined) throw error;
+    throw new Error(
+      `The board was approved to take the ${amount} bond (${approval}), and then the appeal failed: ${reason(error)}. ` +
+        `The approval stands, so running appeal again before ${at(closes)} sends only the appeal.`,
+    );
+  });
   log(`Appealed the ruling on task ${id} with a ${amount} bond: ${tx}`);
   log(`Jev rules again within ${task.ruleWindow / 3_600n} hours. The bond comes back unless Jev confidently rules the same way.`);
 }

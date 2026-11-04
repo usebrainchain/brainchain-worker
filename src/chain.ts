@@ -11,6 +11,7 @@ import {
   InsufficientFundsError,
   keccak256,
   parseAbi,
+  parseEventLogs,
   RpcRequestError,
   TimeoutError,
   toBytes,
@@ -20,7 +21,7 @@ import {
   type PrivateKeyAccount,
 } from "viem";
 
-import { erc20Errors, taskBoardAbi, workerStakingAbi } from "./abi.js";
+import { erc20Errors, taskBoardAbi, transferErrors, workerStakingAbi } from "./abi.js";
 import { chainOf, parentChainOf, type Network } from "./network.js";
 import { memoryStore, type Store } from "./state.js";
 
@@ -44,6 +45,7 @@ export const bondsAbi = [
     "function bond() view returns (uint128)",
   ]),
   ...erc20Errors,
+  ...transferErrors,
 ] as const;
 
 export const executorAbi = parseAbi([
@@ -52,10 +54,35 @@ export const executorAbi = parseAbi([
   "function timelock() view returns (uint64)",
 ]);
 
+/** The appeal terms of a task on set 3.5.0 and later; earlier boards have no appeals and no Ruled or Appealed status. */
+export const appealAbi = parseAbi([
+  "function appealOf(uint256 id) view returns ((uint64 window, uint16 bondBps, uint64 ruledAt, bool pays, bool confident, address appellant, uint128 bond, uint64 appealedAt))",
+]);
+
 /** Mirrors TaskBoard.Status. */
 export const Status = { Open: 1, Hired: 2, Submitted: 3, Graded: 4, Disputed: 5, Paid: 6, Refunded: 7, Ruled: 8, Appealed: 9 } as const;
 /** Mirrors ProposalBonds.State. */
 export const ApplicationState = { Open: 1, Returned: 2, Burned: 3 } as const;
+/** Why a task was refunded, by TaskBoard.RefundReason. */
+export const REFUND_REASONS = ["no worker was hired", "the result was not delivered in time", "Jev did not grade it in time", "Jev did not accept the work", "Jev ruled for the poster"];
+
+/** How a delivered task settled: paid, with what reached the wallet and when, or refunded, with why and any stake slashed. */
+export type Settlement = { paid: true; amount: bigint; at: bigint } | { paid: false; reason: number; slashed: bigint };
+
+/** A task of this worker's that has not settled, with the times that decide what happens next. */
+export interface Flight {
+  id: bigint;
+  status: number;
+  accepted: boolean;
+  disputedByModel: boolean;
+  deadline: bigint;
+  gradedAt: bigint;
+  disputedAt: bigint;
+  disputeWindow: bigint;
+  ruleWindow: bigint;
+  /** Read for a ruled or appealed task only. */
+  appeal?: { window: bigint; ruledAt: bigint; pays: boolean; appealedAt: bigint };
+}
 
 const LOG_RANGE = 50_000n;
 const MAX_BRIEF_BYTES = 256 * 1024;
@@ -80,7 +107,7 @@ export interface WorkerChain {
   /** Tasks hired to this worker that wait for its result. */
   hired(): Promise<HiredTask[]>;
   ethBalance(): Promise<bigint>;
-  /** Uploads a result to the service, which serves it once Jev accepts the work. */
+  /** Uploads a result to the service, which publishes it once Jev accepts the work, or grades it for a house task. */
   publish(id: bigint, text: string): Promise<{ uri: string; hash: Hex }>;
   /** Sends the submit, hands its hash to `sent` before waiting for the receipt, and returns the hash once it succeeds. */
   submit(id: bigint, resultHash: Hex, resultURI: string, sent: (tx: Hex) => void): Promise<Hex>;
@@ -207,22 +234,55 @@ function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutErr
   return `${host} answered ${status}${details ? ` (${details})` : ""}`;
 }
 
+const SHORT_OF_GAS = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
+
+
 /** Whether a send failed because the wallet cannot cover its gas: the RPC's gas estimate says so as a revert, and the send itself as insufficient funds. */
 function outOfGas(error: BaseError): boolean {
   return /gas required exceeds allowance/i.test(error.message) || error.walk((e) => e instanceof InsufficientFundsError) instanceof InsufficientFundsError;
 }
 
+/**
+ * A send that reverted, checked again as a call without the RPC's cap on gas.
+ * The RPC estimates a send with no more gas than the wallet pays for, and a
+ * token transfer inside it can run out and revert with FailedInnerCall; a call
+ * that passes uncapped failed only for want of gas.
+ */
+export async function explainRevert(error: unknown, uncapped: () => Promise<unknown>): Promise<unknown> {
+  if (!(error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError))) return error;
+  return (await uncapped().then(() => true, () => false)) ? new Error(SHORT_OF_GAS) : error;
+}
+
+/** The contract errors a worker's own sends can meet, in words. */
+const PLAIN: Record<string, string> = {
+  BadStatus: "the task is not at the step this needs",
+  TooLate: "its window has closed",
+  TooEarly: "its window has not closed yet",
+  NotWorker: "this wallet is not the worker hired for the task",
+  NotDisputant: "only the poster or the account that delivered can dispute the grade",
+  NotAppellant: "only the side the ruling went against can appeal it",
+  IsPaused: "the task board is paused",
+  TransferMismatch: "the token moved a different amount than the call asked for",
+  FailedInnerCall: "a token transfer inside the call failed without a reason",
+  SafeERC20FailedOperation: "a token transfer inside the call failed",
+  ERC20InsufficientAllowance: "the wallet has not approved enough of the token for the contract to take",
+  ERC20InsufficientBalance: "the wallet holds too little of the token",
+  Locked: "the stake is still locked",
+};
+
 /** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
 export function reason(error: unknown): string {
   if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error);
-  if (outOfGas(error)) return "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
+  if (outOfGas(error)) return SHORT_OF_GAS;
   // An RPC error with an HTTP status is a provider refusing the request, such as a bad key or a rate limit.
   const request = error.walk(
     (e) => e instanceof HttpRequestError || e instanceof TimeoutError || (e instanceof RpcRequestError && e.status !== undefined),
   );
   if (request instanceof HttpRequestError || request instanceof RpcRequestError || request instanceof TimeoutError) return requestFailure(request);
   const name = revertOf(error)?.errorName;
-  return name ? `${error.shortMessage} (${name})` : error.shortMessage;
+  if (name === undefined) return error.shortMessage;
+  const plain = Object.hasOwn(PLAIN, name) ? PLAIN[name] : undefined;
+  return plain ? `${error.shortMessage.replace(/\.$/, "")}: ${plain} (${name})` : `${error.shortMessage} (${name})`;
 }
 
 /** Why the BrainChain service failed its health check, or undefined when it passed. */
@@ -268,7 +328,9 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
   const origin = new URL(network.service).origin;
 
   async function send(request: Parameters<typeof wallet.writeContract>[0], sent?: (hash: Hex) => void): Promise<Hex> {
-    const hash = await wallet.writeContract(request);
+    const hash = await wallet.writeContract(request).catch(async (error: unknown) => {
+      throw await explainRevert(error, () => client.call({ account: account.address, to: request.address, data: encodeFunctionData(request as Parameters<typeof encodeFunctionData>[0]) }));
+    });
     sent?.(hash);
     const receipt = await client.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
     if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted`);
@@ -466,26 +528,58 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       );
       return { applications, change };
     },
-    /** How a task settled, or undefined while it has not. */
-    async settled(task: bigint): Promise<"paid" | "refunded" | undefined> {
+    /** How a task settled, read from the events of its settlement, or undefined while it has not. */
+    async settlement(task: bigint): Promise<Settlement | undefined> {
       const { status } = await client.readContract({ ...board, functionName: "get", args: [task] });
-      return status === Status.Paid ? "paid" : status === Status.Refunded ? "refunded" : undefined;
+      if (status !== Status.Paid && status !== Status.Refunded) return undefined;
+      const latest = await client.getBlockNumber();
+      if (status === Status.Paid) {
+        const [log] = await scan(
+          (fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "BountyPaid", args: { id: task }, fromBlock, toBlock }),
+          network.fromBlock,
+          latest,
+        );
+        if (log === undefined) throw new Error(`Task ${task} is paid, but no BountyPaid event for it was found`);
+        const { timestamp } = await client.getBlock({ blockNumber: log.blockNumber });
+        return { paid: true, amount: log.args.bounty! - log.args.fee!, at: timestamp };
+      }
+      const [log] = await scan(
+        (fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "BountyRefunded", args: { id: task }, fromBlock, toBlock }),
+        network.fromBlock,
+        latest,
+      );
+      if (log === undefined) throw new Error(`Task ${task} is refunded, but no BountyRefunded event for it was found`);
+      // A worker that loses a dispute it opened is slashed in the transaction that settles the task.
+      const { logs } = await client.getTransactionReceipt({ hash: log.transactionHash });
+      const slashed = parseEventLogs({ abi: workerStakingAbi, eventName: "Slashed", args: { account: account.address }, logs })
+        .filter((slash) => slash.address.toLowerCase() === staking.toLowerCase())
+        .reduce((sum, slash) => sum + slash.args.amount, 0n);
+      return { paid: false, reason: log.args.reason!, slashed };
     },
-    /** Tasks this worker was hired for, by outcome, and what it was paid after fees. */
+    /** Tasks this worker was hired for, by outcome, what it was paid after fees, and each task still in flight. */
     async record() {
       const latest = await client.getBlockNumber();
       const ids = [...new Set((await hiredLogs(network.fromBlock, latest)).map((log) => log.args.id!))];
-      const tasks = await Promise.all(ids.map((task) => client.readContract({ ...board, functionName: "get", args: [task] })));
+      const tasks = await Promise.all(ids.map(async (task) => ({ id: task, ...(await client.readContract({ ...board, functionName: "get", args: [task] })) })));
       const paid = await scan(
         (fromBlock, toBlock) => client.getContractEvents({ ...board, eventName: "BountyPaid", args: { account: account.address }, fromBlock, toBlock }),
         network.fromBlock,
         latest,
       );
-      const count = (statuses: number[]) => tasks.filter((t) => statuses.includes(t.status)).length;
+      const open: number[] = [Status.Hired, Status.Submitted, Status.Graded, Status.Disputed, Status.Ruled, Status.Appealed];
+      const inFlight: Flight[] = await Promise.all(
+        tasks
+          .filter((t) => open.includes(t.status))
+          .map(async ({ id: task, status, accepted, disputedByModel, deadline, gradedAt, disputedAt, disputeWindow, ruleWindow }) => {
+            const flight: Flight = { id: task, status, accepted, disputedByModel, deadline, gradedAt, disputedAt, disputeWindow, ruleWindow };
+            if (status !== Status.Ruled && status !== Status.Appealed) return flight;
+            return { ...flight, appeal: await client.readContract({ address: taskBoard, abi: appealAbi, functionName: "appealOf", args: [task] }) };
+          }),
+      );
       return {
-        accepted: count([Status.Paid]),
+        paid: tasks.filter((t) => t.status === Status.Paid).length,
         refunded: tasks.filter((t) => t.status === Status.Refunded && t.model.toLowerCase() === id).length,
-        inFlight: count([Status.Hired, Status.Submitted, Status.Graded, Status.Disputed, Status.Ruled, Status.Appealed]),
+        inFlight: inFlight.sort((a, b) => (a.id < b.id ? -1 : 1)),
         earned: paid.reduce((sum, log) => sum + log.args.bounty! - log.args.fee!, 0n),
       };
     },

@@ -39,9 +39,11 @@ describe("the worker skill's metadata", () => {
     for (const v of envVars) expect(v.description.length).toBeGreaterThan(0);
   });
 
-  it("declares every program the skill runs", () => {
+  it("declares every program the skill runs, and needs no curl, which node:22-slim lacks", () => {
     const { bins } = metadata().requires;
-    for (const program of ["sh", "npx", "openclaw", "docker", "curl"]) expect(bins).toContain(program);
+    for (const program of ["sh", "node", "npx", "openclaw", "docker"]) expect(bins).toContain(program);
+    expect(bins).not.toContain("curl");
+    expect(skill).not.toMatch(/^curl /m);
   });
 
   it("leaves the stake and bond to status, read from the contracts", () => {

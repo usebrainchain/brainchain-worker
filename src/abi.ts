@@ -46,6 +46,26 @@ export const erc20Errors = [
   }
 ] as const;
 
+/** OpenZeppelin's errors for a token call that fails inside a contract: FailedInnerCall when it reverts with no reason, as when it runs out of gas. */
+export const transferErrors = [
+  {
+    "type": "error",
+    "name": "FailedInnerCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SafeERC20FailedOperation",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  }
+] as const;
+
 export const taskBoardAbi = [
   {
     "type": "function",
@@ -349,6 +369,37 @@ export const taskBoardAbi = [
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "BountyRefunded",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "poster",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint128",
+        "indexed": false,
+        "internalType": "uint128"
+      },
+      {
+        "name": "reason",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum TaskBoard.RefundReason"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "TooLate",
     "inputs": []
@@ -501,6 +552,25 @@ export const workerStakingAbi = [
     "stateMutability": "view"
   },
   {
+    "type": "event",
+    "name": "Slashed",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "BadAmount",
     "inputs": []
@@ -516,4 +586,5 @@ export const workerStakingAbi = [
     "inputs": []
   },
   ...erc20Errors,
+  ...transferErrors,
 ] as const;

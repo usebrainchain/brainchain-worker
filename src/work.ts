@@ -21,11 +21,15 @@ const ANSI = /\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_
 
 export const stripAnsi = (text: string) => text.replace(ANSI, "");
 
+/** Characters that show nothing or turn the text around them, so text that holds them can read as other text. */
+export const HIDDEN = /[\u00ad\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
+
 /** Text from strangers, made safe to print as one terminal line. */
 export const printable = (text: string) =>
   stripAnsi(text)
     .replace(/[\t\n\r]+/g, " ")
-    .replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+    .replace(new RegExp(HIDDEN.source, "g"), "");
 
 export interface Brief {
   title: string;
@@ -378,6 +382,8 @@ export function createWork(options: {
   failed?: () => void;
   /** Called as each result is delivered. */
   delivered?: (task: bigint) => void;
+  /** Where the wallet gets ETH for gas, said when it has none. */
+  gasHelp?: string;
   fetchBrief?: typeof fetchBrief;
 }) {
   const { chain, command } = options;
@@ -395,7 +401,9 @@ export function createWork(options: {
     store.save();
   };
   const needGas = async () => {
-    if ((await chain.ethBalance()) === 0n) throw new Error("The wallet has no ETH to pay gas for the submit. Add some and the task is tried again");
+    if ((await chain.ethBalance()) === 0n) {
+      throw new Error(`The wallet has no ETH to pay gas for the submit${options.gasHelp ? `. ${options.gasHelp}` : ""}. The task is tried again`);
+    }
   };
   const inTime = async (task: HiredTask) => {
     if ((await chain.now()) >= task.deadline) throw new PermanentError("The deadline passed before the result could be submitted");

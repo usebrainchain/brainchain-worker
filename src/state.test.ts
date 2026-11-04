@@ -59,6 +59,8 @@ describe("fileStore", () => {
       state({ proofs: { abc: { deliveredAt: 1, nextAt: 2 } } }),
       state({ proofs: { "7": { deliveredAt: 1, nextAt: "2" } } }),
       state({ proofs: { "7": { deliveredAt: 1, nextAt: 2, paidAt: -1 } } }),
+      state({ proofs: { "7": { deliveredAt: 1, nextAt: 2, told: false } } }),
+      state({ proofs: { "7": { deliveredAt: 1, nextAt: 2, listed: "yes" } } }),
     ];
     for (const text of wrong) {
       const folder = dir();
@@ -87,7 +89,10 @@ describe("fileStore", () => {
       done: ["5"],
       hired: { block: 1_234, tasks: ["7"] },
       command: { pgid: 4_242, startedAt: 1_700_000_000_000 },
-      proofs: { "7": { deliveredAt: 1_700_000_000, paidAt: 1_700_003_600, nextAt: 1_700_007_200 }, "8": { deliveredAt: 1_700_000_100, nextAt: 1_700_000_400 } },
+      proofs: {
+        "7": { deliveredAt: 1_700_000_000, paidAt: 1_700_003_600, nextAt: 1_700_007_200, listed: true, waited: true, told: true },
+        "8": { deliveredAt: 1_700_000_100, nextAt: 1_700_000_400 },
+      },
     };
     writeFileSync(file, JSON.stringify(saved));
     const warn = vi.fn();
