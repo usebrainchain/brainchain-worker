@@ -24,6 +24,22 @@ export const stripAnsi = (text: string) => text.replace(ANSI, "");
 /** Characters that show nothing or turn the text around them, so text that holds them can read as other text. */
 export const HIDDEN = /[\u00ad\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/;
 
+/**
+ * What a worker's name and description may not hold: control, format and
+ * separator characters, and the default-ignorable code points Unicode files
+ * as letters or marks, which no property escape reaches, plus the blank
+ * braille pattern. Each shows nothing, breaks the line or turns the text
+ * around, so a name that holds one can read as another.
+ */
+const UNSEEN =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}͏ᅟᅠ឴឵᠋-᠏⁥⠀ㅤ︀-️ﾠ￰-￸\u{e0000}-\u{e0fff}]/u;
+
+/** The first character of `text` that UNSEEN refuses, as U+XXXX, or undefined when there is none. */
+export function unseen(text: string): string | undefined {
+  const found = UNSEEN.exec(text)?.[0];
+  return found === undefined ? undefined : `U+${found.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+}
+
 /** Text from strangers, made safe to print as one terminal line. */
 export const printable = (text: string) =>
   stripAnsi(text)

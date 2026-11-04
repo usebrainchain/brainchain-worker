@@ -226,12 +226,52 @@ describe("join", () => {
     const chain = fakeChain(10n ** 15n, 0n);
     const named = (name: string, about = "Summaries") =>
       join(chain as unknown as Chain, TESTNET, new Map([["name", name], ["about", about]]));
-    for (const name of ["Claude official \u202ecilbup\u202c", "\u200bJev\u200b", "Atlas\u2066", "Atlas\nJev", "A\u00adtlas"]) {
-      await expect(named(name)).rejects.toThrow(new UsageError("--name must be one line with no invisible or direction-changing characters"));
+    const hidden = {
+      "Claude official \u202ecilbup\u202c": "U+202E",
+      "\u200bJev\u200b": "U+200B",
+      "Atlas\u2066": "U+2066",
+      "Atlas\nJev": "U+000A",
+      "A\u00adtlas": "U+00AD",
+      "Jev\u200d": "U+200D",
+      "Jev\u200c": "U+200C",
+      "Atlas\u2028Jev": "U+2028",
+      "Atlas\u2029Jev": "U+2029",
+      "\u3164": "U+3164",
+      "\u2800": "U+2800",
+      "Jev\u{e0041}": "U+E0041",
+      "Je\u034fv": "U+034F",
+      "Jev\ufe0f": "U+FE0F",
+      "\u115f\u1160": "U+115F",
+      "Jev\uffa0": "U+FFA0",
+      "Jev\u180b": "U+180B",
+      "Jev\ufff9": "U+FFF9",
+      "Jev\x1b[0m": "U+001B",
+    };
+    for (const [name, code] of Object.entries(hidden)) {
+      await expect(named(name)).rejects.toThrow(new UsageError(`--name must be one line with no invisible or direction-changing characters, and it holds ${code}`));
     }
-    await expect(named("Atlas", "Summaries \u2067and more")).rejects.toThrow(new UsageError("--about must have no invisible or direction-changing characters"));
+    await expect(named("Atlas", "Summaries \u2067and more")).rejects.toThrow(
+      new UsageError("--about must have no invisible or direction-changing characters, and it holds U+2067"),
+    );
+    await expect(named("Atlas", "Official grader\u200d. Summaries")).rejects.toThrow(
+      new UsageError("--about must have no invisible or direction-changing characters, and it holds U+200D"),
+    );
+    await expect(named("Atlas", "Summaries\r and more")).rejects.toThrow(
+      new UsageError("--about must have no invisible or direction-changing characters, and it holds U+000D"),
+    );
     expect(chain.allowed).not.toHaveBeenCalled();
     for (const send of [chain.claimStakeToken, chain.approve, chain.stakeTokens, chain.setPrice, chain.apply]) expect(send).not.toHaveBeenCalled();
+  });
+
+  it("takes a description over several lines, and names in any script", async () => {
+    const chain = fakeChain(88_000_000_000_000n, 0n);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, TESTNET, new Map([["name", "Atlas 東京 Ünïcode 🤖"], ["about", "Summaries\nand code review,\twith tests"]]));
+    } finally {
+      log.mockRestore();
+    }
+    expect(chain.apply).toHaveBeenCalledOnce();
   });
 
   it("needs no gas when there is nothing to send", async () => {

@@ -17,7 +17,7 @@ import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from ".
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, requireWatcher, type Verify } from "./watch.js";
-import { createWork, firstProgram, HIDDEN, npxUnderSupervisor, programFound, shellCommand, stopLeftover, stopper, watchStarter } from "./work.js";
+import { createWork, firstProgram, npxUnderSupervisor, programFound, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
 
 /** How many of the latest decisions a first watch --once checks. */
 const FIRST_RUN_DECISIONS = 10n;
@@ -238,12 +238,15 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   if (!name) throw new UsageError("--name is required, up to 60 characters");
   if (name.length > 60) throw new UsageError("--name is at most 60 characters");
   // A name that hides characters or turns text around can read as another, Jev's included.
-  if (HIDDEN.test(name) || /[\x00-\x1f\x7f-\x9f]/.test(name)) throw new UsageError("--name must be one line with no invisible or direction-changing characters");
+  const nameHides = unseen(name);
+  if (nameHides) throw new UsageError(`--name must be one line with no invisible or direction-changing characters, and it holds ${nameHides}`);
   if (!about) {
     throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it to decide and refuses an empty application");
   }
   if (about.length > 500) throw new UsageError("--about is at most 500 characters");
-  if (HIDDEN.test(about)) throw new UsageError("--about must have no invisible or direction-changing characters");
+  // A description may run over several lines.
+  const aboutHides = unseen(about.replace(/[\t\n]/g, " "));
+  if (aboutHides) throw new UsageError(`--about must have no invisible or direction-changing characters, and it holds ${aboutHides}`);
   const agentId = values.get("agent-id");
   if (agentId !== undefined && !/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, a whole number");
   if (agentId !== undefined && !network.identity) {
