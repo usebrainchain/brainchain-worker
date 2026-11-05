@@ -1,7 +1,7 @@
 import { decodeAbiParameters, decodeFunctionData, parseUnits, type Address, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, proofIndexAbi, Ruling, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts } from "./bond.js";
+import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, proofIndexAbi, Ruling, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts, type BondTerms } from "./bond.js";
 import { Status } from "./chain.js";
 import { MAINNET, TESTNET } from "./network.js";
 
@@ -25,7 +25,7 @@ function fakeChain(options: { task?: TaskFacts; bonds?: BondView[]; usdg?: bigin
     gasPrice: vi.fn(async () => 20_000_000n),
     allowance: vi.fn(async () => options.allowance ?? 0n),
     approve: vi.fn(async () => TX),
-    create: vi.fn(async () => ({ deed: 7n, tx: TX })),
+    create: vi.fn(async (_terms: BondTerms, _amount: bigint) => ({ deed: 7n, tx: TX })),
     bondsOn: vi.fn(async () => options.bonds ?? []),
     proofOf: vi.fn(async () => options.proof ?? 0n),
     owed: vi.fn(async () => options.owed ?? 0n),
