@@ -9,8 +9,10 @@ export const SOLANA_CHAIN_ID = 792703809;
 /** USDC on Solana. */
 export const SOLANA_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const NATIVE = "0x0000000000000000000000000000000000000000";
-/** The least a quote may return, as a share of what goes in, in dollars. */
-export const MIN_RETURN = 0.97;
+/** The most a move may cost, as a share of its dollar value; small moves may cost up to FIXED_LOSS_USD instead. */
+export const MAX_LOSS = 0.03;
+/** Relay's fee is partly fixed (about 0.2 USD), so a small move is allowed to lose up to this much in dollars. */
+export const FIXED_LOSS_USD = 0.5;
 
 export interface EvmItem {
   to: Address;
@@ -68,12 +70,13 @@ export async function relayQuote(request: QuoteRequest, fetchImpl: typeof fetch 
   };
 }
 
-/** Refuses a quote that returns less than MIN_RETURN of its input in dollars. */
+/** Refuses a quote that loses more than MAX_LOSS of its dollar value, or FIXED_LOSS_USD on a small move. */
 export function checkReturn(quote: Pick<RelayQuote, "inUsd" | "outUsd">): void {
   if (!(quote.inUsd > 0)) throw new RelayError("Relay's quote has no dollar value for what goes in, so its price cannot be checked");
-  const share = quote.outUsd / quote.inUsd;
-  if (share < MIN_RETURN) {
-    throw new RelayError(`Relay would return ${(share * 100).toFixed(1)}% of the value, under the ${MIN_RETURN * 100}% this command accepts. Try a larger amount or later.`);
+  const loss = quote.inUsd - quote.outUsd;
+  const allowed = Math.max(quote.inUsd * MAX_LOSS, FIXED_LOSS_USD);
+  if (loss > allowed) {
+    throw new RelayError(`Relay would keep ${loss.toFixed(2)} USD of ${quote.inUsd.toFixed(2)}, more than the ${allowed.toFixed(2)} this command accepts (3%, or 0.50 USD on a small move). Nothing was sent; try again later.`);
   }
 }
 

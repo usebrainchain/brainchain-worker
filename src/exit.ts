@@ -137,6 +137,17 @@ export async function exit(
       throw new Error(`Moving it on to Solana needs about 0.00002 ETH on ${network.bridge?.name ?? "the parent chain"} for gas; the wallet holds ${formatUnits(eth, 18)}. \`fund --from-solana\` brings some.`);
     }
   }
+  const solanaQuote = (net: bigint) =>
+    (options.quote ?? relayQuote)(
+      { user: chain.account, recipient: options.toSolana!, originChainId: terms.payoutChainId, destinationChainId: SOLANA_CHAIN_ID, originCurrency: terms.payoutToken, destinationCurrency: SOLANA_USDC, amount: net },
+      fetchImpl,
+    );
+  // Priced before anything leaves BrainChain, so a refused Solana leg never strands the exit halfway.
+  if (options.toSolana !== undefined) {
+    const preview = await solanaQuote(net);
+    checkReturn(preview);
+    log(`Relay quotes ${preview.outFormatted} USDC on Solana for it.`);
+  }
   if (dry) {
     log("Dry run, nothing sent.");
     return;
@@ -166,18 +177,7 @@ export async function exit(
   log(`Paid on the parent chain: ${show(BigInt(record.net))} (${record.payoutTx}).`);
   if (options.toSolana === undefined) return;
 
-  const quote = await (options.quote ?? relayQuote)(
-    {
-      user: chain.account,
-      recipient: options.toSolana,
-      originChainId: terms.payoutChainId,
-      destinationChainId: SOLANA_CHAIN_ID,
-      originCurrency: terms.payoutToken,
-      destinationCurrency: SOLANA_USDC,
-      amount: BigInt(record.net),
-    },
-    fetchImpl,
-  );
+  const quote = await solanaQuote(BigInt(record.net));
   checkReturn(quote);
   await sendEvmSteps(quote, chain);
   log(`Moving ${show(BigInt(record.net))} to Solana: ${quote.outFormatted} USDC to ${options.toSolana}.`);

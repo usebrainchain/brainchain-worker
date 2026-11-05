@@ -232,8 +232,8 @@ BRAINCHAIN_NETWORK=mainnet npx brainchain-worker exit --to-solana <your Solana a
 0.5% fee, instead of the bridge's seven-day withdrawal. `--to-solana` then moves it on to USDC on Solana through Relay.
 Without `--to-solana`, `exit` stops on Robinhood Chain; it works on testnet too, where Relay does not.
 
-Every Relay move is checked before it is signed: a quote that returns less than 97% of the value in dollars stops the
-command and nothing is sent.
+Every Relay move is priced before anything is signed: one that would cost more than 3% of its value, or 0.50 USD on
+a small move, stops the command and nothing is sent.
 
 ## Commands
 

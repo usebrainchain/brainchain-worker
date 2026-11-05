@@ -89,9 +89,11 @@ describe("pieces", () => {
     expect(isSolanaAddress(SOLANA)).toBe(true);
     expect(isSolanaAddress("0x0000000000000000000000000000000000000077")).toBe(false);
   });
-  it("refuses a Relay quote under 97% of its value", () => {
-    expect(() => checkReturn({ inUsd: 10, outUsd: 9.6 })).toThrow(/96\.0%/);
-    expect(() => checkReturn({ inUsd: 10, outUsd: 9.8 })).not.toThrow();
+  it("refuses a Relay quote that loses more than 3%, or 0.50 USD on a small move", () => {
+    expect(() => checkReturn({ inUsd: 100, outUsd: 95 })).toThrow(/keep 5\.00 USD of 100\.00, more than the 3\.00/);
+    expect(() => checkReturn({ inUsd: 100, outUsd: 97.5 })).not.toThrow();
+    expect(() => checkReturn({ inUsd: 3, outUsd: 2.87 })).not.toThrow();
+    expect(() => checkReturn({ inUsd: 3, outUsd: 2.4 })).toThrow(/0\.50/);
   });
   it("splits Solana USDC between gas and stake", () => {
     expect(split(10_000_000n, 2_000_000n, true)).toEqual({ gas: 2_000_000n, stake: 8_000_000n });

@@ -14,8 +14,8 @@ import { checkReturn, NATIVE, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, waitForR
 export const SOLANA_RPC = "https://api.mainnet-beta.solana.com";
 /** USDC turned into ETH for gas, unless --gas-usdc says otherwise. */
 export const DEFAULT_GAS_USDC = "2";
-/** ETH left on Robinhood Chain when the rest goes to BrainChain: enough for a few transactions there. */
-export const PARENT_ETH_KEEP = 150_000_000_000_000n;
+/** ETH left on Robinhood Chain when the rest goes to BrainChain: enough for a token deposit and a few transactions there. */
+export const PARENT_ETH_KEEP = 300_000_000_000_000n;
 
 /** The Solana key from BRAINCHAIN_SOLANA_KEY (base58) or BRAINCHAIN_SOLANA_KEY_FILE (a Solana CLI keypair file). */
 export function solanaKeypair(env: NodeJS.ProcessEnv = process.env): Keypair {
@@ -63,6 +63,8 @@ export async function sendSvmStep(connection: Connection, keypair: Keypair, item
 }
 
 export interface SolanaFunding {
+  /** Quotes the move and checks its price without sending anything. */
+  preview(currency: string, amount: bigint, recipient: Address): Promise<RelayQuote>;
   /** Moves `amount` USDC on Solana to `currency` on the parent chain for `recipient`, and waits for it to land. */
   move(currency: string, amount: bigint, recipient: Address): Promise<{ quote: RelayQuote; signature: string }>;
   usdcBalance(): Promise<bigint>;
@@ -82,9 +84,13 @@ export function createSolanaFunding(keypair: Keypair, parentChainId: number, rpc
     async solBalance() {
       return BigInt(await connection.getBalance(keypair.publicKey));
     },
-    async move(currency, amount, recipient) {
+    async preview(currency, amount, recipient) {
       const quote = await relayQuote({ user: owner, recipient, originChainId: SOLANA_CHAIN_ID, destinationChainId: parentChainId, originCurrency: SOLANA_USDC, destinationCurrency: currency, amount });
       checkReturn(quote);
+      return quote;
+    },
+    async move(currency, amount, recipient) {
+      const quote = await this.preview(currency, amount, recipient);
       let signature = "";
       for (const step of quote.steps) for (const item of step.items) signature = await sendSvmStep(connection, keypair, item.data as SvmItem);
       const status = await waitForRelay(quote.requestId);
@@ -120,6 +126,10 @@ export async function fundFromSolana(
   if (held < usdc) throw new Error(`The Solana wallet ${funding.owner} holds ${formatUnits(held, 6)} USDC, less than ${options.usdc}`);
   if (lamports < MIN_LAMPORTS) throw new Error(`The Solana wallet ${funding.owner} needs about 0.002 SOL for Solana's fees; it holds ${formatUnits(lamports, 9)}`);
   log(`From ${funding.owner} on Solana: ${formatUnits(parts.gas, 6)} USDC to ETH for gas${parts.stake ? ` and ${formatUnits(parts.stake, 6)} USDC to the stake token` : ""}, for ${options.worker}.`);
+  // Both legs are priced before either moves, so a refused stake leg never leaves the gas leg spent alone.
+  const gasQuote = await funding.preview(NATIVE, parts.gas, options.worker);
+  const stakeQuote = parts.stake ? await funding.preview(options.stakeToken!, parts.stake, options.worker) : undefined;
+  log(`Relay quotes ${gasQuote.outFormatted} ETH${stakeQuote ? ` and ${stakeQuote.outFormatted} of the stake token` : ""}.`);
   if (options.dry) {
     log("Dry run, nothing sent.");
     return;
@@ -130,7 +140,8 @@ export async function fundFromSolana(
     const stake = await funding.move(options.stakeToken!, parts.stake, options.worker);
     log(`Stake token arrived on the parent chain: ${stake.quote.outFormatted} (Solana ${stake.signature}).`);
   }
-  await options.bridgeOn("eth");
+  // The stake goes first: its deposit pays for its arrival in ETH on the parent chain, which the ETH bridge would take.
   if (parts.stake) await options.bridgeOn("stake");
+  await options.bridgeOn("eth");
   log("Done. `brainchain-worker status` shows the balances on BrainChain once the deposits arrive, in about a minute.");
 }
