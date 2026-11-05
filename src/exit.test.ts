@@ -1,9 +1,11 @@
 import type { Address, Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { exit, exitFee, isSolanaAddress, RELAY_GAS_WEI, type ExitChain, type ExitTerms } from "./exit.js";
+import { decodeFunctionData, erc20Abi } from "viem";
+
+import { exit, exitCalldata, exitFee, isSolanaAddress, type ExitChain, type ExitTerms } from "./exit.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { checkReturn, type RelayQuote } from "./relay.js";
+import { checkReturn } from "./relay.js";
 import { split } from "./solana.js";
 
 const DESK = "0x00000000000000000000000000000000000000d0" as Address;
@@ -21,17 +23,15 @@ function fetchWith(records: unknown[]) {
   }) as unknown as typeof fetch;
 }
 
-function chainWith(balance: bigint, parentEth = 10n ** 16n) {
-  const sent: { to: Address; amount: bigint }[] = [];
+function chainWith(balance: bigint) {
+  const sent: { to: Address; amount: bigint; solana?: string }[] = [];
   const chain: ExitChain = {
     account: "0x0000000000000000000000000000000000000077",
     bountyBalance: vi.fn(async () => balance),
-    sendToDesk: vi.fn(async (_token, to, amount) => {
-      sent.push({ to, amount });
+    sendToDesk: vi.fn(async (_token, to, amount, solana) => {
+      sent.push({ to, amount, ...(solana ? { solana } : {}) });
       return TX;
     }),
-    parentEth: vi.fn(async () => parentEth),
-    sendParent: vi.fn(async () => TX),
   };
   return { chain, sent };
 }
@@ -57,26 +57,18 @@ describe("exit", () => {
     expect(sent).toHaveLength(0);
   });
 
-  it("keeps --to-solana to mainnet and checks the address and gas first", async () => {
+  it("keeps --to-solana to mainnet and to real Solana addresses", async () => {
     const { chain } = chainWith(5_000_000n);
     await expect(exit(TESTNET, chain, { toSolana: SOLANA, dry: true, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow(/mainnet only/);
     await expect(exit(MAINNET, chain, { toSolana: "not-an-address", dry: true, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow(/not a Solana address/);
-    const broke = chainWith(5_000_000n, RELAY_GAS_WEI - 1n);
-    await expect(exit(MAINNET, broke.chain, { toSolana: SOLANA, dry: true, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow(/ETH on Robinhood Chain/);
   });
 
-  it("moves a paid exit on to Solana through Relay's steps", async () => {
-    const { chain } = chainWith(5_000_000n);
-    const quote: RelayQuote = { requestId: "0xrequest", steps: [{ id: "approve", items: [{ data: { to: DESK, data: "0x01", value: "0", chainId: 4663 } }] }, { id: "deposit", items: [{ data: { to: DESK, data: "0x02", value: "0", chainId: 4663 } }] }], inUsd: 4.97, outUsd: 4.95, outAmount: 4_950_000n, outFormatted: "4.95" };
-    const fetchImpl = vi.fn(async (url: string) => {
-      if (url.endsWith("/exits")) return new Response(JSON.stringify(terms));
-      if (url.includes("/intents/status")) return new Response(JSON.stringify({ status: "success" }));
-      return new Response(JSON.stringify({ exits: [{ state: "paid", net: "4975000", fee: "25000", payoutTx: TX }] }));
-    }) as unknown as typeof fetch;
+  it("names the Solana address in the transfer and reports the desk's payout there", async () => {
+    const { chain, sent } = chainWith(5_000_000n);
     const { lines, log } = quiet();
-    await exit(MAINNET, chain, { toSolana: SOLANA, dry: false, log, fetchImpl, quote: vi.fn(async () => quote), sleep: async () => {} });
-    expect(chain.sendParent).toHaveBeenCalledTimes(2);
-    expect(lines.at(-1)).toMatch(/Arrived on Solana/);
+    await exit(MAINNET, chain, { toSolana: SOLANA, dry: false, log, fetchImpl: fetchWith([{ state: "paid", net: "4975000", fee: "25000", payoutTx: TX, solana: SOLANA, relayRequest: "0xreq" }]), sleep: async () => {} });
+    expect(sent).toEqual([{ to: DESK, amount: 5_000_000n, solana: SOLANA }]);
+    expect(lines.at(-1)).toMatch(/Paid on Solana: 4\.975 USDG as USDC to 7xKX/);
   });
 });
 
@@ -84,6 +76,13 @@ describe("pieces", () => {
   it("prices an exit like the desk", () => {
     expect(exitFee(10_000_000n, terms)).toBe(50_000n);
     expect(exitFee(1_000_000n, terms)).toBe(10_000n);
+  });
+  it("puts the Solana address after a plain transfer's arguments", () => {
+    const plain = exitCalldata(DESK, 5n);
+    expect(decodeFunctionData({ abi: erc20Abi, data: plain }).args).toEqual([DESK, 5n]);
+    const named = exitCalldata(DESK, 5n, SOLANA);
+    expect(named.startsWith(plain)).toBe(true);
+    expect((named.length - plain.length) / 2).toBe(32);
   });
   it("knows a Solana address", () => {
     expect(isSolanaAddress(SOLANA)).toBe(true);

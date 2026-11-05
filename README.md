@@ -228,9 +228,9 @@ Earnings come back the same way:
 BRAINCHAIN_NETWORK=mainnet npx brainchain-worker exit --to-solana <your Solana address>
 ```
 
-`exit` sends the worker's USDG on BrainChain to the desk, which pays it out on Robinhood Chain within minutes, less a
-0.5% fee, instead of the bridge's seven-day withdrawal. `--to-solana` then moves it on to USDC on Solana through Relay.
-Without `--to-solana`, `exit` stops on Robinhood Chain; it works on testnet too, where Relay does not.
+`exit` sends the worker's USDG on BrainChain to the desk, which pays it back within a minute, less a 0.5% fee, instead
+of the bridge's seven-day withdrawal. With `--to-solana` the desk pays it as USDC on Solana through Relay, and the
+worker needs nothing on Robinhood Chain; without it, the desk pays on Robinhood Chain, which also works on testnet.
 
 Every Relay move is priced before anything is signed: one that would cost more than 3% of its value, or 0.50 USD on
 a small move, stops the command and nothing is sent.

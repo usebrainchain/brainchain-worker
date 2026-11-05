@@ -1,12 +1,12 @@
-// `exit`: the worker's USDG on BrainChain back on Robinhood Chain within minutes instead of the bridge's seven days.
-// The desk pays it out on Robinhood Chain and keeps a small fee; `--to-solana` then moves it on to USDC on Solana
-// through Relay from the worker's own wallet there.
+// `exit`: the worker's USDG on BrainChain paid back within a minute instead of the bridge's seven days. The desk pays
+// it on Robinhood Chain, or, with `--to-solana`, as USDC on Solana through Relay: the transfer to the desk carries the
+// Solana address after its arguments, so nothing else is signed and nothing is needed on Robinhood Chain.
 
-import { createPublicClient, createWalletClient, erc20Abi, formatUnits, http, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import bs58 from "bs58";
+import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, formatUnits, http, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { RECEIPT_MS } from "./chain.js";
 import { chainOf, parentChainOf, type Network } from "./network.js";
-import { checkReturn, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, waitForRelay, type EvmItem, type RelayQuote } from "./relay.js";
 
 export interface ExitTerms {
   desk: Address;
@@ -26,11 +26,24 @@ export interface ExitRecord {
   payoutTx?: Hex;
   returnTx?: Hex;
   reason?: string;
+  solana?: string;
+  relayRequest?: string;
 }
 
-/** A Solana address: 32 to 44 base58 characters. */
+/** A Solana address: 32 bytes in base58. */
 export function isSolanaAddress(value: string): boolean {
-  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)) return false;
+  try {
+    return bs58.decode(value).length === 32;
+  } catch {
+    return false;
+  }
+}
+
+/** A transfer to the desk with the Solana address after its arguments, which the desk reads to pay there. */
+export function exitCalldata(desk: Address, amount: bigint, solana?: string): Hex {
+  const transfer = encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [desk, amount] });
+  return solana ? `${transfer}${Buffer.from(bs58.decode(solana)).toString("hex")}` : transfer;
 }
 
 export function exitFee(amount: bigint, terms: Pick<ExitTerms, "feeBps" | "minFeeUnits">): bigint {
@@ -58,41 +71,24 @@ export async function exitRecord(service: string, tx: Hex, fetchImpl: typeof fet
 export interface ExitChain {
   account: Address;
   bountyBalance(token: Address): Promise<bigint>;
-  /** Sends the bounty token to the desk on BrainChain and waits for it to be mined. */
-  sendToDesk(token: Address, desk: Address, amount: bigint): Promise<Hex>;
-  parentEth(): Promise<bigint>;
-  /** Sends one of Relay's transactions on the payout chain and waits for it. */
-  sendParent(item: EvmItem): Promise<Hex>;
+  /** Sends the bounty token to the desk on BrainChain, naming a Solana address when given, and waits for it to be mined. */
+  sendToDesk(token: Address, desk: Address, amount: bigint, solana?: string): Promise<Hex>;
 }
 
 export function createExitChain(network: Network, account: PrivateKeyAccount): ExitChain {
-  const bridge = network.bridge;
-  const l3 = { read: createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }) }) };
-  const l3Wallet = createWalletClient({ account, chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }) });
-  const parent = bridge ? createPublicClient({ chain: parentChainOf(bridge), transport: http(bridge.rpc, { timeout: 20_000 }) }) : undefined;
-  const parentWallet = bridge ? createWalletClient({ account, chain: parentChainOf(bridge), transport: http(bridge.rpc, { timeout: 20_000 }) }) : undefined;
+  const read = createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }) });
+  const wallet = createWalletClient({ account, chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }) });
   return {
     account: account.address,
-    bountyBalance: (token) => l3.read.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
-    async sendToDesk(token, desk, amount) {
-      const hash = await l3Wallet.writeContract({ address: token, abi: erc20Abi, functionName: "transfer", args: [desk, amount] });
-      const receipt = await l3.read.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
+    bountyBalance: (token) => read.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
+    async sendToDesk(token, desk, amount, solana) {
+      const hash = await wallet.sendTransaction({ to: token, data: exitCalldata(desk, amount, solana) });
+      const receipt = await read.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
       if (receipt.status !== "success") throw new Error(`the transfer to the desk reverted (${hash})`);
-      return hash;
-    },
-    parentEth: () => (parent ? parent.getBalance({ address: account.address }) : Promise.resolve(0n)),
-    async sendParent(item) {
-      if (!parent || !parentWallet) throw new Error(`${network.name} has no parent chain`);
-      const hash = await parentWallet.sendTransaction({ to: item.to, data: item.data, value: BigInt(item.value ?? "0") });
-      const receipt = await parent.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
-      if (receipt.status !== "success") throw new Error(`Relay's transaction ${hash} reverted`);
       return hash;
     },
   };
 }
-
-/** Gas the two Relay transactions on Robinhood Chain need, with room to spare. */
-export const RELAY_GAS_WEI = 20_000_000_000_000n;
 
 export async function exit(
   network: Network,
@@ -105,7 +101,6 @@ export async function exit(
     fetchImpl?: typeof fetch;
     pollMs?: number;
     waitMs?: number;
-    quote?: typeof relayQuote;
     sleep?: (ms: number) => Promise<void>;
   },
 ): Promise<void> {
@@ -131,30 +126,14 @@ export async function exit(
   const net = amount - fee;
   log(`Exit ${show(amount)} from ${network.name}: ${show(net)} arrives on the parent chain (chain ${terms.payoutChainId}) after a ${show(fee)} fee.`);
 
-  if (options.toSolana !== undefined) {
-    const eth = await chain.parentEth();
-    if (eth < RELAY_GAS_WEI) {
-      throw new Error(`Moving it on to Solana needs about 0.00002 ETH on ${network.bridge?.name ?? "the parent chain"} for gas; the wallet holds ${formatUnits(eth, 18)}. \`fund --from-solana\` brings some.`);
-    }
-  }
-  const solanaQuote = (net: bigint) =>
-    (options.quote ?? relayQuote)(
-      { user: chain.account, recipient: options.toSolana!, originChainId: terms.payoutChainId, destinationChainId: SOLANA_CHAIN_ID, originCurrency: terms.payoutToken, destinationCurrency: SOLANA_USDC, amount: net },
-      fetchImpl,
-    );
-  // Priced before anything leaves BrainChain, so a refused Solana leg never strands the exit halfway.
-  if (options.toSolana !== undefined) {
-    const preview = await solanaQuote(net);
-    checkReturn(preview);
-    log(`Relay quotes ${preview.outFormatted} USDC on Solana for it.`);
-  }
+  if (options.toSolana !== undefined) log(`Paid as USDC on Solana to ${options.toSolana}, less Relay's own fee, unless the move would cost more than 3% (or 0.50 USD); then it is paid on the parent chain.`);
   if (dry) {
     log("Dry run, nothing sent.");
     return;
   }
 
-  const tx = await chain.sendToDesk(terms.token, terms.desk, amount);
-  log(`Sent to the desk on ${network.name} (${tx}). Waiting for the payout; the desk picks it up within a round, usually a few minutes.`);
+  const tx = await chain.sendToDesk(terms.token, terms.desk, amount, options.toSolana);
+  log(`Sent to the desk on ${network.name} (${tx}). Waiting for the payout, usually under a minute.`);
   const end = Date.now() + (options.waitMs ?? 1_800_000);
   let last = "";
   let record: ExitRecord | undefined;
@@ -174,23 +153,9 @@ export async function exit(
     process.exitCode = 1;
     return;
   }
-  log(`Paid on the parent chain: ${show(BigInt(record.net))} (${record.payoutTx}).`);
-  if (options.toSolana === undefined) return;
-
-  const quote = await solanaQuote(BigInt(record.net));
-  checkReturn(quote);
-  await sendEvmSteps(quote, chain);
-  log(`Moving ${show(BigInt(record.net))} to Solana: ${quote.outFormatted} USDC to ${options.toSolana}.`);
-  const status = await waitForRelay(quote.requestId, 600_000, fetchImpl);
-  if (status === "success") log(`Arrived on Solana. Relay request ${quote.requestId}.`);
-  else {
-    log(`Relay reports "${status}" for request ${quote.requestId}. A refund comes back to the wallet on the parent chain.`);
-    process.exitCode = 1;
+  if (record.solana && record.relayRequest) {
+    log(`Paid on Solana: ${show(BigInt(record.net))} as USDC to ${record.solana} (Relay request ${record.relayRequest}).`);
+    return;
   }
-}
-
-async function sendEvmSteps(quote: RelayQuote, chain: Pick<ExitChain, "sendParent">): Promise<void> {
-  for (const step of quote.steps) {
-    for (const item of step.items) await chain.sendParent(item.data as EvmItem);
-  }
+  log(`Paid on the parent chain: ${show(BigInt(record.net))} (${record.payoutTx})${record.reason ? `. ${record.reason}` : ""}.`);
 }

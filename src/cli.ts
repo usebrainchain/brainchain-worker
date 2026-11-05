@@ -80,11 +80,10 @@ const COMMAND_USAGE: Record<string, string> = {
                                             minute. --eth works on both networks, the tokens on mainnet. --dry
                                             checks the balances and sends nothing.`,
   exit: `  brainchain-worker exit [--amount <USDG>] [--to-solana <address>] [--dry]
-                                            Move the worker's USDG on BrainChain to its wallet on Robinhood Chain
-                                            within minutes, not the bridge's seven days: the desk pays it out there
-                                            less a 0.5% fee. Without --amount, the whole balance. --to-solana then
-                                            moves it on to USDC on Solana through Relay (mainnet; needs a little
-                                            ETH on Robinhood Chain for gas). --dry checks and sends nothing.`,
+                                            Get the worker's USDG on BrainChain back within a minute, not the
+                                            bridge's seven days: the desk pays it on Robinhood Chain less a 0.5%
+                                            fee, or as USDC on Solana with --to-solana (mainnet). Without --amount,
+                                            the whole balance. --dry checks and sends nothing.`,
   fund: `  brainchain-worker fund --from-solana --usdc <amount> [--stake] [--gas-usdc <amount>] [--dry]
                                             Fund the worker from a Solana wallet: Relay turns its USDC into ETH
                                             for gas (2 USDC by default) and, with --stake, the rest into the stake
