@@ -1,7 +1,7 @@
 import { decodeAbiParameters, decodeFunctionData, parseUnits, type Address, type Hex } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, proofIndexAbi, Ruling, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts, type BondTerms } from "./bond.js";
+import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, deedPage, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, proofIndexAbi, Ruling, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts, type BondTerms } from "./bond.js";
 import { Status } from "./chain.js";
 import { MAINNET, TESTNET } from "./network.js";
 
@@ -34,10 +34,10 @@ function fakeChain(options: { task?: TaskFacts; bonds?: BondView[]; usdg?: bigin
   } satisfies BondChain;
 }
 
-async function run(chain: BondChain, amount: string, options: { yes?: boolean; answer?: string; config?: BondConfig | undefined; network?: typeof MAINNET } = {}) {
+async function run(chain: BondChain, amount: string, options: { yes?: boolean; answer?: string; config?: BondConfig | undefined; network?: typeof MAINNET; fetch?: typeof fetch } = {}) {
   const lines: string[] = [];
   const ask = options.answer === undefined ? undefined : vi.fn(async () => options.answer!);
-  await bond(options.network ?? MAINNET, "config" in options ? options.config : config, chain, 12n, { amount: USDG(amount), yes: options.yes ?? false, ...(ask ? { ask } : {}), log: (line) => lines.push(line) });
+  await bond(options.network ?? MAINNET, "config" in options ? options.config : config, chain, 12n, { amount: USDG(amount), yes: options.yes ?? false, fetch: options.fetch ?? (async () => { throw new Error("no network in tests"); }), ...(ask ? { ask } : {}), log: (line) => lines.push(line) });
   return { lines, ask };
 }
 
@@ -185,7 +185,7 @@ describe("bond status", () => {
   it("prints each bond's state in one line", async () => {
     const lines: string[] = [];
     const deadline = NOW + 86_400n;
-    await bondStatus(MAINNET, config, fakeChain({ bonds: [view({ deadline })] }), 12n, (l) => lines.push(l));
+    await bondStatus(MAINNET, config, fakeChain({ bonds: [view({ deadline })] }), 12n, (l) => lines.push(l), (async () => { throw new Error("offline"); }) as unknown as typeof fetch);
     expect(lines).toEqual(["Bond No. 4 on task 12: 5 USDG, open until 2027-01-16T08:00:00Z: waiting for the task to be paid and its Proof recorded"]);
     expect(bondLine(MAINNET, view({ deadline }), true, NOW)).toBe("Bond No. 4 on task 12: 5 USDG, open until 2027-01-16T08:00:00Z: the Proof is in the index and BrainChain marks the check shortly");
     expect(bondLine(MAINNET, view({ deadline, checkMetAt: NOW - 600n }), true, NOW)).toBe("Bond No. 4 on task 12: 5 USDG, the Proof is in the index and the check was marked at 2027-01-15T07:50:00Z; BrainChain confirms it after 2027-01-15T08:50:00Z");
@@ -223,5 +223,30 @@ describe("bond claim", () => {
     const dry = fakeChain({ bonds: [view({ status: DeedStatus.Settled, remainderBps: 10_000 })], owed: USDG("4.95"), eth: 0n });
     await expect(bondClaim(MAINNET, config, dry, 12n, () => {})).rejects.toThrow(`${ACCOUNT} has no ETH on Robinhood Chain to pay gas for the claim.`);
     expect(dry.withdraw).not.toHaveBeenCalled();
+  });
+});
+
+describe("deed page", () => {
+  const page = { deed: { number: "3", url: "https://app.shipped.bond/bonds/3" } };
+  const answering = (body: unknown, ok = true) => (async () => ({ ok, json: async () => body })) as unknown as typeof fetch;
+
+  it("reads Shipped's number and link, and stands down on a test bond, an error or no network", async () => {
+    expect(await deedPage(4n, answering(page))).toEqual({ number: "3", url: "https://app.shipped.bond/bonds/3" });
+    expect(await deedPage(4n, answering({ deed: { number: null, url: null } }))).toBeUndefined();
+    expect(await deedPage(4n, answering({}, false))).toBeUndefined();
+    expect(await deedPage(4n, (async () => { throw new Error("offline"); }) as unknown as typeof fetch)).toBeUndefined();
+  });
+
+  it("names the bond by Shipped's number and page after creating it", async () => {
+    const chain = fakeChain({ task: task() });
+    const { lines } = await run(chain, "5", { yes: true, fetch: answering(page) });
+    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). Jev reads it when it hires; \`bond status 12\` follows it.`);
+  });
+
+  it("shows the page on each status line when Shipped knows the bond", async () => {
+    const lines: string[] = [];
+    const deadline = NOW + 86_400n;
+    await bondStatus(MAINNET, config, fakeChain({ bonds: [view({ deadline })] }), 12n, (l) => lines.push(l), answering(page));
+    expect(lines).toEqual(["Bond No. 3 on task 12: 5 USDG, open until 2027-01-16T08:00:00Z: waiting for the task to be paid and its Proof recorded https://app.shipped.bond/bonds/3"]);
   });
 });
