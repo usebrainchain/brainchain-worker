@@ -3,7 +3,7 @@ import { createInterface } from "node:readline/promises";
 import { verifyDecision } from "brainchain-verify";
 import { createPublicClient, http } from "viem";
 
-import { formatEther, parseUnits, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { formatEther, getAddress, isAddress, parseUnits, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
@@ -107,6 +107,10 @@ const COMMAND_USAGE: Record<string, string> = {
                                             same way. Testnet only for now.`,
   leave: `  brainchain-worker leave                   Start unstaking (3-day cooldown).`,
   withdraw: `  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.`,
+  payout: `  brainchain-worker payout [<stock> --to <address> | --usdg]
+                                            Show how the worker is paid, or take task income in a stock token on
+                                            Robinhood Chain (NVDA, SPY, AAPL, TSLA, GOOGL, META, MSFT) sent to an
+                                            address there. --usdg goes back to USDG on BrainChain.`,
 };
 
 const USAGE = `brainchain-worker ${version}
@@ -146,6 +150,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   price: {},
   leave: {},
   withdraw: {},
+  payout: { to: false, usdg: true },
   claim: { dry: true },
   bond: { yes: true },
   mint: { count: false, dry: true },
@@ -157,7 +162,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   dispute: {},
   appeal: {},
 };
-const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1, bond: 2 };
+const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1, bond: 2, payout: 1 };
 
 /** A command's flags; a name from argv can match what every object inherits, such as constructor. */
 const flagsOf = (command: string) => (Object.hasOwn(FLAGS, command) ? FLAGS[command] : undefined);
@@ -351,6 +356,36 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     `\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
       `Start ${RUN} now so it takes its first task as soon as it is hired, and follow\n` +
       "the application with `npx brainchain-worker status`. New workers are offered house tasks first, which BrainChain pays for.",
+  );
+}
+
+/** Shows or sets how the worker is paid: USDG on BrainChain, or a stock token on the parent chain sent to an address there. */
+export async function payout(chain: Chain, network: Network, positional: string[], values: Map<string, string>, switches: Set<string>): Promise<void> {
+  if (!network.payouts) throw new Error(`Stock payouts are not on ${network.name}.`);
+  const where = network.bridge?.name ?? "the parent chain";
+  const symbolOf = (asset: Address) => Object.entries(network.stocks ?? {}).find(([, a]) => a.toLowerCase() === asset.toLowerCase())?.[0] ?? asset;
+  if (positional[0] === undefined && !switches.has("usdg")) {
+    const current = await chain.payout();
+    if (current === undefined || current.asset === zeroAddress) return console.log(`Paid in ${network.bountySymbol} on ${network.name}, to the worker's wallet.`);
+    return console.log(`Paid in ${symbolOf(current.asset)} on ${where}, to ${current.to}.`);
+  }
+  let asset: Address = zeroAddress;
+  let to: Address = zeroAddress;
+  if (!switches.has("usdg")) {
+    const symbol = positional[0]!.toUpperCase();
+    const token = network.stocks?.[symbol];
+    if (token === undefined) throw new UsageError(`Stocks a worker can be paid in on ${network.name}: ${Object.keys(network.stocks ?? {}).join(", ") || "none yet"}.`);
+    const recipient = values.get("to");
+    if (recipient === undefined || !isAddress(recipient)) throw new UsageError(`--to needs the ${where} address the ${symbol} is sent to.`);
+    asset = token;
+    to = getAddress(recipient);
+  }
+  await needGas(chain, network);
+  await chain.setPayout(asset, to);
+  console.log(
+    asset === zeroAddress
+      ? `Paid in ${network.bountySymbol} on ${network.name} from the next task on.`
+      : `Paid in ${symbolOf(asset)} on ${where}, to ${to}, from the next task on. Stock tokens on Robinhood Chain are not available to US persons.`,
   );
 }
 
@@ -731,6 +766,8 @@ export async function main(argv: string[]): Promise<void> {
       console.log(`Unstaking ${stake(network, w.staked)}. Withdraw with \`npx brainchain-worker withdraw\` after ${when(after.unlocksAt)}, once no task of the worker's is in flight.`);
       return;
     }
+    case "payout":
+      return payout(chain, network, positional, values, switches);
     case "withdraw": {
       const [w, held, now] = await Promise.all([chain.stake(), chain.held(), chain.now()]);
       if (w.unstaking === 0n) throw new Error("Nothing is unstaking. Run leave first.");
