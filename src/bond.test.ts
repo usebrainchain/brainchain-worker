@@ -176,7 +176,7 @@ describe("bond", () => {
   it("says when bonds are closed: no registry on testnet, no index yet on mainnet", async () => {
     const chain = fakeChain({ task: task() });
     await expect(run(chain, "5", { yes: true, network: TESTNET, config: TESTNET.proofs.bonds })).rejects.toThrow("Bonds run on Robinhood Chain against Shipped's registry, which BrainChain testnet has no counterpart of.");
-    await expect(run(chain, "5", { yes: true, config: MAINNET.proofs.bonds })).rejects.toThrow("Bonds are not open yet: BrainChain's ProofIndex on Robinhood Chain, which a bond's check reads, is not deployed.");
+    await expect(run(chain, "5", { yes: true, config: { ...MAINNET.proofs.bonds!, proofIndex: undefined } })).rejects.toThrow("Bonds are not open yet: BrainChain's ProofIndex on Robinhood Chain, which a bond's check reads, is not deployed.");
     expect(chain.task).not.toHaveBeenCalled();
   });
 });
