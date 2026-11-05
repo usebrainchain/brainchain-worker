@@ -281,8 +281,8 @@ export const bondGas = (gasPrice: bigint, approves: boolean) => (GAS.create + (a
 const fee = (amount: bigint) => (amount * FEE_BPS) / BPS;
 
 /** Where a bond stands, in one line. */
-export function bondLine(network: Network, b: BondView, indexed: boolean, now: bigint): string {
-  const head = `Bond No. ${b.deed} on task ${b.task}: ${usdg(network, b.amount)}`;
+export function bondLine(network: Network, b: BondView, indexed: boolean, now: bigint, page?: DeedPage): string {
+  const head = `Bond No. ${page?.number ?? b.deed} on task ${b.task}: ${usdg(network, b.amount)}`;
   if (b.status === DeedStatus.Settled) {
     if (b.remainderBps === Number(BPS)) return `${head}, delivered at ${when(b.settledAt)}: ${usdg(network, b.amount - fee(b.amount))} back after Shipped's 1% fee (bond claim ${b.task} collects it)`;
     return `${head}, missed: paid to the poster ${b.refundTo} at ${when(b.settledAt)}`;
@@ -301,9 +301,31 @@ function closed(network: Network, config: BondConfig | undefined): string | unde
   return undefined;
 }
 
+/** Shipped's own number and page for a deed; the registry id stands in when the API cannot be reached or the bond is a test. */
+export const SHIPPED_API = "https://api.shipped.bond";
+
+export interface DeedPage {
+  number: string;
+  url: string;
+}
+
+export async function deedPage(deed: bigint, fetchImpl: typeof fetch = fetch): Promise<DeedPage | undefined> {
+  try {
+    const response = await fetchImpl(`${SHIPPED_API}/v1/deeds/${deed}`, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { deed?: { number?: unknown; url?: unknown } };
+    const { number, url } = body.deed ?? {};
+    return typeof number === "string" && typeof url === "string" ? { number, url } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface BondOptions {
   amount: bigint;
   yes: boolean;
+  /** Reads Shipped's deed page for the bond's number and link; the global fetch by default. */
+  fetch?: typeof fetch;
   /** Asks the person at the terminal; undefined when there is no terminal. */
   ask?: (question: string) => Promise<string>;
   log: (line: string) => void;
@@ -357,17 +379,32 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   }
   log(`Bonding ${usdg(network, options.amount)} on task ${task}...`);
   const { deed, tx } = await chain.create(terms, options.amount);
-  log(`Bond No. ${deed} is open on Shipped (${tx}). Jev reads it when it hires; \`bond status ${task}\` follows it.`);
+  const page = await deedPage(deed, options.fetch);
+  log(
+    page
+      ? `Bond No. ${page.number} is open on Shipped: ${page.url} (${tx}). Jev reads it when it hires; \`bond status ${task}\` follows it.`
+      : `Bond No. ${deed} is open on Shipped (${tx}). Jev reads it when it hires; \`bond status ${task}\` follows it.`,
+  );
 }
 
 /** Prints where the worker's bonds on a task stand. */
-export async function bondStatus(network: Network, config: BondConfig | undefined, chain: BondChain, task: bigint, log: (line: string) => void): Promise<void> {
+export async function bondStatus(
+  network: Network,
+  config: BondConfig | undefined,
+  chain: BondChain,
+  task: bigint,
+  log: (line: string) => void,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
   const shut = closed(network, config);
   if (shut) throw new Error(shut);
   const bonds = await chain.bondsOn(task);
   if (bonds.length === 0) return log(`${chain.account} has no bond on task ${task}.`);
-  const [now, indexed] = await Promise.all([chain.now(), chain.proofOf(task)]);
-  for (const b of bonds) log(bondLine(network, b, indexed > 0n, now));
+  const [now, indexed, pages] = await Promise.all([chain.now(), chain.proofOf(task), Promise.all(bonds.map((b) => deedPage(b.deed, fetchImpl)))]);
+  bonds.forEach((b, i) => {
+    const page = pages[i];
+    log(`${bondLine(network, b, indexed > 0n, now, page)}${page ? ` ${page.url}` : ""}`);
+  });
 }
 
 /** Collects what a settled bond left the worker: withdraw(USDG) on the registry. */
