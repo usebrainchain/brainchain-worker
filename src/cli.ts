@@ -3,12 +3,14 @@ import { createInterface } from "node:readline/promises";
 import { verifyDecision } from "brainchain-verify";
 import { createPublicClient, http } from "viem";
 
-import { formatEther, parseUnits, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { formatEther, formatUnits, parseUnits, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
 import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
 import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
+import { createExitChain, exit as exitToParent } from "./exit.js";
+import { createSolanaFunding, fundFromSolana, PARENT_ETH_KEEP, solanaKeypair } from "./solana.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, type Network } from "./network.js";
@@ -77,6 +79,18 @@ const COMMAND_USAGE: Record<string, string> = {
                                             Chain to the worker's address on BrainChain; it arrives in about a
                                             minute. --eth works on both networks, the tokens on mainnet. --dry
                                             checks the balances and sends nothing.`,
+  exit: `  brainchain-worker exit [--amount <USDG>] [--to-solana <address>] [--dry]
+                                            Move the worker's USDG on BrainChain to its wallet on Robinhood Chain
+                                            within minutes, not the bridge's seven days: the desk pays it out there
+                                            less a 0.5% fee. Without --amount, the whole balance. --to-solana then
+                                            moves it on to USDC on Solana through Relay (mainnet; needs a little
+                                            ETH on Robinhood Chain for gas). --dry checks and sends nothing.`,
+  fund: `  brainchain-worker fund --from-solana --usdc <amount> [--stake] [--gas-usdc <amount>] [--dry]
+                                            Fund the worker from a Solana wallet: Relay turns its USDC into ETH
+                                            for gas (2 USDC by default) and, with --stake, the rest into the stake
+                                            token, on Robinhood Chain, and bridge moves both to BrainChain. Signed
+                                            with BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE; the wallet
+                                            needs about 0.002 SOL for fees. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry]
                                             Bond the stake token and propose a change to BrainChain for Jev to
@@ -123,6 +137,10 @@ Environment:
                           A file that holds only the key, used instead, so no process's environment holds it.
   BRAINCHAIN_NETWORK      testnet (the default) or mainnet.
   BRAINCHAIN_RPC_URL      Overrides the network's RPC.
+  BRAINCHAIN_SOLANA_KEY   For fund --from-solana: the Solana wallet's secret key, base58.
+  BRAINCHAIN_SOLANA_KEY_FILE
+                          Or a Solana CLI keypair file holding it.
+  BRAINCHAIN_SOLANA_RPC   Overrides the Solana RPC (https://api.mainnet-beta.solana.com).
   BRAINCHAIN_SERVICE_URL  Overrides the BrainChain service that keeps results: https, or http on
                           localhost or 127.0.0.1.
 
@@ -150,6 +168,8 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   bond: { yes: true },
   mint: { count: false, dry: true },
   bridge: { eth: false, stake: false, bounty: false, dry: true },
+  exit: { amount: false, "to-solana": false, dry: true },
+  fund: { "from-solana": true, usdc: false, stake: true, "gas-usdc": false, dry: true },
   watch: { veto: true, once: true },
   credit: { "agent-id": false, premium: false },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true },
@@ -619,6 +639,45 @@ export async function main(argv: string[]): Promise<void> {
       throw new UsageError(`--${asset} is an amount of ${symbol} above zero with at most ${decimals} decimals, such as --${asset} ${asset === "eth" ? "0.001" : "1"}`);
     }
     return bridge(network, createBridgeChain(network, signer().account), { asset, amount, dry: switches.has("dry"), log: console.log });
+  }
+  if (command === "exit") {
+    const amount = values.get("amount");
+    if (amount !== undefined && (!/^\d{1,9}(\.\d{1,6})?$/.test(amount) || Number(amount) <= 0)) throw new UsageError("--amount is USDG above zero with at most 6 decimals, such as --amount 5");
+    const worker = signer();
+    return exitToParent(network, createExitChain(network, worker.account), { ...(amount ? { amount } : {}), ...(values.has("to-solana") ? { toSolana: values.get("to-solana")! } : {}), dry: switches.has("dry"), log: console.log });
+  }
+  if (command === "fund") {
+    if (!switches.has("from-solana")) throw new UsageError("fund takes --from-solana: the only source it knows today");
+    const usdc = values.get("usdc");
+    const gasUsdc = values.get("gas-usdc");
+    for (const [flag, v] of [["usdc", usdc], ["gas-usdc", gasUsdc]] as const) {
+      if (v !== undefined && (!/^\d{1,9}(\.\d{1,6})?$/.test(v) || Number(v) <= 0)) throw new UsageError(`--${flag} is USDC above zero with at most 6 decimals`);
+    }
+    if (!usdc) throw new UsageError("--usdc is required: how much USDC on Solana to use, such as --usdc 5");
+    if (network.id !== "mainnet" || !network.bridge) throw new Error("fund --from-solana is mainnet only: Relay connects Solana with Robinhood Chain mainnet, not the testnets");
+    const worker = signer();
+    const bridgeChain = createBridgeChain(network, worker.account);
+    const funding = createSolanaFunding(solanaKeypair(), network.bridge.chainId, process.env.BRAINCHAIN_SOLANA_RPC?.trim() || undefined);
+    return fundFromSolana({
+      funding,
+      worker: worker.account.address,
+      usdc,
+      ...(gasUsdc ? { gasUsdc } : {}),
+      stake: switches.has("stake"),
+      ...(network.bridge.tokens?.stake ? { stakeToken: network.bridge.tokens.stake } : {}),
+      dry: switches.has("dry"),
+      log: console.log,
+      async bridgeOn(asset) {
+        if (asset === "eth") {
+          const eth = await bridgeChain.parentEth();
+          if (eth <= PARENT_ETH_KEEP) return console.log("Not enough ETH to send on to BrainChain beyond what stays for gas on the parent chain.");
+          return bridge(network, bridgeChain, { asset: "eth", amount: formatEther(eth - PARENT_ETH_KEEP), dry: false, log: console.log });
+        }
+        const held = await bridgeChain.tokenBalance("stake");
+        const { decimals } = assetOf(network, "stake");
+        return bridge(network, bridgeChain, { asset: "stake", amount: formatUnits(held, decimals), dry: false, log: console.log });
+      },
+    });
   }
   if (command === "credit") {
     if (!network.priors) throw new UsageError(`credit works on mainnet only, where Priors' credit pool runs; ${network.name} has none`);

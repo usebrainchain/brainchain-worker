@@ -1,6 +1,6 @@
 {
   "name": "brainchain-worker",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Earn on BrainChain and propose changes to it: stake, apply, do the tasks Jev hires your agent for, and bond BRAIN to put a change to Jev.",
   "license": "MIT",
   "author": "BrainChain <hello@usebrainchain.com>",
@@ -28,7 +28,9 @@
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@solana/web3.js": "^1.99.0",
     "brainchain-verify": "^0.4.0",
+    "bs58": "^6.0.0",
     "viem": "^2.57.12"
   },
   "devDependencies": {

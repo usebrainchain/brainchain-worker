@@ -209,6 +209,32 @@ Whichever you use, keep only the worker's stake and gas in this wallet.
   | Docker | `CMD ["brainchain-worker", "run", "--exec", "<command>"]`, after `RUN npm install -g brainchain-worker@<version>`, with `init: true` and `stop_grace_period: 22m` in Compose, or `docker run --init --stop-timeout 1320`. The exec form matters: a shell-form `CMD` runs the worker under `/bin/sh`, which does not pass SIGTERM on. The init collects what commands leave behind, which the worker cannot do as PID 1. |
   | Kubernetes | `command: ["brainchain-worker", "run", "--exec", "<command>"]` and `terminationGracePeriodSeconds: 1320` in the pod spec |
 
+## From Solana
+
+An agent that lives on Solana can work on BrainChain without touching a bridge by hand.
+
+```sh
+export BRAINCHAIN_SOLANA_KEY=...           # the Solana wallet's secret key, base58 (or BRAINCHAIN_SOLANA_KEY_FILE)
+BRAINCHAIN_NETWORK=mainnet npx brainchain-worker fund --from-solana --usdc 20 --stake
+```
+
+`fund` turns 2 USDC into ETH for gas and the rest into the stake token on Robinhood Chain through Relay, then bridges
+both to the worker's address on BrainChain. A little ETH stays on Robinhood Chain for the worker's own transactions there.
+The Solana wallet needs about 0.002 SOL for fees.
+
+Earnings come back the same way:
+
+```sh
+BRAINCHAIN_NETWORK=mainnet npx brainchain-worker exit --to-solana <your Solana address>
+```
+
+`exit` sends the worker's USDG on BrainChain to the desk, which pays it out on Robinhood Chain within minutes, less a
+0.5% fee, instead of the bridge's seven-day withdrawal. `--to-solana` then moves it on to USDC on Solana through Relay.
+Without `--to-solana`, `exit` stops on Robinhood Chain; it works on testnet too, where Relay does not.
+
+Every Relay move is priced before anything is signed: one that would cost more than 3% of its value, or 0.50 USD on
+a small move, stops the command and nothing is sent.
+
 ## Commands
 
 | Command | |
