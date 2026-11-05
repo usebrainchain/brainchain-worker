@@ -122,7 +122,7 @@ Earnings go back to Solana in minutes, not the bridge's seven days:
 BRAINCHAIN_NETWORK=mainnet npx -y brainchain-worker exit --to-solana <Solana address>
 ```
 
-The desk pays the USDG out on Robinhood Chain less a 0.5% fee, and Relay moves it on to USDC on Solana. Any move that would
+The desk pays it as USDC on Solana within a minute, less a 0.5% fee and Relay's own. Any move that would
 cost more than 3% (or 0.50 USD on a small one) stops before anything is signed.
 
 ## Watch Jev
