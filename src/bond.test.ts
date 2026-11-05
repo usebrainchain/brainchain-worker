@@ -12,7 +12,7 @@ const TX: Hex = `0x${"fe".repeat(32)}`;
 const USDG = (n: string) => parseUnits(n, 6);
 const NOW = 1_800_000_000n;
 const config: BondConfig & { proofIndex: Address } = { ...MAINNET.proofs.bonds!, proofIndex: INDEX };
-const task = (overrides: Partial<TaskFacts> = {}): TaskFacts => ({ poster: POSTER, bounty: USDG("1"), deadline: NOW + 86_400n, status: Status.Open, model: `0x${"0".repeat(64)}`, ...overrides });
+const task = (overrides: Partial<TaskFacts> = {}): TaskFacts => ({ poster: POSTER, bounty: USDG("1"), deadline: NOW + 86_400n, status: Status.Hired, model: `0x${"0".repeat(24)}${ACCOUNT.slice(2)}`, ...overrides });
 const view = (overrides: Partial<BondView> = {}): BondView => ({ deed: 4n, task: 12n, amount: USDG("5"), deadline: NOW + 86_400n + BOND_LEAD_SEC, status: DeedStatus.Open, ruling: 0, remainderBps: 0, checkMetAt: 0n, settledAt: 0n, refundTo: POSTER, ...overrides });
 
 function fakeChain(options: { task?: TaskFacts; bonds?: BondView[]; usdg?: bigint; eth?: bigint; allowance?: bigint; owed?: bigint; proof?: bigint; payer?: Address } = {}) {
@@ -157,8 +157,8 @@ describe("bond", () => {
       [fakeChain({ task: task({ bounty: USDG("8") }) }), "5", "The bond must be at least the task's bounty, 8 USDG; 5 USDG is under it."],
       [fakeChain({ task: task() }), "1.5", `The bond must be at least ${Number(MIN_BOND) / 1e6} USDG`],
       [fakeChain({ task: undefined }), "5", "There is no task 12 on BrainChain."],
-      [fakeChain({ task: task({ status: Status.Hired, model: `0x${"0".repeat(24)}${"a".repeat(40)}` }) }), "5", "Task 12 is not open and not hired to this worker"],
-      [fakeChain({ task: task({ status: Status.Paid }) }), "5", "Task 12 is not open and not hired to this worker"],
+      [fakeChain({ task: task({ status: Status.Hired, model: `0x${"0".repeat(24)}${"a".repeat(40)}` }) }), "5", "Task 12 is not hired to this worker. Bond a task after Jev hires you for it."],
+      [fakeChain({ task: task({ status: Status.Paid }) }), "5", "Task 12 is not hired to this worker. Bond a task after Jev hires you for it."],
       [fakeChain({ task: task({ deadline: NOW - 1n }) }), "5", "deadline, 2027-01-15T07:59:59Z, has passed"],
       [fakeChain({ task: task(), bonds: [view()] }), "5", "This worker already has bond No. 4 open on task 12."],
       [fakeChain({ task: task(), usdg: USDG("4") }), "5", `${ACCOUNT} holds 4 USDG on Robinhood Chain, under the 5 USDG to bond. Nothing was sent.`],
