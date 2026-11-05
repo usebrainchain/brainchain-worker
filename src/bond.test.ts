@@ -15,7 +15,7 @@ const config: BondConfig & { proofIndex: Address } = { ...MAINNET.proofs.bonds!,
 const task = (overrides: Partial<TaskFacts> = {}): TaskFacts => ({ poster: POSTER, bounty: USDG("1"), deadline: NOW + 86_400n, status: Status.Open, model: `0x${"0".repeat(64)}`, ...overrides });
 const view = (overrides: Partial<BondView> = {}): BondView => ({ deed: 4n, task: 12n, amount: USDG("5"), deadline: NOW + 86_400n + BOND_LEAD_SEC, status: DeedStatus.Open, ruling: 0, remainderBps: 0, checkMetAt: 0n, settledAt: 0n, refundTo: POSTER, ...overrides });
 
-function fakeChain(options: { task?: TaskFacts; bonds?: BondView[]; usdg?: bigint; eth?: bigint; allowance?: bigint; owed?: bigint; proof?: bigint } = {}) {
+function fakeChain(options: { task?: TaskFacts; bonds?: BondView[]; usdg?: bigint; eth?: bigint; allowance?: bigint; owed?: bigint; proof?: bigint; payer?: Address } = {}) {
   return {
     account: ACCOUNT,
     task: vi.fn(async () => options.task),
@@ -30,6 +30,7 @@ function fakeChain(options: { task?: TaskFacts; bonds?: BondView[]; usdg?: bigin
     proofOf: vi.fn(async () => options.proof ?? 0n),
     owed: vi.fn(async () => options.owed ?? 0n),
     withdraw: vi.fn(async () => ({ amount: options.owed ?? 0n, tx: TX })),
+    payerOf: vi.fn(async () => options.payer),
   } satisfies BondChain;
 }
 
@@ -52,14 +53,18 @@ describe("ShippedDeeds' enums", () => {
 });
 
 describe("bondTerms", () => {
-  it("builds the terms Shipped's create accepts for a check-only bond, with the poster as the refund side", () => {
-    const terms = bondTerms(config, { id: 12n, poster: POSTER, deadline: NOW }, { address: MAINNET.contracts.taskBoard, chainId: MAINNET.chainId });
+  it("builds the terms Shipped's create accepts for a check-only bond, keyed by board and task, with the refund side named", () => {
+    const board = MAINNET.contracts.taskBoard;
+    const terms = bondTerms(config, { id: 12n, refundTo: POSTER, paidThroughDesk: false, deadline: NOW }, { address: board, chainId: MAINNET.chainId });
     expect(terms.title).toBe("BrainChain task #12");
     expect(Buffer.byteLength(terms.title)).toBeLessThanOrEqual(96);
     expect(Buffer.byteLength(terms.milestone)).toBeLessThanOrEqual(2048);
-    expect(terms.milestone).toContain(`proofOf(12) >= 1`);
+    expect(terms.milestone).toContain(`proofOf(${board}, 12) >= 1`);
     expect(terms.milestone).toContain(INDEX);
-    expect(terms.milestone).toContain(`paid to the task's poster, ${POSTER}`);
+    expect(terms.milestone).toContain(`paid to ${POSTER}, the task's poster`);
+    expect(bondTerms(config, { id: 12n, refundTo: ACCOUNT, paidThroughDesk: true, deadline: NOW }, { address: board, chainId: MAINNET.chainId }).milestone).toContain(
+      `paid to ${ACCOUNT}, the agent that paid BrainChain's desk for the task`,
+    );
     expect(terms).toMatchObject({
       project: "0x0000000000000000000000000000000000000000",
       projectKind: 0,
@@ -83,10 +88,11 @@ describe("bondTerms", () => {
     });
     const [target, call, op, threshold] = decodeAbiParameters([{ type: "address" }, { type: "bytes" }, { type: "uint8" }, { type: "uint256" }], terms.checkData);
     expect([target, op, threshold]).toEqual([INDEX, 0, 1n]);
-    expect(decodeFunctionData({ abi: proofIndexAbi, data: call })).toEqual({ functionName: "proofOf", args: [12n] });
-    expect(taskOfCheck(terms.checkData, INDEX)).toBe(12n);
-    expect(taskOfCheck(terms.checkData, POSTER)).toBeUndefined();
-    expect(taskOfCheck(encodeCheckData(INDEX, 3n), INDEX)).toBe(3n);
+    expect(decodeFunctionData({ abi: proofIndexAbi, data: call })).toEqual({ functionName: "proofOf", args: [board, 12n] });
+    expect(taskOfCheck(terms.checkData, INDEX, board)).toBe(12n);
+    expect(taskOfCheck(terms.checkData, POSTER, board)).toBeUndefined();
+    expect(taskOfCheck(terms.checkData, INDEX, POSTER)).toBeUndefined();
+    expect(taskOfCheck(encodeCheckData(INDEX, board, 3n), INDEX, board)).toBe(3n);
   });
 });
 
@@ -99,7 +105,7 @@ describe("bond", () => {
       [
         "Bond 5 USDG on task 12 (bounty 1 USDG, deadline 2027-01-16T08:00:00Z).",
         "  Released by the task's Proof: 4.95 USDG back after Shipped's 1% fee (0.05 USDG), collected with `bond claim 12`.",
-        "  Missed: if no Proof is recorded by 2027-01-18T08:00:00Z, the 5 USDG goes to the poster 0x00000000000000000000000000000000000000D1.",
+        "  Missed: if no Proof is recorded by 2027-01-18T08:00:00Z, the 5 USDG goes to 0x00000000000000000000000000000000000000D1, the poster.",
         `  Gas now: about ${(Number(GAS.create + GAS.approve) * 0.02) / 1e9} ETH on Robinhood Chain for the approval and the bond at 0.02 gwei; the claim later costs about ${(Number(GAS.withdraw) * 0.02) / 1e9} ETH.`,
       ].join("\n"),
     );
@@ -123,6 +129,20 @@ describe("bond", () => {
     await run(chain, "5", { yes: true });
     expect(chain.approve).not.toHaveBeenCalled();
     expect(chain.create).toHaveBeenCalledOnce();
+  });
+
+  it("pays the agent that paid the desk for the task, and refuses a task this wallet paid for", async () => {
+    const payer: Address = "0x00000000000000000000000000000000000000E1";
+    const chain = fakeChain({ task: task({ poster: "0x00000000000000000000000000000000000000De" }), payer });
+    const { lines } = await run(chain, "5", { yes: true });
+    expect(chain.payerOf).toHaveBeenCalledWith(12n);
+    const [terms] = chain.create.mock.calls[0]!;
+    expect(terms.refundTo).toBe(payer);
+    expect(terms.milestone).toContain(`paid to ${payer}, the agent that paid BrainChain's desk for the task`);
+    expect(lines[0]).toContain(`the 5 USDG goes to ${payer}, the agent that paid for the task.`);
+    const own = fakeChain({ task: task({ poster: "0x00000000000000000000000000000000000000De" }), payer: ACCOUNT });
+    await expect(run(own, "5", { yes: true })).rejects.toThrow("Task 12 was paid for by this wallet.");
+    expect(own.create).not.toHaveBeenCalled();
   });
 
   it("needs --yes where there is no terminal", async () => {

@@ -12,6 +12,7 @@ import {
   encodeFunctionData,
   formatEther,
   http,
+  isAddress,
   parseAbi,
   parseEventLogs,
   type Address,
@@ -24,7 +25,7 @@ import { erc20Abi, RECEIPT_MS, Status } from "./chain.js";
 import { chainOf, proofsChainOf, proofsTransport, type Network } from "./network.js";
 import { usdg, when } from "./standing.js";
 
-export const proofIndexAbi = parseAbi(["function proofOf(uint256 taskId) view returns (uint256)"]);
+export const proofIndexAbi = parseAbi(["function proofOf(address board, uint256 taskId) view returns (uint256)"]);
 
 const TERMS =
   "(string title, string milestone, address project, uint8 projectKind, address asset, uint64 deadline, address verifier, address backupVerifier, address appealPanel, address check, bytes checkData, address refundTo, uint16 defaultRemainderBps, uint16 refundCapBps, bool allowPartial, uint32 verifierGrace, uint32 backupGrace, uint32 appealWindow, uint32 panelWindow, uint128 appealBond, uint128 verifierFee, address[] refundExcluded)";
@@ -58,8 +59,8 @@ export const CHECK_CONFIRM_SEC = 86_400n;
 export const FEE_BPS = 100n;
 /** Below this the fee and the gas are too large a share of the bond. */
 export const MIN_BOND = 2_000_000n;
-/** Gas each transaction takes, measured on a fork of Robinhood Chain (approve 57,976; create 933,005 on a 452-byte milestone), with room. */
-export const GAS = { approve: 60_000n, create: 980_000n, withdraw: 85_000n };
+/** Gas each transaction takes, measured on a fork of Robinhood Chain (approve 57,976; create 978,948 on a 496-byte milestone; withdraw 61,603), with room. */
+export const GAS = { approve: 60_000n, create: 1_100_000n, withdraw: 85_000n };
 /** Deeds read per batch, and the most read when the worker's bonds are looked for. */
 const DEED_BATCH = 200;
 const DEED_SCAN = 5_000;
@@ -100,18 +101,18 @@ export interface BondTerms {
 
 const checkDataTypes = [{ type: "address" }, { type: "bytes" }, { type: "uint8" }, { type: "uint256" }] as const;
 
-/** StaticCallCheck data: proofOf(task) on the index, at least 1. */
-export function encodeCheckData(proofIndex: Address, task: bigint): Hex {
-  return encodeAbiParameters(checkDataTypes, [proofIndex, encodeFunctionData({ abi: proofIndexAbi, functionName: "proofOf", args: [task] }), 0, 1n]);
+/** StaticCallCheck data: proofOf(board, task) on the index, at least 1. Task ids restart with each board, so the board is part of the key. */
+export function encodeCheckData(proofIndex: Address, board: Address, task: bigint): Hex {
+  return encodeAbiParameters(checkDataTypes, [proofIndex, encodeFunctionData({ abi: proofIndexAbi, functionName: "proofOf", args: [board, task] }), 0, 1n]);
 }
 
-/** The task a bond's check reads on `proofIndex`, or undefined for any other check. */
-export function taskOfCheck(data: Hex, proofIndex: Address): bigint | undefined {
+/** The task a bond's check reads on `proofIndex` for `board`, or undefined for any other check. */
+export function taskOfCheck(data: Hex, proofIndex: Address, board: Address): bigint | undefined {
   try {
     const [target, call, op, threshold] = decodeAbiParameters(checkDataTypes, data);
     if (target.toLowerCase() !== proofIndex.toLowerCase() || op !== 0 || threshold !== 1n) return undefined;
     const { functionName, args } = decodeFunctionData({ abi: proofIndexAbi, data: call });
-    return functionName === "proofOf" ? args[0] : undefined;
+    return functionName === "proofOf" && args[0].toLowerCase() === board.toLowerCase() ? args[1] : undefined;
   } catch {
     return undefined;
   }
@@ -119,15 +120,16 @@ export function taskOfCheck(data: Hex, proofIndex: Address): bigint | undefined 
 
 /**
  * The terms of a delivery bond on one task. Shipped's own check decides it, so
- * there is no verifier and no appeal; the task's poster is the refund side.
+ * there is no verifier and no appeal; the refund side is the agent that paid
+ * for the task: the poster on the board, or the payer the desk recorded.
  */
-export function bondTerms(config: BondConfig & { proofIndex: Address }, task: { id: bigint; poster: Address; deadline: bigint }, board: { address: Address; chainId: number }): BondTerms {
+export function bondTerms(config: BondConfig & { proofIndex: Address }, task: { id: bigint; refundTo: Address; paidThroughDesk: boolean; deadline: bigint }, board: { address: Address; chainId: number }): BondTerms {
   return {
     title: `BrainChain task #${task.id}`,
     milestone:
       `The Proof NFT for BrainChain task #${task.id} (task board ${board.address} on BrainChain, chain ${board.chainId}) is recorded in BrainChain's ProofIndex at ${config.proofIndex} on Robinhood Chain, ` +
-      `read as proofOf(${task.id}) >= 1. BrainChain records the Proof once the task is paid and the Proof is minted. ` +
-      `If no Proof is recorded by the deadline, the bond is paid to the task's poster, ${task.poster}.`,
+      `read as proofOf(${board.address}, ${task.id}) >= 1. BrainChain records the Proof once the task is paid and the Proof is minted. ` +
+      `If no Proof is recorded by the deadline, the bond is paid to ${task.refundTo}, ${task.paidThroughDesk ? "the agent that paid BrainChain's desk for the task" : "the task's poster"}.`,
     project: ZERO,
     projectKind: 0,
     asset: config.usdg,
@@ -136,8 +138,8 @@ export function bondTerms(config: BondConfig & { proofIndex: Address }, task: { 
     backupVerifier: ZERO,
     appealPanel: ZERO,
     check: config.check,
-    checkData: encodeCheckData(config.proofIndex, task.id),
-    refundTo: task.poster,
+    checkData: encodeCheckData(config.proofIndex, board.address, task.id),
+    refundTo: task.refundTo,
     defaultRemainderBps: 0,
     refundCapBps: 0,
     allowPartial: false,
@@ -190,9 +192,11 @@ export interface BondChain {
   proofOf(task: bigint): Promise<bigint>;
   owed(): Promise<bigint>;
   withdraw(): Promise<{ amount: bigint; tx: Hex }>;
+  /** The agent that paid BrainChain's desk for the task, as the service records it; undefined for a plain on-chain post. */
+  payerOf(task: bigint): Promise<Address | undefined>;
 }
 
-export function createBondChain(network: Network, config: BondConfig, account: PrivateKeyAccount): BondChain {
+export function createBondChain(network: Network, config: BondConfig, account: PrivateKeyAccount, fetcher: typeof fetch = fetch): BondChain {
   const brainchain = createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000, retryCount: 2 }) });
   const chain = proofsChainOf(network.proofs);
   const transport = proofsTransport(network.proofs);
@@ -243,11 +247,25 @@ export function createBondChain(network: Network, config: BondConfig, account: P
       const deeds = await client.multicall({ contracts: mine.map((id) => ({ ...registry, functionName: "getDeed", args: [id] }) as const), allowFailure: false });
       return mine.flatMap((deed, i) => {
         const d = deeds[i]!;
-        if (d.terms.check.toLowerCase() !== config.check.toLowerCase() || taskOfCheck(d.terms.checkData, config.proofIndex!) !== task) return [];
+        if (d.terms.check.toLowerCase() !== config.check.toLowerCase() || taskOfCheck(d.terms.checkData, config.proofIndex!, network.contracts.taskBoard) !== task) return [];
         return [{ deed, task, amount: d.balance, deadline: d.terms.deadline, status: d.status, ruling: d.ruling, remainderBps: d.remainderBps, checkMetAt: d.checkMetAt, settledAt: d.settledAt, refundTo: d.terms.refundTo }];
       });
     },
-    proofOf: (task) => client.readContract({ address: config.proofIndex!, abi: proofIndexAbi, functionName: "proofOf", args: [task] }),
+    proofOf: (task) => client.readContract({ address: config.proofIndex!, abi: proofIndexAbi, functionName: "proofOf", args: [network.contracts.taskBoard, task] }),
+    async payerOf(task) {
+      const host = new URL(network.service).host;
+      const response = await fetcher(`${network.service}/bonds/refund-to/${task}`, { signal: AbortSignal.timeout(15_000) }).catch(() => {
+        throw new Error(`Could not reach the BrainChain service at ${host} to ask who paid for task ${task}`);
+      });
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error(`The BrainChain service at ${host} answered ${response.status} when asked who paid for task ${task}`);
+      }
+      const { refundTo } = ((await response.json().catch(() => undefined)) as { refundTo?: unknown } | undefined) ?? {};
+      if (refundTo === null || refundTo === undefined) return undefined;
+      if (typeof refundTo !== "string" || !isAddress(refundTo)) throw new Error(`The BrainChain service at ${host} named the payer of task ${task} in a form bond cannot read`);
+      return refundTo;
+    },
     owed: () => client.readContract({ ...registry, functionName: "owed", args: [account.address, config.usdg] }),
     async withdraw() {
       const amount = await client.readContract({ ...registry, functionName: "owed", args: [account.address, config.usdg] });
@@ -308,17 +326,21 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   if (options.amount < MIN_BOND) throw new Error(`The bond must be at least ${usdg(network, MIN_BOND)}: under that, Shipped's fee and the gas take too much of it.`);
   const existing = (await chain.bondsOn(task)).find((b) => b.status !== DeedStatus.Settled);
   if (existing) throw new Error(`This worker already has bond No. ${existing.deed} open on task ${task}. \`bond status ${task}\` shows where it stands.`);
+  // A task paid through the desk has the desk as its poster on the board; the bond pays the agent that paid.
+  const payer = await chain.payerOf(task);
+  if (payer?.toLowerCase() === chain.account.toLowerCase()) throw new Error(`Task ${task} was paid for by this wallet. A bond guarantees delivery to someone else: it earns no standing on a task the worker paid for itself.`);
+  const refundTo = payer ?? t.poster;
 
   const [balance, allowance, gasPrice, eth] = await Promise.all([chain.usdgBalance(), chain.allowance(), chain.gasPrice(), chain.ethBalance()]);
   const approves = allowance < options.amount;
   const gas = bondGas(gasPrice, approves);
-  const terms = bondTerms(open, { id: task, poster: t.poster, deadline: t.deadline }, { address: network.contracts.taskBoard, chainId: network.chainId });
+  const terms = bondTerms(open, { id: task, refundTo, paidThroughDesk: payer !== undefined, deadline: t.deadline }, { address: network.contracts.taskBoard, chainId: network.chainId });
   const back = options.amount - fee(options.amount);
   log(
     [
       `Bond ${usdg(network, options.amount)} on task ${task} (bounty ${usdg(network, t.bounty)}, deadline ${when(t.deadline)}).`,
       `  Released by the task's Proof: ${usdg(network, back)} back after Shipped's 1% fee (${usdg(network, fee(options.amount))}), collected with \`bond claim ${task}\`.`,
-      `  Missed: if no Proof is recorded by ${when(terms.deadline)}, the ${usdg(network, options.amount)} goes to the poster ${t.poster}.`,
+      `  Missed: if no Proof is recorded by ${when(terms.deadline)}, the ${usdg(network, options.amount)} goes to ${refundTo}, ${payer ? "the agent that paid for the task" : "the poster"}.`,
       `  Gas now: about ${formatEther(gas)} ETH on ${network.proofs.name} for ${approves ? "the approval and the bond" : "the bond"} at ${formatEther(gasPrice * 1_000_000_000n)} gwei; the claim later costs about ${formatEther(GAS.withdraw * gasPrice)} ETH.`,
     ].join("\n"),
   );
