@@ -1,11 +1,13 @@
 import { createRequire } from "node:module";
+import { createInterface } from "node:readline/promises";
 import { verifyDecision } from "brainchain-verify";
 import { createPublicClient, http } from "viem";
 
-import { formatEther, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { formatEther, parseUnits, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
+import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
 import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
@@ -63,6 +65,13 @@ const COMMAND_USAGE: Record<string, string> = {
                                             --count, at 0.001 WETH each on Robinhood Chain. --dry sends nothing.`,
   claim: `  brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
                                             --dry lists what is due and sends nothing.`,
+  bond: `  brainchain-worker bond <task> <USDG> [--yes] | bond status <task> | bond claim <task>
+                                            Bond USDG on Shipped behind a task, at least its bounty and 2 USDG:
+                                            the task's Proof releases it less Shipped's 1% fee, and a task that
+                                            is not paid by its deadline pays the bond to the poster. Shows the
+                                            cost and asks before sending; --yes sends without asking. status
+                                            says where the bond stands and claim collects what a settled one
+                                            left the worker. Mainnet.`,
   bridge: `  brainchain-worker bridge --eth <ETH> | --stake <amount> | --bounty <amount> [--dry]
                                             Move ETH for gas, the stake token or the bounty token from Robinhood
                                             Chain to the worker's address on BrainChain; it arrives in about a
@@ -138,6 +147,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   leave: {},
   withdraw: {},
   claim: { dry: true },
+  bond: { yes: true },
   mint: { count: false, dry: true },
   bridge: { eth: false, stake: false, bounty: false, dry: true },
   watch: { veto: true, once: true },
@@ -147,7 +157,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   dispute: {},
   appeal: {},
 };
-const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1 };
+const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1, bond: 2 };
 
 /** A command's flags; a name from argv can match what every object inherits, such as constructor. */
 const flagsOf = (command: string) => (Object.hasOwn(FLAGS, command) ? FLAGS[command] : undefined);
@@ -515,6 +525,39 @@ export function timedLog(write: (line: string) => void, now = Date.now) {
   };
 }
 
+/** The task id and amount a bond command names, or what is wrong with them. */
+export function bondArgs(positional: string[]): { action: "bond"; task: bigint; amount: bigint } | { action: "status" | "claim"; task: bigint } {
+  const [first, second] = positional;
+  const taskId = (value: string | undefined, usage: string) => {
+    if (value === undefined || !/^[1-9]\d{0,17}$/.test(value)) throw new UsageError(usage);
+    return BigInt(value);
+  };
+  if (first === "status" || first === "claim") return { action: first, task: taskId(second, `Usage: brainchain-worker bond ${first} <task>, such as bond ${first} 12`) };
+  const task = taskId(first, "Usage: brainchain-worker bond <task> <USDG>, such as bond 12 5, or bond status <task>, or bond claim <task>");
+  if (second === undefined || !/^\d{1,9}(\.\d{1,6})?$/.test(second) || Number(second) <= 0) {
+    throw new UsageError("The amount is in USDG, above zero with at most 6 decimals, such as bond 12 5");
+  }
+  return { action: "bond", task, amount: parseUnits(second, 6) };
+}
+
+async function bondCommand(network: Network, positional: string[], yes: boolean): Promise<void> {
+  const args = bondArgs(positional);
+  const config = network.proofs.bonds;
+  const chain = createBondChain(network, config ?? { registry: zeroAddress, check: zeroAddress, usdg: zeroAddress }, signer().account);
+  if (args.action !== "bond") return (args.action === "status" ? bondStatus : bondClaim)(network, config, chain, args.task, console.log);
+  const ask = process.stdin.isTTY
+    ? async (question: string) => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          return await rl.question(question);
+        } finally {
+          rl.close();
+        }
+      }
+    : undefined;
+  return bond(network, config, chain, args.task, { amount: args.amount, yes, ...(ask ? { ask } : {}), log: console.log });
+}
+
 /** Where watch --once keeps its place: a key's place counts toward its watchtower mark, so each key has its own, apart from runs without one. */
 export const watchPlace = (log: Address, key: Address | undefined) => (key === undefined ? log : `${log}.${key}`);
 
@@ -558,6 +601,7 @@ export async function main(argv: string[]): Promise<void> {
   if (command === "claim") {
     return claim(network, (income) => createIncome(network.proofs, income, signer().account), { dry: switches.has("dry"), log: console.log });
   }
+  if (command === "bond") return bondCommand(network, positional, switches.has("yes"));
   if (command === "mint") {
     const count = values.get("count");
     if (count !== undefined && !(/^\d{1,2}$/.test(count) && Number(count) >= 1 && Number(count) <= MAX_MINT)) {

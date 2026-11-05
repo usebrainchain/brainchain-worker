@@ -43,6 +43,11 @@ describe("resolveNetwork", () => {
       weth: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
       gas: "Send it a little ETH there for gas",
       income: "0xeb1b4168D4b87D3d9F0D64E13B7071251BBB63b7",
+      bonds: {
+        registry: "0xD5Da523ee49CB7Fe855B0C6fa38707190A9D531F",
+        check: "0x2e7C4F0F2e6079C3B5F7Cd2440308234CBDc537D",
+        usdg: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+      },
     });
     expect(resolveNetwork({ BRAINCHAIN_NETWORK: "MAINNET" })).toEqual(MAINNET);
   });

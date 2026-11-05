@@ -1,0 +1,369 @@
+// A delivery bond on Shipped: the worker locks USDG on Robinhood Chain behind
+// a task, and the task's Proof is what releases it. Shipped's check reads
+// BrainChain's ProofIndex, proofOf(task) >= 1, so a task that is paid and gets
+// its Proof returns the bond less Shipped's 1% fee, and one that is not pays
+// the bond to the task's poster.
+import {
+  createPublicClient,
+  createWalletClient,
+  decodeAbiParameters,
+  decodeFunctionData,
+  encodeAbiParameters,
+  encodeFunctionData,
+  formatEther,
+  http,
+  parseAbi,
+  parseEventLogs,
+  type Address,
+  type Hex,
+  type PrivateKeyAccount,
+} from "viem";
+
+import { taskBoardAbi } from "./abi.js";
+import { erc20Abi, RECEIPT_MS, Status } from "./chain.js";
+import { chainOf, proofsChainOf, proofsTransport, type Network } from "./network.js";
+import { usdg, when } from "./standing.js";
+
+export const proofIndexAbi = parseAbi(["function proofOf(uint256 taskId) view returns (uint256)"]);
+
+const TERMS =
+  "(string title, string milestone, address project, uint8 projectKind, address asset, uint64 deadline, address verifier, address backupVerifier, address appealPanel, address check, bytes checkData, address refundTo, uint16 defaultRemainderBps, uint16 refundCapBps, bool allowPartial, uint32 verifierGrace, uint32 backupGrace, uint32 appealWindow, uint32 panelWindow, uint128 appealBond, uint128 verifierFee, address[] refundExcluded)";
+
+export const shippedAbi = parseAbi([
+  `function create(${TERMS} t, uint256 deposit) returns (uint256 deedId)`,
+  "function withdraw(address asset) returns (uint256)",
+  "function owed(address account, address asset) view returns (uint256)",
+  "function deedCount() view returns (uint256)",
+  "function core(uint256 deedId) view returns (address creator, uint8 status, address asset, uint64 deadline)",
+  `function getDeed(uint256 deedId) view returns ((address creator, uint8 status, uint8 ruling, uint16 remainderBps, uint16 feeBps, bool overturned, uint64 createdAt, uint64 ruledAt, uint64 appealedAt, uint64 settledAt, uint64 checkMetAt, uint64 windowEnd, address ruledBy, address appellant, uint256 balance, ${TERMS} terms))`,
+  `event DeedCreated(uint256 indexed deedId, address indexed creator, address indexed project, ${TERMS} terms, uint256 deposit, uint16 feeBps)`,
+  "error AssetNotAllowed()",
+  "error CreationIsPaused()",
+  "error InvalidDeadline()",
+  "error InvalidRefund()",
+  "error NothingOwed()",
+]);
+
+/** ShippedDeeds.Status and Ruling. */
+export const DeedStatus = { None: 0, Open: 1, Ruled: 2, Appealed: 3, Settled: 4 } as const;
+export const Ruling = { None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 4, Conceded: 5, Default: 6, CheckMet: 7 } as const;
+const BPS = 10_000n;
+const ZERO: Address = "0x0000000000000000000000000000000000000000";
+/** The bond's deadline is the task's plus this: grading, the worker's day to mint and the check's hold all fit. */
+export const BOND_LEAD_SEC = 48n * 3_600n;
+/** A marked check is confirmed an hour later; a bond with no Proof can be settled a day after that. */
+export const CHECK_HOLD_SEC = 3_600n;
+export const CHECK_CONFIRM_SEC = 86_400n;
+/** Shipped's fee on a released bond, in basis points, as the registry charges it today. */
+export const FEE_BPS = 100n;
+/** Below this the fee and the gas are too large a share of the bond. */
+export const MIN_BOND = 2_000_000n;
+/** Gas each transaction takes, measured on a fork of Robinhood Chain (approve 57,976; create 933,005 on a 452-byte milestone), with room. */
+export const GAS = { approve: 60_000n, create: 980_000n, withdraw: 85_000n };
+/** Deeds read per batch, and the most read when the worker's bonds are looked for. */
+const DEED_BATCH = 200;
+const DEED_SCAN = 5_000;
+
+export interface BondConfig {
+  registry: Address;
+  check: Address;
+  /** Unset until BrainChain's ProofIndex is deployed: no bond can be checked without it. */
+  proofIndex?: Address;
+  /** The bond asset on Robinhood Chain: the same USDG the task's bounty is in. */
+  usdg: Address;
+}
+
+export interface BondTerms {
+  title: string;
+  milestone: string;
+  project: Address;
+  projectKind: number;
+  asset: Address;
+  deadline: bigint;
+  verifier: Address;
+  backupVerifier: Address;
+  appealPanel: Address;
+  check: Address;
+  checkData: Hex;
+  refundTo: Address;
+  defaultRemainderBps: number;
+  refundCapBps: number;
+  allowPartial: boolean;
+  verifierGrace: number;
+  backupGrace: number;
+  appealWindow: number;
+  panelWindow: number;
+  appealBond: bigint;
+  verifierFee: bigint;
+  refundExcluded: Address[];
+}
+
+const checkDataTypes = [{ type: "address" }, { type: "bytes" }, { type: "uint8" }, { type: "uint256" }] as const;
+
+/** StaticCallCheck data: proofOf(task) on the index, at least 1. */
+export function encodeCheckData(proofIndex: Address, task: bigint): Hex {
+  return encodeAbiParameters(checkDataTypes, [proofIndex, encodeFunctionData({ abi: proofIndexAbi, functionName: "proofOf", args: [task] }), 0, 1n]);
+}
+
+/** The task a bond's check reads on `proofIndex`, or undefined for any other check. */
+export function taskOfCheck(data: Hex, proofIndex: Address): bigint | undefined {
+  try {
+    const [target, call, op, threshold] = decodeAbiParameters(checkDataTypes, data);
+    if (target.toLowerCase() !== proofIndex.toLowerCase() || op !== 0 || threshold !== 1n) return undefined;
+    const { functionName, args } = decodeFunctionData({ abi: proofIndexAbi, data: call });
+    return functionName === "proofOf" ? args[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The terms of a delivery bond on one task. Shipped's own check decides it, so
+ * there is no verifier and no appeal; the task's poster is the refund side.
+ */
+export function bondTerms(config: BondConfig & { proofIndex: Address }, task: { id: bigint; poster: Address; deadline: bigint }, board: { address: Address; chainId: number }): BondTerms {
+  return {
+    title: `BrainChain task #${task.id}`,
+    milestone:
+      `The Proof NFT for BrainChain task #${task.id} (task board ${board.address} on BrainChain, chain ${board.chainId}) is recorded in BrainChain's ProofIndex at ${config.proofIndex} on Robinhood Chain, ` +
+      `read as proofOf(${task.id}) >= 1. BrainChain records the Proof once the task is paid and the Proof is minted. ` +
+      `If no Proof is recorded by the deadline, the bond is paid to the task's poster, ${task.poster}.`,
+    project: ZERO,
+    projectKind: 0,
+    asset: config.usdg,
+    deadline: task.deadline + BOND_LEAD_SEC,
+    verifier: ZERO,
+    backupVerifier: ZERO,
+    appealPanel: ZERO,
+    check: config.check,
+    checkData: encodeCheckData(config.proofIndex, task.id),
+    refundTo: task.poster,
+    defaultRemainderBps: 0,
+    refundCapBps: 0,
+    allowPartial: false,
+    verifierGrace: 0,
+    backupGrace: 0,
+    appealWindow: 0,
+    panelWindow: 0,
+    appealBond: 0n,
+    verifierFee: 0n,
+    refundExcluded: [],
+  };
+}
+
+export interface TaskFacts {
+  poster: Address;
+  bounty: bigint;
+  deadline: bigint;
+  status: number;
+  model: Hex;
+}
+
+/** One of the worker's bonds, as the registry holds it. */
+export interface BondView {
+  deed: bigint;
+  task: bigint;
+  amount: bigint;
+  deadline: bigint;
+  status: number;
+  ruling: number;
+  remainderBps: number;
+  checkMetAt: bigint;
+  settledAt: bigint;
+  refundTo: Address;
+}
+
+/** What bonding needs from BrainChain and from Robinhood Chain. */
+export interface BondChain {
+  account: Address;
+  /** The task on the board, or undefined when there is none. */
+  task(id: bigint): Promise<TaskFacts | undefined>;
+  now(): Promise<bigint>;
+  usdgBalance(): Promise<bigint>;
+  ethBalance(): Promise<bigint>;
+  gasPrice(): Promise<bigint>;
+  allowance(): Promise<bigint>;
+  approve(amount: bigint): Promise<Hex>;
+  create(terms: BondTerms, amount: bigint): Promise<{ deed: bigint; tx: Hex }>;
+  /** The worker's bonds on one task, newest first. */
+  bondsOn(task: bigint): Promise<BondView[]>;
+  proofOf(task: bigint): Promise<bigint>;
+  owed(): Promise<bigint>;
+  withdraw(): Promise<{ amount: bigint; tx: Hex }>;
+}
+
+export function createBondChain(network: Network, config: BondConfig, account: PrivateKeyAccount): BondChain {
+  const brainchain = createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000, retryCount: 2 }) });
+  const chain = proofsChainOf(network.proofs);
+  const transport = proofsTransport(network.proofs);
+  const client = createPublicClient({ chain, transport, pollingInterval: 1_000 });
+  const wallet = createWalletClient({ account, chain, transport });
+  const registry = { address: config.registry, abi: shippedAbi } as const;
+  const token = { address: config.usdg, abi: erc20Abi } as const;
+
+  async function send(request: Parameters<typeof wallet.writeContract>[0]) {
+    const hash = await wallet.writeContract(request);
+    const receipt = await client.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
+    if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted`);
+    return { hash, receipt };
+  }
+
+  return {
+    account: account.address,
+    async task(id) {
+      const t = await brainchain.readContract({ address: network.contracts.taskBoard, abi: taskBoardAbi, functionName: "get", args: [id] });
+      return t.status === 0 ? undefined : { poster: t.poster, bounty: t.bounty, deadline: t.deadline, status: t.status, model: t.model };
+    },
+    now: async () => (await client.getBlock()).timestamp,
+    usdgBalance: () => client.readContract({ ...token, functionName: "balanceOf", args: [account.address] }),
+    ethBalance: () => client.getBalance({ address: account.address }),
+    gasPrice: () => client.getGasPrice(),
+    allowance: () => client.readContract({ ...token, functionName: "allowance", args: [account.address, config.registry] }),
+    async approve(amount) {
+      return (await send({ ...token, functionName: "approve", args: [config.registry, amount] })).hash;
+    },
+    async create(terms, amount) {
+      const { hash, receipt } = await send({ ...registry, functionName: "create", args: [terms, amount] });
+      const created = parseEventLogs({ abi: shippedAbi, eventName: "DeedCreated", args: { creator: account.address }, logs: receipt.logs }).find((log) => log.address.toLowerCase() === config.registry.toLowerCase());
+      if (!created) throw new Error(`The bond ${hash} created no deed for ${account.address}`);
+      return { deed: created.args.deedId, tx: hash };
+    },
+    async bondsOn(task) {
+      if (!config.proofIndex) return [];
+      const count = Number(await client.readContract({ ...registry, functionName: "deedCount" }));
+      const mine: bigint[] = [];
+      for (let to = count; to > Math.max(0, count - DEED_SCAN); to -= DEED_BATCH) {
+        const ids = Array.from({ length: Math.min(DEED_BATCH, to - Math.max(0, count - DEED_SCAN)) }, (_, i) => BigInt(to - i));
+        const cores = await client.multicall({ contracts: ids.map((id) => ({ ...registry, functionName: "core", args: [id] }) as const), allowFailure: false });
+        ids.forEach((id, i) => {
+          if (cores[i]![0].toLowerCase() === account.address.toLowerCase()) mine.push(id);
+        });
+      }
+      if (mine.length === 0) return [];
+      const deeds = await client.multicall({ contracts: mine.map((id) => ({ ...registry, functionName: "getDeed", args: [id] }) as const), allowFailure: false });
+      return mine.flatMap((deed, i) => {
+        const d = deeds[i]!;
+        if (d.terms.check.toLowerCase() !== config.check.toLowerCase() || taskOfCheck(d.terms.checkData, config.proofIndex!) !== task) return [];
+        return [{ deed, task, amount: d.balance, deadline: d.terms.deadline, status: d.status, ruling: d.ruling, remainderBps: d.remainderBps, checkMetAt: d.checkMetAt, settledAt: d.settledAt, refundTo: d.terms.refundTo }];
+      });
+    },
+    proofOf: (task) => client.readContract({ address: config.proofIndex!, abi: proofIndexAbi, functionName: "proofOf", args: [task] }),
+    owed: () => client.readContract({ ...registry, functionName: "owed", args: [account.address, config.usdg] }),
+    async withdraw() {
+      const amount = await client.readContract({ ...registry, functionName: "owed", args: [account.address, config.usdg] });
+      const { hash } = await send({ ...registry, functionName: "withdraw", args: [config.usdg] });
+      return { amount, tx: hash };
+    },
+  };
+}
+
+/** The ETH the bond's transactions need at this gas price, approval included when one is needed. */
+export const bondGas = (gasPrice: bigint, approves: boolean) => (GAS.create + (approves ? GAS.approve : 0n)) * gasPrice;
+
+const fee = (amount: bigint) => (amount * FEE_BPS) / BPS;
+
+/** Where a bond stands, in one line. */
+export function bondLine(network: Network, b: BondView, indexed: boolean, now: bigint): string {
+  const head = `Bond No. ${b.deed} on task ${b.task}: ${usdg(network, b.amount)}`;
+  if (b.status === DeedStatus.Settled) {
+    if (b.remainderBps === Number(BPS)) return `${head}, delivered at ${when(b.settledAt)}: ${usdg(network, b.amount - fee(b.amount))} back after Shipped's 1% fee (bond claim ${b.task} collects it)`;
+    return `${head}, missed: paid to the poster ${b.refundTo} at ${when(b.settledAt)}`;
+  }
+  if (b.checkMetAt > 0n) {
+    const confirmAt = b.checkMetAt + CHECK_HOLD_SEC;
+    return `${head}, the Proof is in the index and the check was marked at ${when(b.checkMetAt)}; BrainChain confirms it ${now < confirmAt ? `after ${when(confirmAt)}` : "shortly"}`;
+  }
+  if (now > b.deadline) return `${head}, deadline ${when(b.deadline)} passed with no Proof recorded; it settles to the poster ${b.refundTo} after ${when(b.deadline + CHECK_HOLD_SEC + CHECK_CONFIRM_SEC)}`;
+  return `${head}, open until ${when(b.deadline)}: ${indexed ? "the Proof is in the index and BrainChain marks the check shortly" : "waiting for the task to be paid and its Proof recorded"}`;
+}
+
+function closed(network: Network, config: BondConfig | undefined): string | undefined {
+  if (!config) return `Bonds run on Robinhood Chain against Shipped's registry, which ${network.name} has no counterpart of. Set BRAINCHAIN_NETWORK=mainnet.`;
+  if (!config.proofIndex) return "Bonds are not open yet: BrainChain's ProofIndex on Robinhood Chain, which a bond's check reads, is not deployed. A later release of brainchain-worker names it.";
+  return undefined;
+}
+
+export interface BondOptions {
+  amount: bigint;
+  yes: boolean;
+  /** Asks the person at the terminal; undefined when there is no terminal. */
+  ask?: (question: string) => Promise<string>;
+  log: (line: string) => void;
+}
+
+/** Reads the task, says what the bond costs and what it does, and sends the approval and the bond. */
+export async function bond(network: Network, config: BondConfig | undefined, chain: BondChain, task: bigint, options: BondOptions): Promise<void> {
+  const { log } = options;
+  const shut = closed(network, config);
+  if (shut) throw new Error(shut);
+  const open = config as BondConfig & { proofIndex: Address };
+  const t = await chain.task(task);
+  if (!t) throw new Error(`There is no task ${task} on ${network.name}.`);
+  if (t.poster.toLowerCase() === chain.account.toLowerCase()) throw new Error(`Task ${task} was posted by this wallet. A bond guarantees delivery to someone else: it earns no standing on a task the worker posted itself.`);
+  const hiredHere = t.status === Status.Hired && t.model.toLowerCase().endsWith(chain.account.slice(2).toLowerCase());
+  if (t.status !== Status.Open && !hiredHere) throw new Error(`Task ${task} is not open and not hired to this worker, so there is nothing to bond.`);
+  const now = await chain.now();
+  if (t.deadline <= now) throw new Error(`Task ${task}'s deadline, ${when(t.deadline)}, has passed.`);
+  if (options.amount < t.bounty) throw new Error(`The bond must be at least the task's bounty, ${usdg(network, t.bounty)}; ${usdg(network, options.amount)} is under it.`);
+  if (options.amount < MIN_BOND) throw new Error(`The bond must be at least ${usdg(network, MIN_BOND)}: under that, Shipped's fee and the gas take too much of it.`);
+  const existing = (await chain.bondsOn(task)).find((b) => b.status !== DeedStatus.Settled);
+  if (existing) throw new Error(`This worker already has bond No. ${existing.deed} open on task ${task}. \`bond status ${task}\` shows where it stands.`);
+
+  const [balance, allowance, gasPrice, eth] = await Promise.all([chain.usdgBalance(), chain.allowance(), chain.gasPrice(), chain.ethBalance()]);
+  const approves = allowance < options.amount;
+  const gas = bondGas(gasPrice, approves);
+  const terms = bondTerms(open, { id: task, poster: t.poster, deadline: t.deadline }, { address: network.contracts.taskBoard, chainId: network.chainId });
+  const back = options.amount - fee(options.amount);
+  log(
+    [
+      `Bond ${usdg(network, options.amount)} on task ${task} (bounty ${usdg(network, t.bounty)}, deadline ${when(t.deadline)}).`,
+      `  Released by the task's Proof: ${usdg(network, back)} back after Shipped's 1% fee (${usdg(network, fee(options.amount))}), collected with \`bond claim ${task}\`.`,
+      `  Missed: if no Proof is recorded by ${when(terms.deadline)}, the ${usdg(network, options.amount)} goes to the poster ${t.poster}.`,
+      `  Gas now: about ${formatEther(gas)} ETH on ${network.proofs.name} for ${approves ? "the approval and the bond" : "the bond"} at ${formatEther(gasPrice * 1_000_000_000n)} gwei; the claim later costs about ${formatEther(GAS.withdraw * gasPrice)} ETH.`,
+    ].join("\n"),
+  );
+  if (balance < options.amount) throw new Error(`${chain.account} holds ${usdg(network, balance)} on ${network.proofs.name}, under the ${usdg(network, options.amount)} to bond. Nothing was sent.`);
+  if (eth < gas) throw new Error(`${chain.account} holds ${formatEther(eth)} ETH on ${network.proofs.name}, under the ${formatEther(gas)} ETH the transactions need. Nothing was sent.`);
+  if (!options.yes) {
+    if (!options.ask) throw new Error("There is no terminal to confirm on. Run again with --yes to send without asking.");
+    const answer = (await options.ask("Send it? [y/N] ")).trim().toLowerCase();
+    if (answer !== "y" && answer !== "yes") return log("Nothing sent.");
+  }
+  if (approves) {
+    log(`Approving ${usdg(network, options.amount)} for Shipped's registry...`);
+    await chain.approve(options.amount);
+  }
+  log(`Bonding ${usdg(network, options.amount)} on task ${task}...`);
+  const { deed, tx } = await chain.create(terms, options.amount);
+  log(`Bond No. ${deed} is open on Shipped (${tx}). Jev reads it when it hires; \`bond status ${task}\` follows it.`);
+}
+
+/** Prints where the worker's bonds on a task stand. */
+export async function bondStatus(network: Network, config: BondConfig | undefined, chain: BondChain, task: bigint, log: (line: string) => void): Promise<void> {
+  const shut = closed(network, config);
+  if (shut) throw new Error(shut);
+  const bonds = await chain.bondsOn(task);
+  if (bonds.length === 0) return log(`${chain.account} has no bond on task ${task}.`);
+  const [now, indexed] = await Promise.all([chain.now(), chain.proofOf(task)]);
+  for (const b of bonds) log(bondLine(network, b, indexed > 0n, now));
+}
+
+/** Collects what a settled bond left the worker: withdraw(USDG) on the registry. */
+export async function bondClaim(network: Network, config: BondConfig | undefined, chain: BondChain, task: bigint, log: (line: string) => void): Promise<void> {
+  const shut = closed(network, config);
+  if (shut) throw new Error(shut);
+  const [latest] = await chain.bondsOn(task);
+  if (!latest) throw new Error(`${chain.account} has no bond on task ${task}.`);
+  if (latest.status !== DeedStatus.Settled) {
+    const [now, indexed] = await Promise.all([chain.now(), chain.proofOf(task)]);
+    throw new Error(`${bondLine(network, latest, indexed > 0n, now)}. It can be claimed once it has settled.`);
+  }
+  const owed = await chain.owed();
+  if (owed === 0n) {
+    return log(latest.remainderBps === Number(BPS) ? `Bond No. ${latest.deed} was delivered and its ${usdg(network, latest.amount - fee(latest.amount))} already withdrawn.` : `Bond No. ${latest.deed} was missed: its ${usdg(network, latest.amount)} went to the poster ${latest.refundTo}, so there is nothing to claim.`);
+  }
+  if ((await chain.ethBalance()) === 0n) throw new Error(`${chain.account} has no ETH on ${network.proofs.name} to pay gas for the claim.`);
+  log(`Claiming ${usdg(network, owed)} from Shipped's registry on ${network.proofs.name}...`);
+  const { amount, tx } = await chain.withdraw();
+  log(`Paid ${usdg(network, amount)} to ${chain.account} (${tx}).`);
+}

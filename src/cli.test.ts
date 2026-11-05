@@ -6,7 +6,7 @@ import { parseEther, type Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { asksHelp, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
+import { asksHelp, bondArgs, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
@@ -34,8 +34,30 @@ describe("parse", () => {
   });
 });
 
+describe("bondArgs", () => {
+  it("reads a task and an amount, or status and claim with a task, and refuses the rest", () => {
+    expect(bondArgs(["12", "5"])).toEqual({ action: "bond", task: 12n, amount: 5_000_000n });
+    expect(bondArgs(["12", "2.5"])).toEqual({ action: "bond", task: 12n, amount: 2_500_000n });
+    expect(bondArgs(["status", "12"])).toEqual({ action: "status", task: 12n });
+    expect(bondArgs(["claim", "12"])).toEqual({ action: "claim", task: 12n });
+    expect(parse("bond", ["12", "5", "--yes"])).toEqual({ positional: ["12", "5"], values: new Map(), switches: new Set(["yes"]) });
+    for (const [args, error] of [
+      [[], "Usage: brainchain-worker bond <task> <USDG>"],
+      [["0", "5"], "Usage: brainchain-worker bond <task> <USDG>"],
+      [["12"], "The amount is in USDG"],
+      [["12", "0"], "The amount is in USDG"],
+      [["12", "1.2345678"], "The amount is in USDG"],
+      [["status"], "Usage: brainchain-worker bond status <task>"],
+      [["claim", "x"], "Usage: brainchain-worker bond claim <task>"],
+    ] as const) {
+      expect(() => bondArgs([...args])).toThrow(error);
+    }
+    expect(() => parse("bond", ["12", "5", "6"])).toThrow(UsageError);
+  });
+});
+
 describe("help", () => {
-  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bridge", "propose", "proposal", "watch", "credit", "dispute", "appeal", "leave", "withdraw"];
+  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bond", "bridge", "propose", "proposal", "watch", "credit", "dispute", "appeal", "leave", "withdraw"];
 
   async function printed(argv: string[]): Promise<string> {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
