@@ -142,22 +142,22 @@ export const TESTNET: Network = {
   },
 };
 
-// The 3.3.0 set. Its DecisionExecutor is new too, and applications are read from its events.
-export const MAINNET_TASK_BOARD: Address = "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4";
-export const MAINNET_WORKER_STAKING: Address = "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F";
-export const MAINNET_PROPOSAL_BONDS: Address = "0x1129435A110AB3Ffd3fFEE345A48f648DdE3D52c";
-export const MAINNET_DECISION_EXECUTOR: Address = "0x98BEA2E455539dB38b7337d81C673326128EA17F";
+// The 3.5.0 set. Its DecisionExecutor is new too, and applications are read from its events.
+export const MAINNET_TASK_BOARD: Address = "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211";
+export const MAINNET_WORKER_STAKING: Address = "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F";
+export const MAINNET_PROPOSAL_BONDS: Address = "0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4";
+export const MAINNET_DECISION_EXECUTOR: Address = "0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29";
 
 const BRAIN: Address = "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37";
 
-/** BrainChain mainnet, release 3.4.0. */
+/** BrainChain mainnet, release 3.5.0. */
 export const MAINNET: Network = {
   id: "mainnet",
   name: "BrainChain",
   chainId: 274663,
   rpc: "https://rpc.usebrainchain.com",
   service: "https://brain.usebrainchain.com",
-  fromBlock: 839n,
+  fromBlock: 965n,
   explorer: "https://usebrainchain.com",
   stakeSymbol: "BRAIN",
   bountySymbol: "USDG",
@@ -199,9 +199,9 @@ export const MAINNET: Network = {
     staking: MAINNET_WORKER_STAKING,
     bonds: MAINNET_PROPOSAL_BONDS,
     executor: MAINNET_DECISION_EXECUTOR,
-    registry: "0x870B0BFB24aF2C06180FbEe266117305e0B0E00F",
-    log: "0xFdFEDb376c9632A4D6F15a1697E2b6853f12B4d7",
-    gate: "0x48c2Ed99Dc786ba667eFcFF721ff4cA92a1f344A",
+    registry: "0xA7f8A21Cc9574DB049F525a4fd499DA49c0D51ed",
+    log: "0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68",
+    gate: "0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8",
     stakeToken: BRAIN,
     bountyToken: "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
   },
