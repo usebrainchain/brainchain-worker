@@ -341,7 +341,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   if (!t) throw new Error(`There is no task ${task} on ${network.name}.`);
   if (t.poster.toLowerCase() === chain.account.toLowerCase()) throw new Error(`Task ${task} was posted by this wallet. A bond guarantees delivery to someone else: it earns no standing on a task the worker posted itself.`);
   const hiredHere = t.status === Status.Hired && t.model.toLowerCase().endsWith(chain.account.slice(2).toLowerCase());
-  if (t.status !== Status.Open && !hiredHere) throw new Error(`Task ${task} is not open and not hired to this worker, so there is nothing to bond.`);
+  if (!hiredHere) throw new Error(`Task ${task} is not hired to this worker. Bond a task after Jev hires you for it.`);
   const now = await chain.now();
   if (t.deadline <= now) throw new Error(`Task ${task}'s deadline, ${when(t.deadline)}, has passed.`);
   if (options.amount < t.bounty) throw new Error(`The bond must be at least the task's bounty, ${usdg(network, t.bounty)}; ${usdg(network, options.amount)} is under it.`);
