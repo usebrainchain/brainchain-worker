@@ -53,6 +53,8 @@ async function mintRun(chain: ProofsChain, fetcher: typeof fetch, options: { dry
   return lines;
 }
 
+const LAG = "`mint --dry` lists these tasks until the service has seen these mints, which can take minutes. A mint before then, here or by `run --mint`, pays for another piece.";
+
 describe("mint", () => {
   it("approves the price and mints one piece for each task the service lists, and prints the task, token id and hash", async () => {
     const { chain, sent } = fakeChain();
@@ -64,6 +66,7 @@ describe("mint", () => {
       "Minting 2 Proofs on Robinhood Chain at 0.001 WETH each plus gas...",
       `Minted Proof 29 for task 12 (${TX}).`,
       `Minted Proof 30 for task 15 (${TX}).`,
+      LAG,
     ]);
   });
 
@@ -101,7 +104,7 @@ describe("mint", () => {
     const lines = await mintRun(chain, fetcher, { network: TESTNET });
     expect(fetcher.mock.calls[0]![0]).toBe(`https://brain.testnet.usebrainchain.com/proofs/274630/pending/${ACCOUNT}`);
     expect(sent).toEqual(["faucet", `approve ${PRICE}`, "mint"]);
-    expect(lines).toEqual(["Claiming test WETH from the faucet...", "Minting 1 Proof on Robinhood Chain testnet at 0.001 WETH each plus gas...", `Minted Proof 29 for task 4 (${TX}).`]);
+    expect(lines).toEqual(["Claiming test WETH from the faucet...", "Minting 1 Proof on Robinhood Chain testnet at 0.001 WETH each plus gas...", `Minted Proof 29 for task 4 (${TX}).`, LAG]);
 
     const dry = fakeChain({ weth: 0n });
     expect((await mintRun(dry.chain, listing({ tasks: ["4"] }), { network: TESTNET, dry: true })).at(-1)).toBe(
@@ -122,13 +125,13 @@ describe("mint", () => {
   it("mints at most 10 a run, or --count, and says how many tasks are left", async () => {
     const tasks = Array.from({ length: 12 }, (_, i) => String(i + 1));
     const all = fakeChain({ weth: parseEther("1") });
-    expect((await mintRun(all.chain, listing({ tasks }))).at(-1)).toBe("2 more paid tasks wait for a Proof: run mint again.");
+    expect((await mintRun(all.chain, listing({ tasks }))).slice(-2)).toEqual(["2 more paid tasks wait for a Proof, for a later mint.", LAG]);
     expect(all.chain.mint).toHaveBeenCalledTimes(10);
 
     const one = fakeChain();
     const lines = await mintRun(one.chain, listing({ tasks: ["12", "15"] }), { count: 1 });
     expect(one.chain.mint).toHaveBeenCalledOnce();
-    expect(lines.at(-1)).toBe("1 more paid task waits for a Proof: run mint again.");
+    expect(lines.slice(-2)).toEqual(["1 more paid task waits for a Proof, for a later mint.", LAG]);
   });
 
   it("says so when no paid task waits for a Proof", async () => {

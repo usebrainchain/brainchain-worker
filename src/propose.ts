@@ -4,17 +4,14 @@ import {
   createWalletClient,
   decodeErrorResult,
   decodeFunctionData,
-  encodeAbiParameters,
   encodeFunctionData,
   ExecutionRevertedError,
   getAddress,
   isAddress,
   isHex,
-  keccak256,
   parseAbi,
   parseEventLogs,
   size,
-  slice,
   type Abi,
   type AbiParameter,
   type Address,
@@ -22,8 +19,8 @@ import {
   type PrivateKeyAccount,
 } from "viem";
 
-import { erc20Errors } from "./abi.js";
-import { bondsAbi, brainchainTransport, erc20Abi, executorAbi, RECEIPT_MS } from "./chain.js";
+import { erc20Errors, transferErrors } from "./abi.js";
+import { bondsAbi, brainchainTransport, callVetoed, erc20Abi, executorAbi, openProposalOf, RECEIPT_MS } from "./chain.js";
 import { chainOf, type Network } from "./network.js";
 import { gasHelp, stake, when } from "./standing.js";
 
@@ -46,23 +43,22 @@ export const GOVERNED = {
 export type Target = keyof typeof GOVERNED;
 const TARGETS = Object.keys(GOVERNED) as Target[];
 
-/** What the brain reads from a proposal's URI, cut to the lengths it keeps. */
+/** What the brain reads from a proposal's URI, cut to the lengths it keeps, in UTF-16 units as a JavaScript string counts them. */
 export const LIMITS = { title: 120, rationale: 1_500, current: 300, proposed: 300 } as const;
+/** The most the brain reads of a whole case as JSON; past it, the case reads as blank and Jev decides on the call alone. */
+export const CASE_BYTES = 4_096;
 
 const proposalsAbi = parseAbi([
   "event Expired(uint256 indexed id)",
   "function decideWithin() view returns (uint64)",
 ]);
-const executorReadsAbi = parseAbi([
-  "function vetoed(address target, bytes4 selector) view returns (bool)",
-  "function vetoedCall(bytes32) view returns (bool)",
-  "function changeThresholdBps() view returns (uint16)",
-]);
+const executorReadsAbi = parseAbi(["function changeThresholdBps() view returns (uint16)"]);
 
 // The reverts a governed call can hit, so a rehearsal names the rule it broke.
 const callErrorsAbi = [
-  ...parseAbi(["error BadConfig()", "error BadFee()", "error ZeroAddress()", "error NotOwner()", "error NotSelf()", "error NotGuardian()"]),
+  ...parseAbi(["error BadConfig()", "error BadFee()", "error ZeroAddress()", "error NotOwner()", "error NotSelf()", "error NotGuardian()", "error AccountShapedId()", "error UnknownModel()"]),
   ...erc20Errors,
+  ...transferErrors,
 ] as const;
 
 /** Mirrors ProposalBonds.State. */
@@ -201,7 +197,9 @@ export function caseURI(call: Call, input: Case): string {
   for (const key of Object.keys(LIMITS) as (keyof typeof LIMITS)[]) {
     if (body[key].length > LIMITS[key]) throw new ProposalError(`--${key} is at most ${LIMITS[key]} characters`);
   }
-  return `data:application/json;base64,${Buffer.from(JSON.stringify(body)).toString("base64")}`;
+  const json = Buffer.from(JSON.stringify(body));
+  if (json.byteLength > CASE_BYTES) throw new ProposalError(`The case is ${json.byteLength} bytes as JSON, and Jev reads at most ${CASE_BYTES}, which text outside the Latin alphabet reaches before the character limits. Shorten it.`);
+  return `data:application/json;base64,${json.toString("base64")}`;
 }
 
 export interface Proposal {
@@ -210,6 +208,8 @@ export interface Proposal {
   bond: bigint;
   createdAt: bigint;
   state: number;
+  /** When Jev's window closes, fixed when the call was proposed. */
+  deadline: bigint;
 }
 
 /** What propose and proposal need from BrainChain. */
@@ -225,6 +225,8 @@ export interface ProposalChain {
   changeThresholdBps(): Promise<bigint>;
   timelock(): Promise<bigint>;
   vetoed(call: Call): Promise<boolean>;
+  /** The open proposal for this exact call, from any wallet, or 0n. */
+  openProposal(call: Call): Promise<bigint>;
   /** The revert the call would hit if the executor made it now, or undefined when it would succeed. */
   rehearse(call: Call): Promise<string | undefined>;
   /** Approves the bond if needed, proposes, waits for the receipt and returns the proposal's id. */
@@ -272,19 +274,8 @@ export function createProposals(network: Network, account: PrivateKeyAccount): P
     decideWithin: () => client.readContract({ ...proposals, functionName: "decideWithin" }),
     changeThresholdBps: async () => BigInt(await client.readContract({ address: executor, abi: executorReadsAbi, functionName: "changeThresholdBps" })),
     timelock: () => client.readContract({ address: executor, abi: executorAbi, functionName: "timelock" }),
-    // A set 3.4.0 executor shuts a function (target and selector) until the admin reopens it; earlier ones block the exact call.
-    vetoed: async (call) => {
-      try {
-        return await client.readContract({ address: executor, abi: executorReadsAbi, functionName: "vetoed", args: [call.address, slice(call.data, 0, 4)] });
-      } catch {
-        return client.readContract({
-          address: executor,
-          abi: executorReadsAbi,
-          functionName: "vetoedCall",
-          args: [keccak256(encodeAbiParameters([{ type: "address" }, { type: "bytes" }], [call.address, call.data]))],
-        });
-      }
-    },
+    vetoed: (call) => callVetoed(client, executor, call.address, call.data),
+    openProposal: (call) => openProposalOf(client, network, call.address, call.data),
     async rehearse(call) {
       try {
         await client.call({ account: executor, to: call.address, data: call.data });
@@ -295,7 +286,12 @@ export function createProposals(network: Network, account: PrivateKeyAccount): P
         if (!(error instanceof BaseError) || !reverted) throw error;
         const raw = error.walk((e) => typeof (e as { data?: unknown }).data === "string") as { data?: Hex } | null;
         try {
-          if (raw?.data) return `${decodeErrorResult({ abi: callErrorsAbi, data: raw.data }).errorName}, the contract's check on these values`;
+          if (raw?.data) {
+            const decoded = decodeErrorResult({ abi: callErrorsAbi, data: raw.data });
+            // A plain Solidity revert carries its reason as text, and its error's name says nothing.
+            if ((decoded.errorName as string) === "Error") return String(decoded.args?.[0]);
+            return `${decoded.errorName}, the contract's check on these values`;
+          }
         } catch {
           // Not one of the contracts' own errors; the node's message says more.
         }
@@ -312,7 +308,7 @@ export function createProposals(network: Network, account: PrivateKeyAccount): P
     },
     async get(id) {
       const p = await client.readContract({ ...proposals, functionName: "get", args: [id] });
-      return { id, proposer: p.proposer, bond: p.bond, createdAt: p.createdAt, state: p.state };
+      return { id, proposer: p.proposer, bond: p.bond, createdAt: p.createdAt, state: p.state, deadline: p.deadline };
     },
     async outcome(id) {
       const [settled, expired] = await Promise.all([
@@ -343,7 +339,7 @@ export async function propose(
   options: { dry: boolean; log: (line: string) => void },
 ): Promise<void> {
   const { log } = options;
-  const [bond, balance, gas, within, threshold, timelock, vetoed, revert] = await Promise.all([
+  const [bond, balance, gas, within, threshold, timelock, vetoed, open, revert] = await Promise.all([
     chain.bond(),
     chain.stakeBalance(),
     chain.ethBalance(),
@@ -351,9 +347,11 @@ export async function propose(
     chain.changeThresholdBps(),
     chain.timelock(),
     chain.vetoed(call),
+    chain.openProposal(call),
     chain.rehearse(call),
   ]);
   if (vetoed) throw new ProposalError(`The guardian vetoed ${call.text} on the ${call.target}, so the executor does not queue it until the admin reopens that function`);
+  if (open > 0n) throw new ProposalError(`Proposal ${open} already asks for ${call.text} on the ${call.target} and is still open, and the contract takes one at a time. Follow it with \`npx brainchain-worker proposal ${open}\`.`);
   if (revert) throw new ProposalError(`${call.text} would fail if the executor made it now (${revert}), so the bond would be burned for nothing`);
   log(`Proposal on ${network.name}
   Call      ${call.text} on the ${call.target} (${call.address})
@@ -379,9 +377,8 @@ export async function proposal(network: Network, chain: ProposalChain, id: bigin
   if (p.state === State.None) throw new ProposalError(`There is no proposal ${id} on ${network.name}`);
   const head = `Proposal ${id} by ${p.proposer}, bond ${stake(network, p.bond)}`;
   if (p.state === State.Open) {
-    const [within, now] = await Promise.all([chain.decideWithin(), chain.now()]);
-    const closes = p.createdAt + within;
-    const after = now > closes ? `its window closed at ${when(closes)}, so anyone can return the bond with expire` : `Jev decides by ${when(closes)}`;
+    const now = await chain.now();
+    const after = now > p.deadline ? `its window closed at ${when(p.deadline)}, so anyone can return the bond by calling expire on ${network.contracts.bonds}` : `Jev decides by ${when(p.deadline)}`;
     log(`${head}\n  Waiting for Jev: ${after}.`);
     return;
   }

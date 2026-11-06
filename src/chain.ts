@@ -5,6 +5,7 @@ import {
   ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
+  encodeAbiParameters,
   encodeFunctionData,
   http,
   HttpRequestError,
@@ -13,12 +14,14 @@ import {
   parseAbi,
   parseEventLogs,
   RpcRequestError,
+  slice,
   TimeoutError,
   toBytes,
   WaitForTransactionReceiptTimeoutError,
   type Address,
   type Hex,
   type PrivateKeyAccount,
+  type PublicClient,
 } from "viem";
 
 import { erc20Errors, taskBoardAbi, transferErrors, workerStakingAbi } from "./abi.js";
@@ -41,8 +44,10 @@ export const bondsAbi = [
     "event Proposed(uint256 indexed id, address indexed proposer, address indexed target, bytes data, uint128 bond, string uri)",
     "event Settled(uint256 indexed id, uint256 indexed decisionId, bool adopted)",
     "function propose(address target, bytes data, string uri) returns (uint256)",
-    "function get(uint256 id) view returns ((address proposer, uint128 bond, uint64 createdAt, uint8 state, bytes32 subject))",
+    "function get(uint256 id) view returns ((address proposer, uint128 bond, uint64 createdAt, uint8 state, bytes32 subject, uint64 deadline, uint16 thresholdBps))",
     "function bond() view returns (uint128)",
+    "function openProposal(bytes32 subject) view returns (uint256)",
+    "error AlreadyProposed(uint256 id)",
   ]),
   ...erc20Errors,
   ...transferErrors,
@@ -52,6 +57,9 @@ export const executorAbi = parseAbi([
   "event Queued(uint256 indexed changeId, uint256 indexed decisionId, address indexed target, bytes data, uint64 eta)",
   "function getChange(uint256 changeId) view returns ((address target, bytes data, uint64 eta, bool executed, bool vetoed))",
   "function timelock() view returns (uint64)",
+  "function changeSubject(address target, bytes data) view returns (bytes32)",
+  "function vetoed(address target, bytes4 selector) view returns (bool)",
+  "function vetoedCall(bytes32) view returns (bool)",
 ]);
 
 /** The appeal terms of a task on set 3.5.0 and later; earlier boards have no appeals and no Ruled or Appealed status. */
@@ -127,6 +135,28 @@ export function workerId(account: Address): Hex {
 
 export function applicationData(account: Address): Hex {
   return encodeFunctionData({ abi: taskBoardAbi, functionName: "setWorkerAllowed", args: [account, true] });
+}
+
+type Reader = Pick<PublicClient, "readContract">;
+
+/** Whether the guardian's veto shuts a call. A set 3.4.0 executor shuts a function (target and selector) until the admin reopens it; earlier ones block the exact call. */
+export async function callVetoed(client: Reader, executor: Address, target: Address, data: Hex): Promise<boolean> {
+  try {
+    return await client.readContract({ address: executor, abi: executorAbi, functionName: "vetoed", args: [target, slice(data, 0, 4)] });
+  } catch {
+    return client.readContract({
+      address: executor,
+      abi: executorAbi,
+      functionName: "vetoedCall",
+      args: [keccak256(encodeAbiParameters([{ type: "address" }, { type: "bytes" }], [target, data]))],
+    });
+  }
+}
+
+/** The open proposal for this exact call, from any wallet, or 0n: the bond contract takes one at a time. */
+export async function openProposalOf(client: Reader, network: Network, target: Address, data: Hex): Promise<bigint> {
+  const subject = await client.readContract({ address: network.contracts.executor, abi: executorAbi, functionName: "changeSubject", args: [target, data] });
+  return client.readContract({ address: network.contracts.bonds, abi: bondsAbi, functionName: "openProposal", args: [subject] });
 }
 
 /** The contract error a call reverted with, when the ABI knows it. */
@@ -289,6 +319,7 @@ const PLAIN: Record<string, string> = {
   ERC20InsufficientAllowance: "the wallet has not approved enough of the token for the contract to take",
   ERC20InsufficientBalance: "the wallet holds too little of the token",
   Locked: "the stake is still locked",
+  AlreadyProposed: "that exact call already has an open proposal, and the contract takes one at a time",
 };
 
 /** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
@@ -508,6 +539,10 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     },
     apply: (profileURI: string) =>
       send({ address: bonds, abi: bondsAbi, functionName: "propose", args: [taskBoard, applicationData(account.address), profileURI] }),
+    /** Whether the guardian's veto shuts allowing a worker, which is what an application asks for. */
+    applicationVetoed: () => callVetoed(client, executor, taskBoard, applicationData(account.address)),
+    /** An open proposal to allow this worker, from any wallet, or 0n. */
+    openApplication: () => openProposalOf(client, network, taskBoard, applicationData(account.address)),
     /**
      * This worker's applications, newest last, with their state and the
      * decision that settled each, and the last change any of them queued.

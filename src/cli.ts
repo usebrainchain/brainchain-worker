@@ -271,15 +271,12 @@ async function needGas(chain: Chain, network: Network): Promise<void> {
 export async function join(chain: Chain, network: Network, values: Map<string, string>): Promise<void> {
   const name = values.get("name")?.trim() ?? "";
   const about = values.get("about")?.trim() ?? "";
-  if (!name) throw new UsageError("--name is required, up to 60 characters");
-  if (name.length > 60) throw new UsageError("--name is at most 60 characters");
+  // What the brain keeps, in UTF-16 units as a JavaScript string counts them: one for nearly all text, two or more for an emoji.
+  if (name.length > 60) throw new UsageError("--name is at most 60 characters, counted as UTF-16 units: one for nearly all text, two or more for an emoji");
   // A name that hides characters or turns text around can read as another, Jev's included.
   const nameHides = unseen(name);
   if (nameHides) throw new UsageError(`--name must be one line with no invisible or direction-changing characters, and it holds ${nameHides}`);
-  if (!about) {
-    throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it to decide and refuses an empty application");
-  }
-  if (about.length > 500) throw new UsageError("--about is at most 500 characters");
+  if (about.length > 500) throw new UsageError("--about is at most 500 characters, counted as UTF-16 units: one for nearly all text, two or more for an emoji");
   // A description may run over several lines.
   const aboutHides = unseen(about.replace(/[\t\n]/g, " "));
   if (aboutHides) throw new UsageError(`--about must have no invisible or direction-changing characters, and it holds ${aboutHides}`);
@@ -292,6 +289,16 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
 
   const standing = await snapshot(chain);
   const { allowed, w, change, pending, open, applying, toStake } = standing;
+  // Only an application carries a name and a description, so a worker already allowed or waiting needs neither.
+  if (applying) {
+    if (!name) throw new UsageError("--name is required, up to 60 characters");
+    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it to decide and refuses an empty application");
+    if (await chain.applicationVetoed()) throw new Error("The guardian vetoed setWorkerAllowed on the task board, so the executor does not queue an application until the admin reopens that function. Nothing was sent.");
+    const taken = await chain.openApplication();
+    if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with \`npx brainchain-worker proposal ${taken}\`.`);
+  } else if (name || about) {
+    console.log("This worker is past its application, so --name and --about are not used.");
+  }
   // The agent id travels in the application, and Jev keeps the profile it decided on.
   if (agentId !== undefined) {
     if (allowed || (change && pending) || open) {
@@ -731,9 +738,8 @@ export async function main(argv: string[]): Promise<void> {
   if (command === "proposal") {
     const id = positional[0];
     if (id === undefined || !/^\d{1,18}$/.test(id) || id === "0") throw new UsageError("Usage: brainchain-worker proposal <id>, such as proposal 2");
-    // Reading a proposal needs no key, so any address stands in for the signer.
-    const reader = keyConfigured() ? signer().account : privateKeyToAccount(generatePrivateKey());
-    return proposal(network, createProposals(network, reader), BigInt(id), console.log);
+    // Reading a proposal needs no key, so any address stands in for the signer, and a key that is set is never read.
+    return proposal(network, createProposals(network, privateKeyToAccount(generatePrivateKey())), BigInt(id), console.log);
   }
   const worker = signer();
   if (command === "dispute" || command === "appeal") {

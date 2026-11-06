@@ -1,4 +1,4 @@
-import { createPublicClient, http, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { BaseError, ContractFunctionRevertedError, createPublicClient, http, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { reason } from "./chain.js";
 import { parentChainOf, type Network } from "./network.js";
@@ -71,6 +71,8 @@ export async function credit(
   try {
     owner = await chain.ownerOf(agentId);
   } catch (error) {
+    // The registry reverts ownerOf for an id it never minted; anything else says nothing about the agent.
+    if (error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError)) throw new Error(`There is no ERC-8004 agent ${agentId} on Robinhood Chain.`);
     throw new Error(`ERC-8004 agent ${agentId} could not be read on Robinhood Chain: ${reason(error)}`);
   }
   if (owner.toLowerCase() !== chain.account.toLowerCase()) {
