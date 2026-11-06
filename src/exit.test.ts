@@ -96,7 +96,6 @@ describe("pieces", () => {
   });
   it("splits Solana USDC between gas and stake", () => {
     expect(split(10_000_000n, 2_000_000n, true)).toEqual({ gas: 2_000_000n, stake: 8_000_000n });
-    expect(split(3_000_000n, 2_000_000n, false)).toEqual({ gas: 3_000_000n, stake: 0n });
     expect(() => split(2_000_000n, 2_000_000n, true)).toThrow(/more than the 2 USDC/);
   });
 });

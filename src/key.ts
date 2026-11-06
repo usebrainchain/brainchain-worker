@@ -9,7 +9,7 @@ import { stateDir } from "./state.js";
 const HANDOFF = "BRAINCHAIN_WORKER_KEY_HANDOFF";
 const HANDOFF_NAME = /^brainchain-worker-key-[0-9a-f]{32}$/;
 
-const expandHome = (path: string) => (path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path);
+export const expandHome = (path: string) => (path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path);
 
 /** Whether the environment names a key, without reading it: a key file can be a pipe, which reads only once. */
 export const keyConfigured = (env: NodeJS.ProcessEnv = process.env) =>

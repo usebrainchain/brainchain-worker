@@ -10,7 +10,7 @@ import { brainchainTransport, createChain, faucetReopens, reason, requireChainId
 import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
 import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
 import { createExitChain, exit as exitToParent } from "./exit.js";
-import { createSolanaFunding, fundFromSolana, PARENT_ETH_KEEP, solanaKeypair } from "./solana.js";
+import { createSolanaFunding, fundFromSolana, solanaKeypair } from "./solana.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, type Network } from "./network.js";
@@ -653,6 +653,7 @@ export async function main(argv: string[]): Promise<void> {
       if (v !== undefined && (!/^\d{1,9}(\.\d{1,6})?$/.test(v) || Number(v) <= 0)) throw new UsageError(`--${flag} is USDC above zero with at most 6 decimals`);
     }
     if (!usdc) throw new UsageError("--usdc is required: how much USDC on Solana to use, such as --usdc 5");
+    if (gasUsdc && !switches.has("stake") && parseUnits(gasUsdc, 6) > parseUnits(usdc, 6)) throw new UsageError(`--gas-usdc ${gasUsdc} is more than --usdc ${usdc}, the most this command may spend`);
     if (network.id !== "mainnet" || !network.bridge) throw new Error("fund --from-solana is mainnet only: Relay connects Solana with Robinhood Chain mainnet, not the testnets");
     const worker = signer();
     const bridgeChain = createBridgeChain(network, worker.account);
@@ -666,16 +667,9 @@ export async function main(argv: string[]): Promise<void> {
       ...(network.bridge.tokens?.stake ? { stakeToken: network.bridge.tokens.stake } : {}),
       dry: switches.has("dry"),
       log: console.log,
-      async bridgeOn(asset) {
-        if (asset === "eth") {
-          const eth = await bridgeChain.parentEth();
-          if (eth <= PARENT_ETH_KEEP) return console.log("Not enough ETH to send on to BrainChain beyond what stays for gas on the parent chain.");
-          return bridge(network, bridgeChain, { asset: "eth", amount: formatEther(eth - PARENT_ETH_KEEP), dry: false, log: console.log });
-        }
-        const held = await bridgeChain.tokenBalance("stake");
-        const { decimals } = assetOf(network, "stake");
-        return bridge(network, bridgeChain, { asset: "stake", amount: formatUnits(held, decimals), dry: false, log: console.log });
-      },
+      parentEth: () => bridgeChain.parentEth(),
+      parentStake: () => bridgeChain.tokenBalance("stake"),
+      bridgeOn: (asset, amount) => bridge(network, bridgeChain, { asset, amount: formatUnits(amount, assetOf(network, asset).decimals), dry: false, log: console.log }),
     });
   }
   if (command === "credit") {
