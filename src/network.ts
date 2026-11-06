@@ -68,6 +68,8 @@ export interface Network {
     /** The guardian gate a watcher vetoes through, on sets that have one. */
     gate?: Address;
   };
+  /** The desk `exit` pays on BrainChain. Pinned here, since the service only names it and a transfer to the wrong address is gone. */
+  exitDesk: Address;
   /** The ERC-8004 identity registry on the parent chain, where `join --agent-id` checks the wallet holds the agent; mainnet only. */
   identity?: Address;
   /** Priors' credit pool and BrainChain's root identity in it, where `credit` signs its consent; mainnet only. */
@@ -126,6 +128,7 @@ export const TESTNET: Network = {
     router: "0x1BBe71Dd3af85309A5c7Ab00B190F38f34Fe3569",
     gas: "Get Robinhood Chain testnet ETH at https://faucet.testnet.chain.robinhood.com",
   },
+  exitDesk: "0xf848984c8A0D9E49Cc9C97380C62b34C6f3b97D1",
   contracts: {
     taskBoard: "0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4",
     staking: "0x6aFC3EFB49CF9b14C2F7c6C4f6C0bb3eF0125e2b",
@@ -190,6 +193,7 @@ export const MAINNET: Network = {
     gas: "Send it a little ETH on Robinhood Chain",
     tokens: { stake: "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418", bounty: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
   },
+  exitDesk: "0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E",
   contracts: {
     taskBoard: MAINNET_TASK_BOARD,
     staking: MAINNET_WORKER_STAKING,
