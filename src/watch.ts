@@ -147,24 +147,51 @@ export async function requireWatcher(chain: WatchChain, log: (line: string) => v
 /**
  * Re-checks one decision against the chain and the published record; the
  * findings are what disagreed. A decision that verified comes with the record's
- * bytes as served, when the worker reports its rounds.
+ * bytes as served, when the worker reports its rounds. It throws when the
+ * decision cannot be checked yet, and the round stops there.
  */
 export type Verify = (id: bigint) => Promise<{ findings: string[]; record?: Uint8Array; withheld?: string[] }>;
+
+/** How long after a decision was recorded a record that cannot be read may hold a round's place. */
+export const UNREADABLE_MS = 86_400_000;
+
+/**
+ * A record that cannot be read stops the round and holds its place, so a host's
+ * outage costs no check. Only for a day from the decision's block time: one dead
+ * address would otherwise blind a watcher to every decision after it, so past
+ * that it is a finding, reported once, and the round moves on.
+ */
+function unreadable(why: string, recordedAt: string | undefined, now: number): { findings: string[] } {
+  if (recordedAt === undefined || !(now - Date.parse(recordedAt) >= UNREADABLE_MS)) throw new Error(why);
+  return { findings: [`the record could not be read a day or more after it was recorded: ${why}`] };
+}
 
 /**
  * What one decision's checks come to. A check that failed is a finding, whatever
  * else could not be read. A check that could not run says nothing about the
- * decision, so with no failure it is thrown, and the round stops there to try it
- * again. A record served without its work leaves its hash checks unrun, which is
- * neither a finding nor a verified decision: `withheld` names them.
+ * decision, so it follows the rule for an unreadable record. A record served
+ * without its work leaves its hash checks unrun, which is neither a finding nor a
+ * verified decision: `withheld` names them. With `refetch`, a verified decision
+ * comes with the record's bytes as served, for the report, and a failure to fetch
+ * them follows the same rule.
  */
-export function outcome(report: Pick<DecisionReport, "checks" | "withheld">): { findings: string[]; withheld?: string[] } {
+export async function outcome(
+  report: Pick<DecisionReport, "checks" | "withheld" | "recordedAt" | "payloadURI">,
+  options: { refetch?: (uri: string) => Promise<Uint8Array>; now?: number } = {},
+): Promise<Awaited<ReturnType<Verify>>> {
+  const now = options.now ?? Date.now();
   const said = (status: string) => report.checks.filter((c) => c.status === status).map((c) => `${c.name}: ${c.message}`);
   const findings = said("fail");
+  if (findings.length > 0) return { findings };
   const unread = said("error");
-  if (findings.length === 0 && unread.length > 0) throw new Error(unread.join("; "));
-  if (findings.length > 0 || !report.withheld) return { findings };
-  return { findings, withheld: report.checks.filter((c) => c.status === "skip" && c.name.endsWith("-hash")).map((c) => c.name) };
+  if (unread.length > 0) return unreadable(unread.join("; "), report.recordedAt, now);
+  if (report.withheld) return { findings, withheld: report.checks.filter((c) => c.status === "skip" && c.name.endsWith("-hash")).map((c) => c.name) };
+  if (!options.refetch || !report.payloadURI) return { findings };
+  try {
+    return { findings, record: await options.refetch(report.payloadURI) };
+  } catch (error) {
+    return unreadable(reason(error), report.recordedAt, now);
+  }
 }
 
 /** The service's prefix on a report; the worker signs the prefix and the report's JSON text. */

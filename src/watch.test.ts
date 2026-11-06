@@ -3,7 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
 import { TESTNET } from "./network.js";
-import { argumentsOf, FLOORS, createReporter, createWatch, fetchProof, judge, MAX_CHECKED, MAX_FINDINGS, outcome, REPORT_PREFIX, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
+import { argumentsOf, FLOORS, createReporter, createWatch, fetchProof, judge, MAX_CHECKED, MAX_FINDINGS, outcome, REPORT_PREFIX, UNREADABLE_MS, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
 
 const TX: Hex = `0x${"ab".repeat(32)}`;
 const BOARD: Address = TESTNET.contracts.taskBoard;
@@ -242,16 +242,18 @@ describe("a one-shot run", () => {
 describe("what a decision's checks come to", () => {
   const check = (name: string, status: "ok" | "fail" | "skip" | "error", message = name) => ({ name, status, message });
 
-  it("treats fail as a finding and error as could not be checked, a real failure winning over what could not be read", () => {
-    expect(outcome({ checks: [check("read", "ok"), check("threshold", "skip")] })).toEqual({ findings: [] });
-    expect(outcome({ checks: [check("record-hash", "fail", "differs")] })).toEqual({ findings: ["record-hash: differs"] });
-    expect(() => outcome({ checks: [check("fetch", "error", "could not fetch")] })).toThrow("fetch: could not fetch");
-    expect(outcome({ checks: [check("answer", "fail", "differs"), check("fetch", "error", "could not fetch")] })).toEqual({ findings: ["answer: differs"] });
+  it("treats fail as a finding and error as could not be checked, a real failure winning over what could not be read", async () => {
+    await expect(outcome({ checks: [check("read", "ok"), check("threshold", "skip")] })).resolves.toEqual({ findings: [] });
+    await expect(outcome({ checks: [check("record-hash", "fail", "differs")] })).resolves.toEqual({ findings: ["record-hash: differs"] });
+    await expect(outcome({ checks: [check("fetch", "error", "could not fetch")] })).rejects.toThrow("fetch: could not fetch");
+    await expect(outcome({ checks: [check("answer", "fail", "differs"), check("fetch", "error", "could not fetch")] })).resolves.toEqual({ findings: ["answer: differs"] });
   });
 
-  it("names the hash checks a withheld record leaves unrun, and is no finding", () => {
-    expect(outcome({ withheld: true, checks: [check("fetch", "ok"), check("record-hash", "skip"), check("input-hash", "skip"), check("levels", "skip")] })).toEqual({ findings: [], withheld: ["record-hash", "input-hash"] });
-    expect(outcome({ withheld: true, checks: [check("answer", "fail", "differs"), check("record-hash", "skip")] })).toEqual({ findings: ["answer: differs"] });
+  it("names the hash checks a withheld record leaves unrun, is no finding, and fetches nothing more", async () => {
+    const refetch = vi.fn(async () => new Uint8Array());
+    await expect(outcome({ withheld: true, payloadURI: "https://records.example/1.json", checks: [check("fetch", "ok"), check("record-hash", "skip"), check("input-hash", "skip"), check("levels", "skip")] }, { refetch })).resolves.toEqual({ findings: [], withheld: ["record-hash", "input-hash"] });
+    expect(refetch).not.toHaveBeenCalled();
+    await expect(outcome({ withheld: true, checks: [check("answer", "fail", "differs"), check("record-hash", "skip")] })).resolves.toEqual({ findings: ["answer: differs"] });
   });
 });
 
@@ -281,6 +283,7 @@ describe("a withheld decision", () => {
 
 describe("a round that cannot finish", () => {
   const verified = { findings: [] };
+  const record = new TextEncoder().encode('{"kind":"hire"}');
 
   it("stops at a decision it could not check, keeps its place there and says the round is incomplete", async () => {
     const { chain } = fakeChain({ decisions: [5n] });
@@ -360,23 +363,77 @@ describe("a round that cannot finish", () => {
     expect(await run(new ReportRefused("The report was signed too long ago."))).toEqual({ findings: 0, incomplete: true, seen: [2n] });
   });
 
-  it("holds its place at a record that could not be fetched, and a later run checks it again", async () => {
+  describe("a record that cannot be read", () => {
+    const RECORDED = "2026-11-06 12:00:00 UTC";
+    const at = Date.parse(RECORDED);
+    const young = at + UNREADABLE_MS - 1;
+    const old = at + UNREADABLE_MS;
     // What the verifier answers when the record's host does not: a check with status error, not a throw.
-    const unreachable = { checks: [{ name: "read", status: "ok", message: "read" }, { name: "fetch", status: "error", message: "could not fetch the record: 503" }] };
-    let reachable = false;
-    const verify = async (id: bigint) => (id === 225n && !reachable ? outcome(unreachable as never) : { findings: [] });
-    const { chain } = fakeChain({ decisions: [226n] });
-    const lines: string[] = [];
-    const seen: bigint[] = [];
-    const first = createWatch({ network: TESTNET, chain, verify, veto: false, log: (l) => lines.push(l), seenDecision: 224n, recent: 10n, saw: (n) => seen.push(n) });
-    expect(await first.round()).toEqual({ findings: 0, incomplete: true });
-    expect(seen).toEqual([224n]);
-    expect(lines.at(-1)).toBe("decision 225 could not be checked, so it is tried again next round: fetch: could not fetch the record: 503");
-    reachable = true;
-    const next = createWatch({ network: TESTNET, chain, verify, veto: false, log: (l) => lines.push(l), seenDecision: seen.at(-1), recent: 10n, saw: (n) => seen.push(n) });
-    expect(await next.round()).toEqual({ findings: 0, incomplete: false });
-    expect(lines.slice(-2)).toEqual(["decision 225 verified", "decision 226 verified"]);
-    expect(seen.at(-1)).toBe(226n);
+    const dead = { recordedAt: RECORDED, checks: [{ name: "read", status: "ok" as const, message: "read" }, { name: "fetch", status: "error" as const, message: "could not fetch the record: 503" }] };
+    const OLD_FINDING = "the record could not be read a day or more after it was recorded: fetch: could not fetch the record: 503";
+
+    function rig(verify: (id: bigint) => ReturnType<NonNullable<Parameters<typeof createWatch>[0]["verify"]>>, seenDecision = 224n) {
+      const { chain } = fakeChain({ decisions: [226n] });
+      const lines: string[] = [];
+      const seen: bigint[] = [];
+      const reports: Parameters<Report>[] = [];
+      const watch = createWatch({
+        network: TESTNET,
+        chain,
+        verify,
+        veto: false,
+        log: (l) => lines.push(l),
+        seenDecision,
+        recent: 10n,
+        saw: (n) => seen.push(n),
+        report: async (...args) => (reports.push(args), "reported"),
+      });
+      return { watch, lines, seen, reports };
+    }
+
+    it("holds the place while the decision is under a day old, and a later run checks it again", async () => {
+      const first = rig(async (id) => (id === 225n ? outcome(dead, { now: young }) : { findings: [] }));
+      expect(await first.watch.round()).toEqual({ findings: 0, incomplete: true });
+      expect(first.seen).toEqual([224n]);
+      expect(first.reports).toEqual([]);
+      expect(first.lines.at(-1)).toBe("decision 225 could not be checked, so it is tried again next round: fetch: could not fetch the record: 503");
+      const next = rig(async () => ({ findings: [] }), first.seen.at(-1));
+      expect(await next.watch.round()).toEqual({ findings: 0, incomplete: false });
+      expect(next.lines).toEqual(["decision 225 verified", "decision 226 verified"]);
+      expect(next.seen).toEqual([226n]);
+    });
+
+    it("becomes a finding a day after the decision's block time, goes to the service once, and the place moves on", async () => {
+      const verify = vi.fn(async (id: bigint) => (id === 225n ? outcome(dead, { now: old }) : { findings: [], record }));
+      const first = rig(verify);
+      expect(await first.watch.round()).toEqual({ findings: 1, incomplete: false });
+      expect(verify.mock.calls.map((c) => c[0])).toEqual([225n, 226n]);
+      expect(first.seen).toEqual([226n]);
+      expect(first.lines[0]).toBe(`decision 225 does not verify: ${OLD_FINDING}`);
+      expect(first.reports).toEqual([[[{ id: 226n, proof: fetchProof(record, "0x00000000000000000000000000000000000000C1") }], [{ id: 225n, checks: [OLD_FINDING] }]]]);
+      // A later run starts past it, so it is reported once.
+      const next = rig(verify, first.seen.at(-1));
+      expect(await next.watch.round()).toEqual({ findings: 0, incomplete: false });
+      expect(verify).toHaveBeenCalledTimes(2);
+      expect(next.reports).toEqual([]);
+    });
+
+    it("holds the place when the decision's time is unknown, since nothing says the limit has passed", async () => {
+      await expect(outcome({ checks: dead.checks } as never, { now: old })).rejects.toThrow("fetch: could not fetch the record: 503");
+      await expect(outcome({ ...dead, recordedAt: "not a time" } as never, { now: old })).rejects.toThrow("fetch: could not fetch the record: 503");
+    });
+
+    it("applies the same rule to a verified record's failed refetch", async () => {
+      const verified = { recordedAt: RECORDED, payloadURI: "https://records.example/1.json", checks: [{ name: "read", status: "ok", message: "read" }] } as never;
+      const refetch = vi.fn(async () => record);
+      await expect(outcome(verified, { refetch, now: young })).resolves.toEqual({ findings: [], record });
+      expect(refetch).toHaveBeenCalledWith("https://records.example/1.json");
+      const failing = async () => Promise.reject(new Error("503 from https://records.example/1.json"));
+      await expect(outcome(verified, { refetch: failing, now: young })).rejects.toThrow("503 from https://records.example/1.json");
+      await expect(outcome(verified, { refetch: failing, now: old })).resolves.toEqual({ findings: ["the record could not be read a day or more after it was recorded: 503 from https://records.example/1.json"] });
+      // No key, nothing to report, so no second fetch.
+      await expect(outcome(verified, { now: old })).resolves.toEqual({ findings: [] });
+    });
   });
 });
 

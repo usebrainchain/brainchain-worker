@@ -123,10 +123,12 @@ const COMMAND_USAGE: Record<string, string> = {
                                             monitor does not know counts as breaking a floor; one with no floor,
                                             such as moving house treasury funds, is listed as that. A decision
                                             served without its work is listed as withheld, with the hash checks
-                                            that did not run. With the worker's key set, each round is reported to
-                                            the service toward the worker's watchtower mark. --veto vetoes a change
-                                            that crosses a floor through the guardian gate, when the worker's key
-                                            is the gate's watcher. --once reads one round, checks the decisions
+                                            that did not run. A record that cannot be read holds the place until a
+                                            day after its decision's block time; past that it is a finding, reported
+                                            once, and the place moves on. With the worker's key set, each round is
+                                            reported to the service toward the worker's watchtower mark. --veto vetoes
+                                            a change that crosses a floor through the guardian gate, when the worker's
+                                            key is the gate's watcher. --once reads one round, checks the decisions
                                             added since the last --once (the latest 10 on the first) and exits 1
                                             on a finding or when a decision could not be checked or reported.`,
   credit: `  brainchain-worker credit --agent-id <id> [--premium <bps>]
@@ -731,10 +733,7 @@ export async function main(argv: string[]): Promise<void> {
         },
         id,
       );
-      const { findings, withheld } = outcome(report);
-      // A verified decision is reported with the record it was checked against, fetched again as the service serves it. One that cannot be fetched cannot be reported, so it is tried again.
-      const record = findings.length === 0 && !withheld && keyed && report.payloadURI ? await fetchRecord(report.payloadURI) : undefined;
-      return { findings, ...(withheld ? { withheld } : {}), ...(record ? { record } : {}) };
+      return outcome(report, keyed ? { refetch: fetchRecord } : {});
     };
     const chain = createWatchChain(network, account);
     const watch = createWatch({

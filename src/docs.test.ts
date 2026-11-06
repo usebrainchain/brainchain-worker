@@ -68,6 +68,13 @@ describe("mainnet's figures in the README", () => {
   });
 });
 
+describe("watch in the README and --help", () => {
+  it("say how long an unreadable record holds the place, and what comes after", () => {
+    expect(flat(readme)).toContain("A record still unreadable a day after its decision's block time is a finding, reported once, and the place moves on");
+    expect(flat(help)).toContain("A record that cannot be read holds the place until a day after its decision's block time; past that it is a finding, reported once, and the place moves on");
+  });
+});
+
 describe("bonds in the README and --help", () => {
   it("are placed after the hire, and read by Jev once settled, at later hires", () => {
     expect(readme).toContain("Jev reads a worker's settled bonds, delivered and missed, at later hires");
