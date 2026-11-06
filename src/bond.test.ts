@@ -260,7 +260,7 @@ describe("bond claim", () => {
 
   it("refuses while the bond is open, without a bond, and without gas", async () => {
     const open = fakeChain({ bonds: [view()] });
-    await expect(bondClaim(MAINNET, config, open, 12n, () => {}, offline)).rejects.toThrow(/open until .*\. It can be claimed once it has settled\./);
+    await expect(bondClaim(MAINNET, config, open, 12n, () => {}, offline)).rejects.toThrow(/open until .*\. Nothing can be claimed before it settles\./);
     expect(open.withdraw).not.toHaveBeenCalled();
     await expect(bondClaim(MAINNET, config, fakeChain(), 12n, () => {}, offline)).rejects.toThrow(`${ACCOUNT} has no bond on task 12.`);
     const dry = fakeChain({ bonds: [view({ status: DeedStatus.Settled, remainderBps: 10_000 })], owed: USDG("4.95"), eth: 0n });

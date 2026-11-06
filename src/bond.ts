@@ -443,7 +443,7 @@ export async function bondClaim(network: Network, config: BondConfig | undefined
   const page = await deedPage(latest.deed, fetchImpl);
   if (latest.status !== DeedStatus.Settled) {
     const [now, indexed, t] = await Promise.all([chain.now(), chain.proofOf(task), chain.task(task)]);
-    throw new Error(`${bondLine(network, latest, { indexed: indexed > 0n, now, page, taskStatus: t?.status })}. It can be claimed once it has settled.`);
+    throw new Error(`${bondLine(network, latest, { indexed: indexed > 0n, now, page, taskStatus: t?.status })}. Nothing can be claimed before it settles.`);
   }
   const owed = await chain.owed();
   if (owed === 0n) {
