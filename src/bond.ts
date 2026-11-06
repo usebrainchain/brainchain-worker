@@ -52,8 +52,8 @@ export const Ruling = { None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 
 export const MISSED_TO = "the agent that paid BrainChain's desk for the task, or to the poster for a task posted on the board directly";
 const BPS = 10_000n;
 const ZERO: Address = "0x0000000000000000000000000000000000000000";
-/** The bond's deadline is the task's plus this: grading, the worker's day to mint and the check's hold all fit. */
-export const BOND_LEAD_SEC = 48n * 3_600n;
+/** The bond's deadline is the task's plus this: 48 hours for a grade, a dispute and an appealed ruling on set 3.5.0, then the worker's day to mint. */
+export const BOND_LEAD_SEC = 72n * 3_600n;
 /** A marked check is confirmed an hour later; a bond with no Proof can be settled a day after that. */
 export const CHECK_HOLD_SEC = 3_600n;
 export const CHECK_CONFIRM_SEC = 86_400n;

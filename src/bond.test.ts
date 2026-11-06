@@ -75,7 +75,7 @@ describe("bondTerms", () => {
       project: "0x0000000000000000000000000000000000000000",
       projectKind: 0,
       asset: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
-      deadline: NOW + 48n * 3_600n,
+      deadline: NOW + 72n * 3_600n,
       verifier: "0x0000000000000000000000000000000000000000",
       backupVerifier: "0x0000000000000000000000000000000000000000",
       appealPanel: "0x0000000000000000000000000000000000000000",
@@ -111,7 +111,7 @@ describe("bond", () => {
       [
         "Bond 5 USDG on task 12 (bounty 1 USDG, deadline 2027-01-16T08:00:00Z).",
         "  Released by the task's Proof: 4.95 USDG back after Shipped's 1% fee (0.05 USDG), collected with `bond claim 12`.",
-        "  Missed: if no Proof is recorded by 2027-01-18T08:00:00Z, the 5 USDG goes to 0x00000000000000000000000000000000000000D1, the poster.",
+        "  Missed: if no Proof is recorded by 2027-01-19T08:00:00Z, the 5 USDG goes to 0x00000000000000000000000000000000000000D1, the poster.",
         `  Gas now: about ${(Number(GAS.create + GAS.approve) * 0.02) / 1e9} ETH on Robinhood Chain for the approval and the bond at 0.02 gwei; the claim later costs about ${(Number(GAS.withdraw) * 0.02) / 1e9} ETH.`,
       ].join("\n"),
     );
