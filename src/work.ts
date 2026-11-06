@@ -48,6 +48,18 @@ export const printable = (text: string) =>
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
     .replace(new RegExp(HIDDEN.source, "g"), "");
 
+/** The longest title the log quotes. */
+const LOGGED_TITLE = 80;
+
+/**
+ * A title from a stranger as the log shows it: one line, cut short and JSON-quoted,
+ * so it cannot close its quotes and pass for the worker's own words.
+ */
+export function loggedTitle(title: string): string {
+  const characters = [...printable(title)];
+  return JSON.stringify(characters.length > LOGGED_TITLE ? `${characters.slice(0, LOGGED_TITLE - 1).join("")}…` : characters.join(""));
+}
+
 export interface Brief {
   title: string;
   brief: string;
@@ -478,7 +490,7 @@ export function createWork(options: {
             await needGas();
             // A stop asked for while the brief downloaded or the balance was read starts no command.
             if (options.stopping?.()) continue;
-            log(`task ${task.id}: working on "${brief.title}"`);
+            log(`task ${task.id}: working on ${loggedTitle(brief.title)}`);
             const input = options.format === "json" ? JSON.stringify(taskInput(task, brief)) : taskPrompt(task, brief);
             const timeoutMs = Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, Number(task.deadline - MARGIN_SEC - now) * 1000);
             const output = stripAnsi(await command.run(input, { BRAINCHAIN_TASK_ID: key }, timeoutMs, remember).finally(forget)).trim();

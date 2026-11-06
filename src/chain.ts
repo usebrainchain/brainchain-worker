@@ -188,6 +188,7 @@ function excerpt(details: string, url: string): string {
   let line = unquote(details);
   for (const part of secretParts(url)) line = line.replaceAll(part, "…");
   line = line
+    .replace(/\b(Basic|Bearer)\s+[\w+/=.~-]+/gi, "$1 …")
     .replace(/\s+/g, " ")
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
     .trim();
@@ -220,6 +221,19 @@ async function checkReply(response: Response, url: string): Promise<void> {
   if (!(Array.isArray(value) ? value.every(isReply) : isReply(value))) throw new NotRpcError(excerpt(text, url));
 }
 
+/**
+ * Whether BRAINCHAIN_RPC_URL holds anything but a host. viem leaves a URL's user
+ * and password out of what it reports, so they cannot be masked once an answer
+ * echoes them, and an echo can take any form: with such a URL, no answer's text
+ * is printed.
+ */
+function rpcHoldsSecret(): boolean {
+  const value = process.env.BRAINCHAIN_RPC_URL?.trim();
+  if (!value || !URL.canParse(value)) return false;
+  const { username, password, pathname, search } = new URL(value);
+  return Boolean(username || password || search || pathname.length > 1);
+}
+
 /** A request that failed, named by the RPC's host and the status it answered with. */
 function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutError): string {
   const host = hostOf(request.url);
@@ -231,7 +245,14 @@ function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutErr
   if (status === undefined) return `Could not reach ${host}${details ? ` (${details})` : ""}`;
   // A proxy or CDN in front of the RPC answers an outage or a rate limit with its own page.
   if (details.startsWith("<")) return `${host} answered ${status} with a web page${status === 404 || status === 405 ? ", not as an RPC" : ""}`;
-  return `${host} answered ${status}${details ? ` (${details})` : ""}`;
+  return `${host} answered ${status}${details && !rpcHoldsSecret() ? ` (${details})` : ""}`;
+}
+
+/** A JSON-RPC error, in the RPC's own words: viem's line for an error code is generic and can send the reader after the wrong thing. */
+function rpcRefusal(answer: RpcRequestError): string {
+  const host = hostOf(answer.url);
+  if (rpcHoldsSecret()) return `${host} refused the request (JSON-RPC error ${answer.code})`;
+  return `${host} refused the request: ${excerpt(answer.details, answer.url)}`;
 }
 
 const SHORT_OF_GAS = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
@@ -280,7 +301,11 @@ export function reason(error: unknown): string {
   );
   if (request instanceof HttpRequestError || request instanceof RpcRequestError || request instanceof TimeoutError) return requestFailure(request);
   const name = revertOf(error)?.errorName;
-  if (name === undefined) return error.shortMessage;
+  if (name === undefined) {
+    const answer = error.walk((e) => e instanceof RpcRequestError);
+    const reverted = error.walk((e) => e instanceof ContractFunctionRevertedError) instanceof ContractFunctionRevertedError;
+    return answer instanceof RpcRequestError && !reverted ? rpcRefusal(answer) : error.shortMessage;
+  }
   const plain = Object.hasOwn(PLAIN, name) ? PLAIN[name] : undefined;
   return plain ? `${error.shortMessage.replace(/\.$/, "")}: ${plain} (${name})` : `${error.shortMessage} (${name})`;
 }
