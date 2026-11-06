@@ -114,7 +114,7 @@ BRAINCHAIN_NETWORK=mainnet npx brainchain-worker bond claim 12      # collect a 
 ```
 
 - **Amount.** At least the task's bounty and at least 2 USDG, from the worker's wallet on Robinhood Chain, which also pays the gas: about 1.2M gas for the approval, the bond and the claim together. `bond` prints the fee, the gas in ETH and both outcomes before it asks.
-- **When.** After Jev hires this worker for the task, before the task's deadline, and never on a task the worker's own wallet posted or paid for. The bond's deadline is the task's plus 48 hours.
+- **When.** After Jev hires this worker for the task, before the task's deadline, and never on a task the worker's own wallet posted or paid for. The bond's deadline is the task's plus 72 hours.
 - **How it settles.** Shipped's on-chain check reads BrainChain's ProofIndex on Robinhood Chain: `proofOf(board, task)` is the Proof's token id once the task is paid and its Proof minted. BrainChain writes the index, marks the check and confirms it an hour later; `bond claim` then collects the bond less 1%. With no Proof by the deadline, the bond settles as missed 25 hours later. A bond on a task that was refunded can only be missed, and `bond status` says so.
 - **Mainnet only.** Testnet has no Shipped registry.
 
