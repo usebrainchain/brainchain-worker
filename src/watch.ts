@@ -1,14 +1,17 @@
+import type { DecisionReport } from "brainchain-verify";
 import { concat, createPublicClient, createWalletClient, keccak256, parseAbi, toBytes, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { brainchainTransport, executorAbi, reason } from "./chain.js";
 import { chainOf, type Network } from "./network.js";
 
 /**
- * The constitution's floors, by the function a change calls. A change that
- * crosses one is what the guardian's veto is for. Values in the units the
- * contracts take: basis points, seconds, and USDG in 6 decimals.
+ * The calls the constitution's monitor knows, by the function a change calls.
+ * A change that crosses a floor is what the guardian's veto is for, and any
+ * other call counts as crossing one. Three known calls have no floor, and say
+ * what they do instead. Values in the units the contracts take: basis points,
+ * seconds, and USDG in 6 decimals.
  */
-export const FLOORS: Record<string, { name: string; check: (args: readonly bigint[]) => string[] }> = {
+export const FLOORS: Record<string, { name: string; check: (args: readonly bigint[]) => string[]; does?: string }> = {
   "0x85327a44": {
     name: "setParameters",
     check: (w) =>
@@ -39,9 +42,9 @@ export const FLOORS: Record<string, { name: string; check: (args: readonly bigin
         (r): r is string => typeof r === "string",
       ),
   },
-  "0x16c38b3c": { name: "setPaused", check: () => [] },
-  "0x1f1e4d9f": { name: "setWorkerAllowed", check: () => [] },
-  "0xa9059cbb": { name: "transfer", check: () => [] },
+  "0x16c38b3c": { name: "setPaused", check: () => [], does: "pauses or resumes new posts" },
+  "0x1f1e4d9f": { name: "setWorkerAllowed", check: () => [], does: "allows or removes a worker" },
+  "0xa9059cbb": { name: "transfer", check: () => [], does: "moves house treasury funds" },
 };
 
 /** The static words after the selector; a call with dynamic arguments is read as far as its words go. */
@@ -52,12 +55,12 @@ export function argumentsOf(data: Hex): readonly bigint[] {
   return words;
 }
 
-/** What a queued change does to the constitution: nothing, or the floors it crosses. */
-export function judge(data: Hex): { name: string; broken: string[] } {
+/** What a queued change does to the constitution: nothing, the floors it crosses, or, for a known call with no floor, what it does. */
+export function judge(data: Hex): { name: string; broken: string[]; does?: string } {
   const selector = data.slice(0, 10).toLowerCase();
   const floor = FLOORS[selector];
-  if (!floor) return { name: selector, broken: ["a call the constitution does not list"] };
-  return { name: floor.name, broken: floor.check(argumentsOf(data)) };
+  if (!floor) return { name: selector, broken: ["a call the monitor does not know, which counts as breaking a floor"] };
+  return { name: floor.name, broken: floor.check(argumentsOf(data)), ...(floor.does ? { does: floor.does } : {}) };
 }
 
 export interface QueuedChange {
@@ -146,12 +149,29 @@ export async function requireWatcher(chain: WatchChain, log: (line: string) => v
  * findings are what disagreed. A decision that verified comes with the record's
  * bytes as served, when the worker reports its rounds.
  */
-export type Verify = (id: bigint) => Promise<{ findings: string[]; record?: Uint8Array }>;
+export type Verify = (id: bigint) => Promise<{ findings: string[]; record?: Uint8Array; withheld?: string[] }>;
+
+/**
+ * What one decision's checks come to. A check that failed is a finding, whatever
+ * else could not be read. A check that could not run says nothing about the
+ * decision, so with no failure it is thrown, and the round stops there to try it
+ * again. A record served without its work leaves its hash checks unrun, which is
+ * neither a finding nor a verified decision: `withheld` names them.
+ */
+export function outcome(report: Pick<DecisionReport, "checks" | "withheld">): { findings: string[]; withheld?: string[] } {
+  const said = (status: string) => report.checks.filter((c) => c.status === status).map((c) => `${c.name}: ${c.message}`);
+  const findings = said("fail");
+  const unread = said("error");
+  if (findings.length === 0 && unread.length > 0) throw new Error(unread.join("; "));
+  if (findings.length > 0 || !report.withheld) return { findings };
+  return { findings, withheld: report.checks.filter((c) => c.status === "skip" && c.name.endsWith("-hash")).map((c) => c.name) };
+}
 
 /** The service's prefix on a report; the worker signs the prefix and the report's JSON text. */
 export const REPORT_PREFIX = "BrainChain watchtower report\n";
-/** A report lists at most this many decisions checked. */
+/** A report lists at most this many decisions checked and this many findings; a longer round sends several. */
 export const MAX_CHECKED = 200;
+export const MAX_FINDINGS = 50;
 
 /** The proof a record was fetched: the hash of its bytes followed by the worker's address, which nothing on chain gives away. */
 export const fetchProof = (bytes: Uint8Array, worker: Address): Hex => keccak256(concat([bytes, toBytes(worker)]));
@@ -167,14 +187,18 @@ export class ReportRefused extends Error {}
  * Resolves to the line to log.
  */
 export function createReporter(network: Network, account: PrivateKeyAccount, fetcher: typeof fetch = fetch): Report {
-  return async (checked, findings) => {
+  // The service takes a report only if it was signed later than the last it took, by the second.
+  let lastAt = 0;
+
+  async function send(checked: Parameters<Report>[0], findings: Parameters<Report>[1]): Promise<string> {
+    lastAt = Math.max(Math.floor(Date.now() / 1000), lastAt + 1);
     const report = {
       worker: account.address,
       chainId: network.chainId,
       log: network.contracts.log,
-      at: Math.floor(Date.now() / 1000),
-      checked: checked.slice(0, MAX_CHECKED).map((c) => ({ id: Number(c.id), proof: c.proof })),
-      findings: findings.slice(0, 50).map((f) => ({ id: Number(f.id), checks: f.checks.slice(0, 20).map((c) => c.slice(0, 400)) })),
+      at: lastAt,
+      checked: checked.map((c) => ({ id: Number(c.id), proof: c.proof })),
+      findings: findings.map((f) => ({ id: Number(f.id), checks: f.checks.slice(0, 20).map((c) => c.slice(0, 400)) })),
     };
     const text = JSON.stringify(report);
     const signature = await account.signMessage({ message: `${REPORT_PREFIX}${text}` });
@@ -190,6 +214,14 @@ export function createReporter(network: Network, account: PrivateKeyAccount, fet
     return body.mark
       ? `reported to ${network.name}: ${body.checked} decisions re-verified in all, watchtower mark since ${body.mark.since}`
       : `reported to ${network.name}: ${body.checked} of the ${body.markAfter} re-verified decisions that earn the watchtower mark`;
+  }
+
+  return async (checked, findings) => {
+    let line = await send(checked.slice(0, MAX_CHECKED), findings.slice(0, MAX_FINDINGS));
+    for (let i = 1; MAX_CHECKED * i < checked.length || MAX_FINDINGS * i < findings.length; i++) {
+      line = await send(checked.slice(MAX_CHECKED * i, MAX_CHECKED * (i + 1)), findings.slice(MAX_FINDINGS * i, MAX_FINDINGS * (i + 1)));
+    }
+    return line;
   };
 }
 
@@ -234,7 +266,7 @@ export function createWatch(options: {
       for (const change of await chain.queued(from, to)) {
         const key = change.changeId.toString();
         if (judged.has(key)) continue;
-        const { name, broken } = judge(change.data);
+        const { name, broken, does } = judge(change.data);
         // A failed read leaves the change unjudged and the block range unread, so the next round comes back to it.
         const open = await chain.open(change.changeId);
         judged.add(key);
@@ -243,9 +275,9 @@ export function createWatch(options: {
           log(`change ${change.changeId}: ${name} on ${change.target}${broken.length > 0 ? ` broke the constitution (${why})` : ""}; closed, it has run or was vetoed`);
           continue;
         }
-        const runsAt = new Date(Number(change.eta) * 1000).toISOString().replace("T", " ").slice(0, 16);
+        const runsAt = new Date(Number(change.eta) * 1000).toISOString().replace("T", " ").slice(0, 19);
         if (broken.length === 0) {
-          log(`change ${change.changeId}: ${name} on ${change.target}, within the constitution, runs after ${runsAt} UTC`);
+          log(`change ${change.changeId}: ${name} on ${change.target}${does ? ` ${does}, which no floor covers` : ", within the constitution"}, runs after ${runsAt} UTC`);
           continue;
         }
         findings += 1;
@@ -292,8 +324,10 @@ export function createWatch(options: {
     let reached = seenDecision;
     for (let id = seenDecision + 1n; id <= count; id++) {
       try {
-        const { findings: wrong, record } = await verify(id);
-        if (wrong.length === 0) {
+        const { findings: wrong, record, withheld } = await verify(id);
+        if (withheld) {
+          log(`decision ${id} withheld: its record is served without the work, so ${withheld.join(" and ")} did not run; the checks that ran agree with the chain`);
+        } else if (wrong.length === 0) {
           log(`decision ${id} verified`);
           if (record) checked.push({ id, proof: fetchProof(record, chain.account) });
         } else {
@@ -315,11 +349,9 @@ export function createWatch(options: {
         log(await options.report(checked, found));
       } catch (error) {
         log(`report not taken: ${reason(error)}`);
-        // Only an answer from the service settles a report; these decisions are checked and sent again otherwise.
-        if (!(error instanceof ReportRefused)) {
-          incomplete = true;
-          reached = seenDecision;
-        }
+        incomplete = true;
+        // Only an answer from the service settles a report: a refusal would only repeat, and these decisions are checked and sent again otherwise.
+        if (!(error instanceof ReportRefused)) reached = seenDecision;
       }
     }
     seenDecision = reached;

@@ -20,7 +20,7 @@ import { openStore, readWatched, writeWatched } from "./state.js";
 import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
-import { createReporter, createWatch, createWatchChain, requireWatcher, type Verify } from "./watch.js";
+import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { createWork, firstProgram, npxUnderSupervisor, programFound, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
 
 /** How many of the latest decisions a first watch --once checks. */
@@ -699,10 +699,10 @@ export async function main(argv: string[]): Promise<void> {
         },
         id,
       );
-      const findings = report.checks.filter((c) => c.status === "fail" || c.status === "error").map((c) => `${c.name}: ${c.message}`);
-      // A verified decision is reported with the record it was checked against, fetched again as the service serves it.
-      const record = findings.length === 0 && keyed && report.payloadURI ? await fetchRecord(report.payloadURI).catch(() => undefined) : undefined;
-      return { findings, ...(record ? { record } : {}) };
+      const { findings, withheld } = outcome(report);
+      // A verified decision is reported with the record it was checked against, fetched again as the service serves it. One that cannot be fetched cannot be reported, so it is tried again.
+      const record = findings.length === 0 && !withheld && keyed && report.payloadURI ? await fetchRecord(report.payloadURI) : undefined;
+      return { findings, ...(withheld ? { withheld } : {}), ...(record ? { record } : {}) };
     };
     const chain = createWatchChain(network, account);
     const watch = createWatch({
