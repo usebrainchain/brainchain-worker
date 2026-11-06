@@ -61,11 +61,13 @@ describe("mint", () => {
     const fetcher = listing({ tasks: ["12", "15", "12"] });
     const lines = await mintRun(chain, fetcher);
     expect(fetcher.mock.calls[0]![0]).toBe(PENDING);
-    expect(sent).toEqual([`approve ${PRICE}`, "mint", `approve ${PRICE}`, "mint"]);
+    // The list spans the sets and ids restart on each board, so the second 12 is another task.
+    expect(sent).toEqual([`approve ${PRICE}`, "mint", `approve ${PRICE}`, "mint", `approve ${PRICE}`, "mint"]);
     expect(lines).toEqual([
-      "Minting 2 Proofs on Robinhood Chain at 0.001 WETH each plus gas...",
+      "Minting 3 Proofs on Robinhood Chain at 0.001 WETH each plus gas...",
       `Minted Proof 29 for task 12 (${TX}).`,
       `Minted Proof 30 for task 15 (${TX}).`,
+      `Minted Proof 31 for task 12 (${TX}).`,
       LAG,
     ]);
   });
@@ -389,7 +391,7 @@ describe("run's settlement watch", () => {
     expect(logged(t.log)).toEqual(["task 7: paid 0.975 tUSDG", "claiming test WETH from the faucet", `minted proof 29 for task 7 (${TX})`]);
   });
 
-  it("logs why a task was refunded and any stake slashed, and stops watching one unsettled two days after delivery", async () => {
+  it("logs why a task was refunded and any stake slashed, and stops watching one unsettled three days after delivery", async () => {
     const refunded = setup({ network: TESTNET });
     refunded.watch.track(7n);
     refunded.settle({ paid: false, reason: 3, slashed: 0n });
@@ -410,9 +412,9 @@ describe("run's settlement watch", () => {
     stuck.at(86_400);
     await stuck.watch.round();
     expect(stuck.log).not.toHaveBeenCalled();
-    stuck.at(2 * 86_400);
+    stuck.at(3 * 86_400);
     await stuck.watch.round();
-    expect(logged(stuck.log)).toEqual(["task 7: not settled two days after delivery, so the worker stops watching it"]);
+    expect(logged(stuck.log)).toEqual(["task 7: not settled three days after delivery, so the worker stops watching it"]);
     expect(stuck.fetcher).not.toHaveBeenCalled();
   });
 

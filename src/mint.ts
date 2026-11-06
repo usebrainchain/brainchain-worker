@@ -41,8 +41,8 @@ export const MAX_MINT = 10;
 
 /** How often a delivered task's status is read until it settles. */
 const STATUS_SEC = 300;
-/** Each step from grading to a ruling on appeal has a window of at most 6 hours, so a task unsettled two days after delivery is left. */
-const WATCH_SEC = 2 * 86_400;
+/** Grading, a dispute, its ruling, the appeal window and the ruling on appeal take up to 48 hours on set 3.5.0, so a task unsettled three days after delivery is left. */
+const WATCH_SEC = 3 * 86_400;
 /** A day after payment the task joins the public pool, so the worker's own attempts stop an hour short of it. */
 const OWN_SEC = 23 * 3_600;
 /** The least time between two mint attempts for one task. */
@@ -130,7 +130,8 @@ export async function pendingTasks(network: Network, worker: Address, fetcher: t
   if (!Array.isArray(tasks) || !tasks.every((id) => typeof id === "string" && /^\d{1,78}$/.test(id))) {
     throw new Error(`The BrainChain service at ${host} listed the tasks waiting for a Proof in a form the worker cannot read`);
   }
-  return [...new Set(tasks as string[])].map((id) => BigInt(id));
+  // Task ids restart with each board and the list spans them, so a repeated id is another task.
+  return (tasks as string[]).map((id) => BigInt(id));
 }
 
 const proofCount = (n: number) => `${n} Proof${n === 1 ? "" : "s"}`;
@@ -272,7 +273,7 @@ export function createSettlementWatch(options: {
       return false;
     }
     if (outcome === undefined) {
-      if (clock() - entry.deliveredAt >= WATCH_SEC) drop(key, "not settled two days after delivery, so the worker stops watching it");
+      if (clock() - entry.deliveredAt >= WATCH_SEC) drop(key, "not settled three days after delivery, so the worker stops watching it");
       else later(entry, STATUS_SEC);
       return false;
     }

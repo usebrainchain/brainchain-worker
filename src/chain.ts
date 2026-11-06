@@ -519,8 +519,14 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     },
     stakeTokens: (amount: bigint, price: bigint) => send({ address: staking, abi: workerStakingAbi, functionName: "stake", args: [amount, price] }),
     setPrice: (price: bigint) => send({ address: staking, abi: workerStakingAbi, functionName: "setPrice", args: [price] }),
-    requestUnstake: (amount: bigint) => send({ address: staking, abi: workerStakingAbi, functionName: "requestUnstake", args: [amount] }),
-    withdraw: () => send({ address: staking, abi: workerStakingAbi, functionName: "withdraw" }),
+    requestUnstake: (amount: bigint, at: Address = staking) => send({ address: at, abi: workerStakingAbi, functionName: "requestUnstake", args: [amount] }),
+    withdraw: (at: Address = staking) => send({ address: at, abi: workerStakingAbi, functionName: "withdraw" }),
+    /** Stake left on earlier sets' contracts, which this set's reads do not see. */
+    async retiredStakes() {
+      const sets = network.retired ?? [];
+      const stakes = await Promise.all(sets.map((s) => client.readContract({ address: s.staking, abi: workerStakingAbi, functionName: "get", args: [account.address] })));
+      return sets.flatMap((s, i) => (stakes[i]!.staked > 0n || stakes[i]!.unstaking > 0n ? [{ ...s, w: stakes[i]! }] : []));
+    },
     /**
      * Whether this wallet owns the ERC-8004 agent `agentId` on the parent chain or is
      * its registered wallet; undefined when the registry could not be read.

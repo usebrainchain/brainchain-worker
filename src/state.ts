@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -133,6 +133,19 @@ export function fileStore(file: string, board: string, warn: (message: string) =
   }
   const saved = text === undefined ? undefined : parse(text);
   if (saved?.board === state.board) state = saved;
+  else if (saved) {
+    // Task ids restart with each board, so none of this can carry over, but it must not vanish in silence.
+    const left = [
+      [Object.keys(saved.tasks).length, "tasks with results"],
+      [saved.hired?.tasks.length ?? 0, "hired tasks"],
+      [Object.keys(saved.proofs ?? {}).length, "tasks waiting to settle or mint"],
+    ].flatMap(([count, what]) => (count ? [`${count} ${what}`] : []));
+    if (left.length > 0) {
+      const aside = `${file}.${saved.board}`;
+      copyFileSync(file, aside);
+      warn(`${file} holds work for the task board ${saved.board}, not this one: ${left.join(", ")}. This run starts without it, and a copy is at ${aside}.`);
+    }
+  }
   if (text !== undefined && saved === undefined) {
     // Refusing to start would turn one bad file into a crash loop under a supervisor.
     const aside = `${file}.corrupt-${new Date().toISOString().replace(/\.\d+Z$/, "Z").replace(/[-:]/g, "")}`;

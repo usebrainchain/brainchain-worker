@@ -19,7 +19,7 @@ const offline = (async () => {
 const page = { deed: { number: "3", url: "https://app.shipped.bond/bonds/3" } };
 const shipped = (async () => ({ ok: true, json: async () => page })) as unknown as typeof fetch;
 const task = (overrides: Partial<TaskFacts> = {}): TaskFacts => ({ poster: POSTER, bounty: USDG("1"), deadline: NOW + 86_400n, status: Status.Hired, model: `0x${"0".repeat(24)}${ACCOUNT.slice(2)}`, ...overrides });
-const view = (overrides: Partial<BondView> = {}): BondView => ({ deed: 4n, task: 12n, amount: USDG("5"), deadline: NOW + 86_400n + BOND_LEAD_SEC, status: DeedStatus.Open, ruling: 0, remainderBps: 0, checkMetAt: 0n, settledAt: 0n, refundTo: POSTER, ...overrides });
+const view = (overrides: Partial<BondView> = {}): BondView => ({ deed: 4n, task: 12n, board: MAINNET.contracts.taskBoard, amount: USDG("5"), deadline: NOW + 86_400n + BOND_LEAD_SEC, status: DeedStatus.Open, ruling: 0, remainderBps: 0, checkMetAt: 0n, settledAt: 0n, refundTo: POSTER, ...overrides });
 
 function fakeChain(options: { task?: TaskFacts; bonds?: BondView[]; usdg?: bigint; eth?: bigint; allowance?: bigint; owed?: bigint; proof?: bigint; payer?: Address } = {}) {
   return {
@@ -191,6 +191,15 @@ describe("bond status", () => {
   const facts = (over: Partial<Parameters<typeof bondLine>[2]> = {}) => ({ indexed: false, now: NOW, ...over });
   const deadline = NOW + 86_400n;
   const head = "Bond on task 12 (registry id 4): 5 USDG";
+
+  it("reads a bond on a retired board's task on that board, and names the set", async () => {
+    const old = MAINNET.retired![0]!;
+    const chain = fakeChain({ bonds: [view({ board: old.taskBoard, deadline: NOW + 3_600n })] });
+    const lines: string[] = [];
+    await bondStatus(MAINNET, config, chain, 12n, (l) => lines.push(l), (async () => { throw new Error("offline"); }) as typeof fetch);
+    expect(chain.proofOf).toHaveBeenCalledWith(12n, old.taskBoard);
+    expect(lines[0]).toContain(`(task of set ${old.release})`);
+  });
 
   it("prints each bond's state in one line", async () => {
     const lines: string[] = [];

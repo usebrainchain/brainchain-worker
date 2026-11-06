@@ -141,9 +141,9 @@ const COMMAND_USAGE: Record<string, string> = {
                                             window. Jev rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
                                             appeal window, with the bond the task's terms fix (a quarter of the
-                                            bounty), claimed from the test USDG faucet when the wallet holds less.
-                                            Jev rules again; the bond comes back unless Jev confidently rules the
-                                            same way. Testnet only for now.`,
+                                            bounty); on testnet it is claimed from the test USDG faucet when the
+                                            wallet holds less. Jev rules again; the bond comes back unless Jev
+                                            confidently rules the same way.`,
   leave: `  brainchain-worker leave                   Start unstaking (3-day cooldown).`,
   withdraw: `  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.`,
 };
@@ -408,7 +408,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
 }
 
 async function status(chain: Chain, network: Network): Promise<void> {
-  const [gas, gasPrice, sent, s, held, record, bountyBalance, stakeBalance, bond, faucet, now] = await Promise.all([
+  const [gas, gasPrice, sent, s, held, record, bountyBalance, stakeBalance, bond, faucet, now, oldStakes] = await Promise.all([
     chain.ethBalance(),
     chain.gasPrice(),
     chain.sent(),
@@ -421,12 +421,13 @@ async function status(chain: Chain, network: Network): Promise<void> {
     // A stake token without a faucet, as on mainnet, leaves out what the faucet would give.
     network.buyStake ? undefined : chain.faucet().catch(() => undefined),
     chain.now(),
+    chain.retiredStakes(),
   ]);
   const { w, min } = s;
   const unstaking = w.unstaking > 0n ? `, ${stake(network, w.unstaking)} unstaking until ${when(w.unlocksAt)}` : "";
   console.log(`Worker ${chain.account} on ${network.name}
   Hireable  ${hireable(s, network, "status")}
-  Stake     ${stake(network, w.staked)} (minimum ${stake(network, min)})${unstaking}
+  Stake     ${stake(network, w.staked)} (minimum ${stake(network, min)})${unstaking}${oldStakes.map((o) => `\n  Old stake ${stake(network, o.w.staked + o.w.unstaking)} on set ${o.release}, which does not count here; leave and withdraw collect it`).join("")}
   Wallet    ${wallet(network, s, stakeBalance, bond, faucet, now)}
   Price     ${w.registered ? `${usdg(network, w.price)} per task` : "not set until you join"}
   Record    ${record.paid} paid, ${record.refunded} refunded, ${record.inFlight.length} in flight${held > 0 ? " (stake held until they settle)" : ""}${record.inFlight.map((f) => `\n            ${flightLine(f)}`).join("")}
@@ -803,6 +804,12 @@ export async function main(argv: string[]): Promise<void> {
     case "leave": {
       const w = await chain.stake();
       if (w.staked === 0n) {
+        const old = (await chain.retiredStakes()).find((o) => o.w.staked > 0n);
+        if (old) {
+          await needGas(chain, network);
+          await chain.requestUnstake(old.w.staked, old.staking);
+          return console.log(`Unstaking ${stake(network, old.w.staked)} from set ${old.release}. Run \`npx brainchain-worker withdraw\` once its cooldown has passed and no task of the worker's on that set is in flight.`);
+        }
         throw new Error(
           w.unstaking > 0n ? `Nothing left to unstake: ${stake(network, w.unstaking)} is already unstaking until ${when(w.unlocksAt)}.` : "Nothing is staked.",
         );
@@ -815,7 +822,14 @@ export async function main(argv: string[]): Promise<void> {
     }
     case "withdraw": {
       const [w, held, now] = await Promise.all([chain.stake(), chain.held(), chain.now()]);
-      if (w.unstaking === 0n) throw new Error("Nothing is unstaking. Run leave first.");
+      if (w.unstaking === 0n) {
+        const old = (await chain.retiredStakes()).find((o) => o.w.unstaking > 0n);
+        if (!old) throw new Error("Nothing is unstaking. Run leave first.");
+        if (now < old.w.unlocksAt) throw new Error(`${stake(network, old.w.unstaking)} on set ${old.release} unlocks at ${when(old.w.unlocksAt)}. Withdraw after that.`);
+        await needGas(chain, network);
+        await chain.withdraw(old.staking);
+        return console.log(`Withdrew ${stake(network, old.w.unstaking)} from set ${old.release}.`);
+      }
       if (now < w.unlocksAt) throw new Error(`${stake(network, w.unstaking)} unlocks at ${when(w.unlocksAt)}. Withdraw after that.`);
       if (held > 0) throw new Error(`The stake is held until the worker's ${held} task${held === 1 ? "" : "s"} in flight settle.`);
       await needGas(chain, network);
