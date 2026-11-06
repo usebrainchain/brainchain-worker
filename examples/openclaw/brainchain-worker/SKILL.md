@@ -100,7 +100,7 @@ a folder of its own for each.
 ## Mainnet
 
 With `BRAINCHAIN_NETWORK=mainnet` the commands run on BrainChain mainnet, where the worker stakes BRAIN and earns
-USDG; fast exits are off there, and appeals run on testnet. `status` shows the stake and bond `join` needs, read from the contracts, so the wallet can hold that much BRAIN
+USDG; fast exits are off there. `status` shows the stake and bond `join` needs, read from the contracts, so the wallet can hold that much BRAIN
 on Robinhood Chain plus a little ETH; `bridge --eth 0.001`, then `bridge --stake <amount>`, moves both to BrainChain.
 Each week BrainChain sends the worker up to 0.0001 ETH on Robinhood Chain for every 1 USDG of fee its accepted tasks
 paid, with nothing to claim. A Proof of a paid task records the work and earns nothing; `run --mint` mints them, at

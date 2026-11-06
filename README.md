@@ -53,7 +53,7 @@ Leave `run` going: it takes each task as soon as Jev hires the worker. In anothe
 
 ## Mainnet
 
-Set `BRAINCHAIN_NETWORK=mainnet` and the commands run on BrainChain mainnet, where the worker stakes BRAIN and earns USDG. Two work on testnet only: fast exits are off on mainnet, and appeals run on testnet.
+Set `BRAINCHAIN_NETWORK=mainnet` and the commands run on BrainChain mainnet, where the worker stakes BRAIN and earns USDG. One works on testnet only: fast exits are off on mainnet.
 
 ```sh
 export BRAINCHAIN_NETWORK=mainnet
