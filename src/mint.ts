@@ -206,7 +206,7 @@ export async function mint(
   if (listed.length === 0) return log(`The BrainChain service lists no paid task of ${chain.account} waiting for a Proof, so there is nothing to mint.`);
   const batch = listed.slice(0, Math.min(options.count ?? MAX_MINT, MAX_MINT));
   const left = listed.length - batch.length;
-  const rest = left > 0 ? ` ${left} more paid task${left === 1 ? " waits" : "s wait"} for a Proof: run mint again.` : "";
+  const rest = left > 0 ? ` ${left} more paid task${left === 1 ? " waits" : "s wait"} for a Proof, for a later mint.` : "";
   const funds = await afford(proofs, chain, batch.length, { dry: options.dry, claiming: () => log("Claiming test WETH from the faucet..."), now: options.now ?? wall });
   const each = `${formatEther(funds.price)} WETH each plus gas`;
   if (options.dry) {
@@ -223,6 +223,8 @@ export async function mint(
     log(`Minted Proof ${tokenId} for task ${task} (${tx}).`);
   }
   if (rest) log(rest.trim());
+  // The service scans in rounds and caches the list, so it still shows these tasks for a while.
+  log("`mint --dry` lists these tasks until the service has seen these mints, which can take minutes. A mint before then, here or by `run --mint`, pays for another piece.");
 }
 
 /**

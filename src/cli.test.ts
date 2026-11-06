@@ -1,4 +1,6 @@
 import { mkdtempSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -164,6 +166,8 @@ function fakeChain(gas: bigint, balance: bigint, sent = 0) {
     setPrice: send(),
     apply: send(),
     holdsAgent: vi.fn(async () => true as boolean | undefined),
+    applicationVetoed: vi.fn(async () => false),
+    openApplication: vi.fn(async () => 0n),
   };
 }
 
@@ -320,6 +324,99 @@ describe("join", () => {
       expect(log.mock.calls.at(-1)![0]).toContain("can already be hired");
     } finally {
       log.mockRestore();
+    }
+  });
+});
+
+describe("join for a worker past its application", () => {
+  const allowed = () => {
+    const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    chain.allowed.mockResolvedValue(true);
+    chain.stake.mockResolvedValue({ registered: true, staked: 0n, unstaking: 0n, unlocksAt: 0n, price: 200_000n });
+    return chain;
+  };
+  const quietly = async (run: () => Promise<void>) => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await run();
+      return log.mock.calls.map((call) => String(call[0]));
+    } finally {
+      log.mockRestore();
+    }
+  };
+
+  it("needs no name or description to stake back up, as status's hint says", async () => {
+    const chain = allowed();
+    await quietly(() => join(chain as unknown as Chain, MAINNET, new Map()));
+    expect(chain.stakeTokens).toHaveBeenCalledOnce();
+    expect(chain.apply).not.toHaveBeenCalled();
+  });
+
+  it("says when it does not use a name or description it was given", async () => {
+    const lines = await quietly(() => join(allowed() as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "Summaries"]])));
+    expect(lines[0]).toBe("This worker is past its application, so --name and --about are not used.");
+  });
+
+  it("still asks an applicant for both, before anything is sent", async () => {
+    const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    await expect(join(chain as unknown as Chain, MAINNET, new Map())).rejects.toThrow("--name is required, up to 60 characters");
+    await expect(join(chain as unknown as Chain, MAINNET, new Map([["name", "Atlas"]]))).rejects.toThrow("--about is required");
+    expect(chain.approve).not.toHaveBeenCalled();
+  });
+
+  it("refuses an application on a function the guardian's veto has shut, or that another proposal holds, before anything is sent", async () => {
+    const values = new Map([["name", "Atlas"], ["about", "Summaries"]]);
+    const vetoed = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    vetoed.applicationVetoed.mockResolvedValue(true);
+    await expect(join(vetoed as unknown as Chain, MAINNET, values)).rejects.toThrow("The guardian vetoed setWorkerAllowed on the task board, so the executor does not queue an application until the admin reopens that function. Nothing was sent.");
+    const taken = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    taken.openApplication.mockResolvedValue(9n);
+    await expect(join(taken as unknown as Chain, MAINNET, values)).rejects.toThrow("Proposal 9 already asks to allow this worker and is still open");
+    for (const chain of [vetoed, taken]) for (const send of [chain.claimStakeToken, chain.approve, chain.stakeTokens, chain.apply]) expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not check a veto for a worker that is not applying", async () => {
+    const chain = allowed();
+    chain.applicationVetoed.mockResolvedValue(true);
+    await quietly(() => join(chain as unknown as Chain, MAINNET, new Map()));
+    expect(chain.stakeTokens).toHaveBeenCalledOnce();
+  });
+
+  it("says how it counts a name's length", async () => {
+    const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    await expect(join(chain as unknown as Chain, MAINNET, new Map([["name", "\u{1F600}".repeat(31)], ["about", "Summaries"]]))).rejects.toThrow("--name is at most 60 characters, counted as UTF-16 units: one for nearly all text, two or more for an emoji");
+    await expect(join(chain as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "x".repeat(501)]]))).rejects.toThrow("--about is at most 500 characters, counted as UTF-16 units");
+  });
+});
+
+describe("fund's flags", () => {
+  it("refuses --gas-usdc above --usdc without --stake, rather than ignore part of it", async () => {
+    await expect(main(["fund", "--from-solana", "--usdc", "1", "--gas-usdc", "3"])).rejects.toThrow(new UsageError("--gas-usdc 3 is more than --usdc 1, the most this command may spend"));
+  });
+});
+
+describe("proposal", () => {
+  it("needs no key, so a mistyped one in the environment does not stop it", async () => {
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const { id, method } = JSON.parse(body) as { id: number; method: string };
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ jsonrpc: "2.0", id, result: method === "eth_chainId" ? `0x${TESTNET.chainId.toString(16)}` : `0x${"00".repeat(32 * 7)}` }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY", "not-a-key");
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY_FILE", "");
+    vi.stubEnv("BRAINCHAIN_NETWORK", "testnet");
+    vi.stubEnv("BRAINCHAIN_RPC_URL", `http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    try {
+      await expect(main(["proposal", "1"])).rejects.toThrow("There is no proposal 1 on BrainChain testnet");
+    } finally {
+      vi.unstubAllEnvs();
+      server.close();
+      server.closeAllConnections();
     }
   });
 });

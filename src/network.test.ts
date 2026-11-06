@@ -78,3 +78,10 @@ describe("resolveNetwork", () => {
     expect(MAINNET.buyStake).toContain("https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7");
   });
 });
+
+describe("the desk exit pays", () => {
+  it("is pinned on both networks: the testnet service names it, and on mainnet it is the poster of tasks paid through the desk", () => {
+    expect(TESTNET.exitDesk).toBe("0xf848984c8A0D9E49Cc9C97380C62b34C6f3b97D1");
+    expect(MAINNET.exitDesk).toBe("0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E");
+  });
+});

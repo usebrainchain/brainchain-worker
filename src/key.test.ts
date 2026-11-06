@@ -115,10 +115,39 @@ describe("clearKeyFromEnvironment", () => {
     expect(next.BRAINCHAIN_WORKER_KEY_HANDOFF).toBeUndefined();
   });
 
-  it("has nothing to do when the key came from a file or the restart already happened", () => {
+  it("clears every key variable in the restart, the Solana key's and both file paths included", () => {
     const execve = vi.fn<Execve>();
-    clearKeyFromEnvironment(KEY, vi.fn(), { BRAINCHAIN_WORKER_KEY_FILE: "/nowhere" }, execve as Execve);
+    const secret = "SOLANASECRETKEYMARKER";
+    clearKeyFromEnvironment(KEY, vi.fn(), { BRAINCHAIN_WORKER_KEY: KEY, BRAINCHAIN_SOLANA_KEY: secret, BRAINCHAIN_SOLANA_KEY_FILE: "/keys/sol.json", BRAINCHAIN_WORKER_KEY_FILE: "/keys/w.key", BRAINCHAIN_NETWORK: "mainnet" }, execve as Execve);
+    const passed = execve.mock.calls[0]![2] as NodeJS.ProcessEnv;
+    expect(Object.keys(passed).sort()).toEqual(["BRAINCHAIN_NETWORK", "BRAINCHAIN_WORKER_KEY_HANDOFF"]);
+    expect(JSON.stringify(passed)).not.toContain(secret);
+    keyText({ ...passed });
+  });
+
+  it("restarts for a Solana key or a key file alone, passing the worker's key on", () => {
+    for (const env of [{ BRAINCHAIN_SOLANA_KEY: "s" }, { BRAINCHAIN_SOLANA_KEY_FILE: "/keys/sol.json" }, { BRAINCHAIN_WORKER_KEY_FILE: keyFile(KEY) }]) {
+      const execve = vi.fn<Execve>();
+      clearKeyFromEnvironment(KEY, vi.fn(), env, execve as Execve);
+      const passed = { ...(execve.mock.calls[0]![2] as NodeJS.ProcessEnv) };
+      expect(Object.keys(passed)).toEqual(["BRAINCHAIN_WORKER_KEY_HANDOFF"]);
+      expect(keyText(passed)).toBe(KEY);
+    }
+  });
+
+  it("has nothing to do when the key was piped in or the restart already happened", () => {
+    const execve = vi.fn<Execve>();
+    // What a pipe's path looks like to stat: not a regular file. A restart would put a key piped in to stay out of files in one.
+    clearKeyFromEnvironment(KEY, vi.fn(), { BRAINCHAIN_WORKER_KEY_FILE: "/dev/null" }, execve as Execve);
+    clearKeyFromEnvironment(KEY, vi.fn(), {}, execve as Execve);
+    clearKeyFromEnvironment(KEY, vi.fn(), { BRAINCHAIN_NETWORK: "mainnet" }, execve as Execve);
     expect(execve).not.toHaveBeenCalled();
+  });
+
+  it("restarts when something else is set beside a piped key", () => {
+    const execve = vi.fn<Execve>();
+    clearKeyFromEnvironment(KEY, vi.fn(), { BRAINCHAIN_WORKER_KEY_FILE: "/dev/null", BRAINCHAIN_SOLANA_KEY: "s" }, execve as Execve);
+    expect(Object.keys(execve.mock.calls[0]![2] as object)).toEqual(["BRAINCHAIN_WORKER_KEY_HANDOFF"]);
   });
 
   it("goes on with a warning where it cannot restart, and leaves no file behind", () => {

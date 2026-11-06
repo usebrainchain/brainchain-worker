@@ -1,8 +1,12 @@
-import { decodeFunctionData, parseEther, type Address, type Hex } from "viem";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { decodeFunctionData, encodeErrorResult, parseAbi, parseEther, type Address, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
 import { MAINNET, TESTNET } from "./network.js";
-import { buildCall, caseURI, GOVERNED, proposal, propose, ProposalError, type Call, type ProposalChain } from "./propose.js";
+import { buildCall, CASE_BYTES, caseURI, createProposals, GOVERNED, proposal, propose, ProposalError, type Call, type ProposalChain } from "./propose.js";
 
 const ME: Address = "0x00000000000000000000000000000000000000C1";
 const ROUTER: Address = "0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb";
@@ -86,6 +90,12 @@ describe("caseURI", () => {
     expect(() => caseURI(call, { title: "t", rationale: " " })).toThrow(/--rationale is required/);
     expect(() => caseURI(call, { title: "t".repeat(121), rationale: "r" })).toThrow(/--title is at most 120/);
   });
+
+  it("refuses a case the brain would read as blank: it reads at most 4,096 bytes of JSON", () => {
+    expect(CASE_BYTES).toBe(4_096);
+    expect(() => caseURI(call, { title: "t", rationale: "界".repeat(1_500) })).toThrow(/^The case is \d+ bytes as JSON, and Jev reads at most 4096/);
+    expect(caseURI(call, { title: "t", rationale: "r".repeat(1_500) })).toMatch(/^data:application\/json;base64,/);
+  });
 });
 
 function fakeChain(overrides: Partial<ProposalChain> = {}): ProposalChain {
@@ -100,9 +110,10 @@ function fakeChain(overrides: Partial<ProposalChain> = {}): ProposalChain {
     changeThresholdBps: vi.fn(async () => 6000n),
     timelock: vi.fn(async () => 172_800n),
     vetoed: vi.fn(async () => false),
+    openProposal: vi.fn(async () => 0n),
     rehearse: vi.fn(async () => undefined),
     propose: vi.fn(async () => ({ id: 2n, tx: TX })),
-    get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 1_799_990_000n, state: 1 })),
+    get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 1_799_990_000n, state: 1, deadline: 1_800_594_800n })),
     outcome: vi.fn(async () => undefined),
     queued: vi.fn(async () => undefined),
     ...overrides,
@@ -142,6 +153,14 @@ describe("propose", () => {
     expect(vetoed.propose).not.toHaveBeenCalled();
   });
 
+  it("refuses a call that already has an open proposal, dry too, before any approval", async () => {
+    for (const dry of [false, true]) {
+      const chain = fakeChain({ openProposal: vi.fn(async () => 9n) });
+      await expect(run(chain, dry)).rejects.toThrow(`Proposal 9 already asks for ${call.text} on the board and is still open, and the contract takes one at a time. Follow it with \`npx brainchain-worker proposal 9\`.`);
+      expect(chain.propose).not.toHaveBeenCalled();
+    }
+  });
+
   it("names a short bond and missing gas", async () => {
     await expect(run(fakeChain({ stakeBalance: vi.fn(async () => parseEther("1000")) }))).rejects.toThrow(/holds 1,000 BRAIN of the 250,000 BRAIN bond\. Buy BRAIN/);
     await expect(run(fakeChain({ ethBalance: vi.fn(async () => 0n) }))).rejects.toThrow(/no ETH on BrainChain for gas/);
@@ -158,12 +177,18 @@ describe("proposal", () => {
 
   it("shows an open proposal's deadline, and that anyone can expire it once passed", async () => {
     expect(await show(fakeChain())).toBe(`${head}\n  Waiting for Jev: Jev decides by 2027-01-22T05:13:20Z.`);
-    expect(await show(fakeChain({ now: vi.fn(async () => 1_900_000_000n) }))).toContain("anyone can return the bond with expire");
+    expect(await show(fakeChain({ now: vi.fn(async () => 1_900_000_000n) }))).toContain(`anyone can return the bond by calling expire on ${MAINNET.contracts.bonds}`);
+  });
+
+  it("reads the deadline the contract fixed at proposal, whatever today's window is", async () => {
+    const chain = fakeChain({ decideWithin: vi.fn(async () => 1n) });
+    expect(await show(chain)).toBe(`${head}\n  Waiting for Jev: Jev decides by 2027-01-22T05:13:20Z.`);
+    expect(chain.decideWithin).not.toHaveBeenCalled();
   });
 
   it("shows an adopted change and when it runs", async () => {
     const chain = fakeChain({
-      get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 0n, state: 2 })),
+      get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 0n, state: 2, deadline: 0n })),
       outcome: vi.fn(async () => ({ decisionId: 9n, adopted: true })),
       queued: vi.fn(async () => ({ changeId: 3n, eta: 1_800_172_800n, executed: false, vetoed: false })),
     });
@@ -172,16 +197,51 @@ describe("proposal", () => {
 
   it("shows a kept setting, an expiry and a missing proposal", async () => {
     const burned = fakeChain({
-      get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 0n, state: 3 })),
+      get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 0n, state: 3, deadline: 0n })),
       outcome: vi.fn(async () => ({ decisionId: 4n, adopted: false })),
     });
     expect(await show(burned)).toContain("Jev kept the current setting (decision 4); the bond was burned.");
     const expired = fakeChain({
-      get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 0n, state: 2 })),
+      get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 0n, state: 2, deadline: 0n })),
       outcome: vi.fn(async () => "expired" as const),
     });
     expect(await show(expired)).toContain("Not decided in its window; the bond was returned.");
-    const none = fakeChain({ get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: 0n, createdAt: 0n, state: 0 })) });
+    const none = fakeChain({ get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: 0n, createdAt: 0n, state: 0, deadline: 0n })) });
     await expect(show(none)).rejects.toThrow("There is no proposal 2 on BrainChain");
+  });
+});
+
+describe("the rehearsal", () => {
+  const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+
+  async function rehearsed(data: Hex) {
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const { id } = JSON.parse(body) as { id: number };
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ jsonrpc: "2.0", id, error: { code: 3, message: "execution reverted", data } }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const network = { ...TESTNET, rpc: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+      const call = buildCall(network, ME, { target: "board", call: "setPaused", args: "[true]" });
+      return await createProposals(network, account).rehearse(call);
+    } finally {
+      server.close();
+      server.closeAllConnections();
+    }
+  }
+
+  it("prints a plain revert's reason, not the name of its error", async () => {
+    const reverted = encodeErrorResult({ abi: parseAbi(["error Error(string)"]), errorName: "Error", args: ["transfer amount exceeds balance"] });
+    expect(await rehearsed(reverted)).toBe("transfer amount exceeds balance");
+  });
+
+  it("names the registry's and the executor's errors", async () => {
+    expect(await rehearsed("0xf667bc30")).toBe("AccountShapedId, the contract's check on these values");
+    expect(await rehearsed(encodeErrorResult({ abi: parseAbi(["error BadFee()"]), errorName: "BadFee" }))).toBe("BadFee, the contract's check on these values");
   });
 });

@@ -3,7 +3,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
 import { TESTNET } from "./network.js";
-import { argumentsOf, createReporter, createWatch, fetchProof, judge, REPORT_PREFIX, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
+import { argumentsOf, FLOORS, createReporter, createWatch, fetchProof, judge, MAX_CHECKED, MAX_FINDINGS, outcome, REPORT_PREFIX, UNREADABLE_MS, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
 
 const TX: Hex = `0x${"ab".repeat(32)}`;
 const BOARD: Address = TESTNET.contracts.taskBoard;
@@ -12,6 +12,8 @@ const abi = parseAbi([
   "function setFee(uint16 feeBps, address feeRouter)",
   "function setWorkerAllowed(address account, bool allowed)",
   "function setOwner(address owner)",
+  "function setPaused(bool paused)",
+  "function transfer(address to, uint256 amount)",
 ]);
 
 const change = (changeId: bigint, data: Hex, target: Address = BOARD): QueuedChange => ({ changeId, decisionId: changeId, target, data, eta: 1_800_000_000n, block: 10n });
@@ -47,7 +49,19 @@ describe("judging changes", () => {
     expect(judge(low).broken).toEqual(["the change bar falls below 60%", "the timelock falls below 24 hours", "more than 20 house tasks a day"]);
     expect(judge(encodeFunctionData({ abi, functionName: "setFee", args: [600, BOARD] })).broken).toEqual(["a protocol fee above 5%"]);
     expect(judge(encodeFunctionData({ abi, functionName: "setWorkerAllowed", args: [BOARD, true] })).broken).toEqual([]);
-    expect(judge(encodeFunctionData({ abi, functionName: "setOwner", args: [BOARD] })).broken).toEqual(["a call the constitution does not list"]);
+    expect(judge(encodeFunctionData({ abi, functionName: "setOwner", args: [BOARD] })).broken).toEqual(["a call the monitor does not know, which counts as breaking a floor"]);
+  });
+
+  it("knows exactly the calls the constitution's page names, and any other breaks a floor", () => {
+    expect(Object.values(FLOORS).map((floor) => floor.name).sort()).toEqual(["setConfig", "setFee", "setModel", "setParameters", "setPaused", "setWorkerAllowed", "transfer"]);
+    expect(judge("0x8f5a168f" as Hex).broken).toEqual(["a call the monitor does not know, which counts as breaking a floor"]);
+  });
+
+  it("says what a known call with no floor does, in place of calling it within the constitution", () => {
+    const transfer = encodeFunctionData({ abi, functionName: "transfer", args: [BOARD, 1_000_000_000_000n] });
+    expect(judge(transfer)).toEqual({ name: "transfer", broken: [], does: "moves house treasury funds" });
+    expect(judge(encodeFunctionData({ abi, functionName: "setPaused", args: [true] })).does).toBe("pauses or resumes new posts");
+    expect(judge(encodeFunctionData({ abi, functionName: "setWorkerAllowed", args: [BOARD, true] })).does).toBe("allows or removes a worker");
   });
 });
 
@@ -84,12 +98,29 @@ describe("watch", () => {
   const lines: string[] = [];
   const log = (line: string) => lines.push(line);
 
+  it("says a change is within the constitution when it has floors and crosses none, to the second", async () => {
+    lines.length = 0;
+    const fine = encodeFunctionData({ abi, functionName: "setFee", args: [300, BOARD] });
+    const { chain } = fakeChain({ queued: [{ ...change(1n, fine), eta: 1_800_000_040n }] });
+    expect(await createWatch({ network: TESTNET, chain, veto: false, log }).round()).toEqual({ findings: 0, incomplete: false });
+    expect(lines[0]).toBe(`change 1: setFee on ${BOARD}, within the constitution, runs after 2027-01-15 08:00:40 UTC`);
+  });
+
+  it("lists a treasury transfer as moving funds no floor covers, and not as a finding", async () => {
+    lines.length = 0;
+    const transfer = encodeFunctionData({ abi, functionName: "transfer", args: [BOARD, 1_000_000_000_000n] });
+    const { chain, vetoes } = fakeChain({ queued: [change(4n, transfer)] });
+    expect(await createWatch({ network: TESTNET, chain, veto: true, log }).round()).toEqual({ findings: 0, incomplete: false });
+    expect(lines[0]).toBe(`change 4: transfer on ${BOARD} moves house treasury funds, which no floor covers, runs after 2027-01-15 08:00:00 UTC`);
+    expect(vetoes).toEqual([]);
+  });
+
   it("reports a change within the constitution and leaves it alone", async () => {
     lines.length = 0;
     const { chain, vetoes } = fakeChain({ queued: [change(1n, encodeFunctionData({ abi, functionName: "setWorkerAllowed", args: [BOARD, true] }))] });
     const watch = createWatch({ network: TESTNET, chain, veto: true, log });
     expect(await watch.round()).toEqual({ findings: 0, incomplete: false });
-    expect(lines[0]).toMatch(/^change 1: setWorkerAllowed on 0x7A7cC.*within the constitution, runs after 2027-01-15 08:00 UTC$/);
+    expect(lines[0]).toMatch(/^change 1: setWorkerAllowed on 0x7A7cC.* allows or removes a worker, which no floor covers, runs after 2027-01-15 08:00:00 UTC$/);
     expect(vetoes).toEqual([]);
     // A later round does not judge the same change again.
     await watch.round();
@@ -104,7 +135,7 @@ describe("watch", () => {
     expect(await watch.round()).toEqual({ findings: 1, incomplete: false });
     expect(vetoes).toEqual(["2: Breaks the constitution: a protocol fee above 5%"]);
     expect(lines).toEqual([
-      "change 2: setFee on 0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4 breaks the constitution (a protocol fee above 5%), runs after 2027-01-15 08:00 UTC",
+      "change 2: setFee on 0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4 breaks the constitution (a protocol fee above 5%), runs after 2027-01-15 08:00:00 UTC",
       `vetoed change 2 through the guardian gate: ${TX}`,
     ]);
   });
@@ -208,8 +239,51 @@ describe("a one-shot run", () => {
   });
 });
 
+describe("what a decision's checks come to", () => {
+  const check = (name: string, status: "ok" | "fail" | "skip" | "error", message = name) => ({ name, status, message });
+
+  it("treats fail as a finding and error as could not be checked, a real failure winning over what could not be read", async () => {
+    await expect(outcome({ checks: [check("read", "ok"), check("threshold", "skip")] })).resolves.toEqual({ findings: [] });
+    await expect(outcome({ checks: [check("record-hash", "fail", "differs")] })).resolves.toEqual({ findings: ["record-hash: differs"] });
+    await expect(outcome({ checks: [check("fetch", "error", "could not fetch")] })).rejects.toThrow("fetch: could not fetch");
+    await expect(outcome({ checks: [check("answer", "fail", "differs"), check("fetch", "error", "could not fetch")] })).resolves.toEqual({ findings: ["answer: differs"] });
+  });
+
+  it("names the hash checks a withheld record leaves unrun, is no finding, and fetches nothing more", async () => {
+    const refetch = vi.fn(async () => new Uint8Array());
+    await expect(outcome({ withheld: true, payloadURI: "https://records.example/1.json", checks: [check("fetch", "ok"), check("record-hash", "skip"), check("input-hash", "skip"), check("levels", "skip")] }, { refetch })).resolves.toEqual({ findings: [], withheld: ["record-hash", "input-hash"] });
+    expect(refetch).not.toHaveBeenCalled();
+    await expect(outcome({ withheld: true, checks: [check("answer", "fail", "differs"), check("record-hash", "skip")] })).resolves.toEqual({ findings: ["answer: differs"] });
+  });
+});
+
+describe("a withheld decision", () => {
+  it("is listed as withheld with the checks that did not run, neither verified nor a finding, and is not reported as re-verified", async () => {
+    const { chain } = fakeChain({ decisions: [3n] });
+    const lines: string[] = [];
+    const reports: Parameters<Report>[] = [];
+    const seen: bigint[] = [];
+    const watch = createWatch({
+      network: TESTNET,
+      chain,
+      veto: false,
+      log: (l) => lines.push(l),
+      seenDecision: 1n,
+      recent: 10n,
+      saw: (n) => seen.push(n),
+      verify: async (id) => (id === 2n ? { findings: [], withheld: ["record-hash", "input-hash"] } : { findings: [], record: new Uint8Array([1]) }),
+      report: async (...args) => (reports.push(args), "reported"),
+    });
+    expect(await watch.round()).toEqual({ findings: 0, incomplete: false });
+    expect(lines).toEqual(["decision 2 withheld: its record is served without the work, so record-hash and input-hash did not run; the checks that ran agree with the chain", "decision 3 verified", "reported"]);
+    expect(reports[0]![0].map((c) => c.id)).toEqual([3n]);
+    expect(seen).toEqual([3n]);
+  });
+});
+
 describe("a round that cannot finish", () => {
   const verified = { findings: [] };
+  const record = new TextEncoder().encode('{"kind":"hire"}');
 
   it("stops at a decision it could not check, keeps its place there and says the round is incomplete", async () => {
     const { chain } = fakeChain({ decisions: [5n] });
@@ -266,7 +340,7 @@ describe("a round that cannot finish", () => {
     expect(lines.slice(-2)).toEqual(["reported", "warning: could not save how far this got, so the next run checks these decisions again: EACCES: permission denied"]);
   });
 
-  it("keeps its place when the report did not reach the service, and moves on when the service refused it", async () => {
+  it("keeps its place when the report did not reach the service, and flags a refusal too, moving on since sending again would not change it", async () => {
     const run = async (failure: Error) => {
       const { chain } = fakeChain({ decisions: [2n] });
       const seen: bigint[] = [];
@@ -286,7 +360,80 @@ describe("a round that cannot finish", () => {
       return { ...(await watch.round()), seen };
     };
     expect(await run(new Error("503 from the service"))).toEqual({ findings: 0, incomplete: true, seen: [0n] });
-    expect(await run(new ReportRefused("The report was signed too long ago."))).toEqual({ findings: 0, incomplete: false, seen: [2n] });
+    expect(await run(new ReportRefused("The report was signed too long ago."))).toEqual({ findings: 0, incomplete: true, seen: [2n] });
+  });
+
+  describe("a record that cannot be read", () => {
+    const RECORDED = "2026-11-06 12:00:00 UTC";
+    const at = Date.parse(RECORDED);
+    const young = at + UNREADABLE_MS - 1;
+    const old = at + UNREADABLE_MS;
+    // What the verifier answers when the record's host does not: a check with status error, not a throw.
+    const dead = { recordedAt: RECORDED, checks: [{ name: "read", status: "ok" as const, message: "read" }, { name: "fetch", status: "error" as const, message: "could not fetch the record: 503" }] };
+    const OLD_FINDING = "the record could not be read a day or more after it was recorded: fetch: could not fetch the record: 503";
+
+    function rig(verify: (id: bigint) => ReturnType<NonNullable<Parameters<typeof createWatch>[0]["verify"]>>, seenDecision = 224n) {
+      const { chain } = fakeChain({ decisions: [226n] });
+      const lines: string[] = [];
+      const seen: bigint[] = [];
+      const reports: Parameters<Report>[] = [];
+      const watch = createWatch({
+        network: TESTNET,
+        chain,
+        verify,
+        veto: false,
+        log: (l) => lines.push(l),
+        seenDecision,
+        recent: 10n,
+        saw: (n) => seen.push(n),
+        report: async (...args) => (reports.push(args), "reported"),
+      });
+      return { watch, lines, seen, reports };
+    }
+
+    it("holds the place while the decision is under a day old, and a later run checks it again", async () => {
+      const first = rig(async (id) => (id === 225n ? outcome(dead, { now: young }) : { findings: [] }));
+      expect(await first.watch.round()).toEqual({ findings: 0, incomplete: true });
+      expect(first.seen).toEqual([224n]);
+      expect(first.reports).toEqual([]);
+      expect(first.lines.at(-1)).toBe("decision 225 could not be checked, so it is tried again next round: fetch: could not fetch the record: 503");
+      const next = rig(async () => ({ findings: [] }), first.seen.at(-1));
+      expect(await next.watch.round()).toEqual({ findings: 0, incomplete: false });
+      expect(next.lines).toEqual(["decision 225 verified", "decision 226 verified"]);
+      expect(next.seen).toEqual([226n]);
+    });
+
+    it("becomes a finding a day after the decision's block time, goes to the service once, and the place moves on", async () => {
+      const verify = vi.fn(async (id: bigint) => (id === 225n ? outcome(dead, { now: old }) : { findings: [], record }));
+      const first = rig(verify);
+      expect(await first.watch.round()).toEqual({ findings: 1, incomplete: false });
+      expect(verify.mock.calls.map((c) => c[0])).toEqual([225n, 226n]);
+      expect(first.seen).toEqual([226n]);
+      expect(first.lines[0]).toBe(`decision 225 does not verify: ${OLD_FINDING}`);
+      expect(first.reports).toEqual([[[{ id: 226n, proof: fetchProof(record, "0x00000000000000000000000000000000000000C1") }], [{ id: 225n, checks: [OLD_FINDING] }]]]);
+      // A later run starts past it, so it is reported once.
+      const next = rig(verify, first.seen.at(-1));
+      expect(await next.watch.round()).toEqual({ findings: 0, incomplete: false });
+      expect(verify).toHaveBeenCalledTimes(2);
+      expect(next.reports).toEqual([]);
+    });
+
+    it("holds the place when the decision's time is unknown, since nothing says the limit has passed", async () => {
+      await expect(outcome({ checks: dead.checks } as never, { now: old })).rejects.toThrow("fetch: could not fetch the record: 503");
+      await expect(outcome({ ...dead, recordedAt: "not a time" } as never, { now: old })).rejects.toThrow("fetch: could not fetch the record: 503");
+    });
+
+    it("applies the same rule to a verified record's failed refetch", async () => {
+      const verified = { recordedAt: RECORDED, payloadURI: "https://records.example/1.json", checks: [{ name: "read", status: "ok", message: "read" }] } as never;
+      const refetch = vi.fn(async () => record);
+      await expect(outcome(verified, { refetch, now: young })).resolves.toEqual({ findings: [], record });
+      expect(refetch).toHaveBeenCalledWith("https://records.example/1.json");
+      const failing = async () => Promise.reject(new Error("503 from https://records.example/1.json"));
+      await expect(outcome(verified, { refetch: failing, now: young })).rejects.toThrow("503 from https://records.example/1.json");
+      await expect(outcome(verified, { refetch: failing, now: old })).resolves.toEqual({ findings: ["the record could not be read a day or more after it was recorded: 503 from https://records.example/1.json"] });
+      // No key, nothing to report, so no second fetch.
+      await expect(outcome(verified, { now: old })).resolves.toEqual({ findings: [] });
+    });
   });
 });
 
@@ -315,6 +462,22 @@ describe("reporting rounds", () => {
     expect(await granted([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).toBe("reported to BrainChain testnet: 12 decisions re-verified in all, watchtower mark since 2026-11-02");
     const refused = createReporter(TESTNET, worker, (async () => new Response(JSON.stringify({ error: "The proof for decision 1 does not match its record." }), { status: 400 })) as typeof fetch);
     await expect(refused([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).rejects.toThrow("The proof for decision 1 does not match its record.");
+  });
+
+  it("sends a long round in several reports, each signed later than the last, so no decision is passed unreported", async () => {
+    const reports: { checked: { id: number }[]; findings: unknown[]; at: number }[] = [];
+    const fetcher = (async (_url: string | URL | Request, init?: RequestInit) => {
+      reports.push(JSON.parse((JSON.parse(String(init?.body)) as { report: string }).report));
+      return new Response(JSON.stringify({ checked: 1, mark: null, markAfter: 10 }), { status: 200 });
+    }) as typeof fetch;
+    const proof = fetchProof(record, worker.address);
+    const checked = Array.from({ length: MAX_CHECKED * 2 + 1 }, (_, i) => ({ id: BigInt(i + 1), proof }));
+    const findings = Array.from({ length: MAX_FINDINGS + 1 }, (_, i) => ({ id: BigInt(1_000 + i), checks: ["differs"] }));
+    await createReporter(TESTNET, worker, fetcher)(checked, findings);
+    expect(reports.map((r) => [r.checked.length, r.findings.length])).toEqual([[MAX_CHECKED, MAX_FINDINGS], [MAX_CHECKED, 1], [1, 0]]);
+    expect(reports.flatMap((r) => r.checked.map((c) => c.id))).toEqual(checked.map((c) => Number(c.id)));
+    expect(reports[1]!.at).toBeGreaterThan(reports[0]!.at);
+    expect(reports[2]!.at).toBeGreaterThan(reports[1]!.at);
   });
 
   it("reports after a round that re-verified decisions, with the proof bound to the worker, and goes on when the service refuses", async () => {

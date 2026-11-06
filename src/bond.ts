@@ -1,8 +1,8 @@
 // A delivery bond on Shipped: the worker locks USDG on Robinhood Chain behind
 // a task, and the task's Proof is what releases it. Shipped's check reads
 // BrainChain's ProofIndex, proofOf(task) >= 1, so a task that is paid and gets
-// its Proof returns the bond less Shipped's 1% fee, and one that is not pays
-// the bond to the task's poster.
+// its Proof by the bond's deadline returns the bond less Shipped's 1% fee, and
+// one that does not pays the bond to the agent that paid for the task.
 import {
   createPublicClient,
   createWalletClient,
@@ -48,6 +48,8 @@ export const shippedAbi = parseAbi([
 /** ShippedDeeds.Status and Ruling. */
 export const DeedStatus = { None: 0, Open: 1, Ruled: 2, Appealed: 3, Settled: 4 } as const;
 export const Ruling = { None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 4, Conceded: 5, Default: 6, CheckMet: 7 } as const;
+/** Who a missed bond pays, in the words every line about one uses. */
+export const MISSED_TO = "the agent that paid BrainChain's desk for the task, or to the poster for a task posted on the board directly";
 const BPS = 10_000n;
 const ZERO: Address = "0x0000000000000000000000000000000000000000";
 /** The bond's deadline is the task's plus this: grading, the worker's day to mint and the check's hold all fit. */
@@ -261,7 +263,11 @@ export function createBondChain(network: Network, config: BondConfig, account: P
         await response.body?.cancel();
         throw new Error(`The BrainChain service at ${host} answered ${response.status} when asked who paid for task ${task}`);
       }
-      const { refundTo } = ((await response.json().catch(() => undefined)) as { refundTo?: unknown } | undefined) ?? {};
+      const { board, refundTo } = ((await response.json().catch(() => undefined)) as { board?: unknown; refundTo?: unknown } | undefined) ?? {};
+      // Task ids restart with each board, so an answer for another board names who paid for a different task.
+      if (typeof board !== "string" || board.toLowerCase() !== network.contracts.taskBoard.toLowerCase()) {
+        throw new Error(`The BrainChain service at ${host} answered for ${typeof board === "string" ? `the task board ${board}` : "an unnamed task board"}, and this worker reads task ${task} from ${network.contracts.taskBoard}, so who paid for the task cannot be told. Nothing was sent.`);
+      }
       if (refundTo === null || refundTo === undefined) return undefined;
       if (typeof refundTo !== "string" || !isAddress(refundTo)) throw new Error(`The BrainChain service at ${host} named the payer of task ${task} in a form bond cannot read`);
       return refundTo;
@@ -280,19 +286,31 @@ export const bondGas = (gasPrice: bigint, approves: boolean) => (GAS.create + (a
 
 const fee = (amount: bigint) => (amount * FEE_BPS) / BPS;
 
+/** A bond by Shipped's number when Shipped knows it, and by the registry's id, a different number, when it does not. */
+const bondName = (b: BondView, page: DeedPage | undefined) => (page ? `Bond No. ${page.number}` : `The bond with registry id ${b.deed}`);
+
 /** Where a bond stands, in one line. */
-export function bondLine(network: Network, b: BondView, indexed: boolean, now: bigint, page?: DeedPage): string {
-  const head = `Bond No. ${page?.number ?? b.deed} on task ${b.task}: ${usdg(network, b.amount)}`;
+export function bondLine(network: Network, b: BondView, facts: { indexed: boolean; now: bigint; page?: DeedPage | undefined; owed?: bigint; taskStatus?: number | undefined }): string {
+  const { indexed, now, page, owed = 0n, taskStatus } = facts;
+  const head = `${page ? `Bond No. ${page.number} on task ${b.task}` : `Bond on task ${b.task} (registry id ${b.deed})`}: ${usdg(network, b.amount)}`;
   if (b.status === DeedStatus.Settled) {
-    if (b.remainderBps === Number(BPS)) return `${head}, delivered at ${when(b.settledAt)}: ${usdg(network, b.amount - fee(b.amount))} back after Shipped's 1% fee (bond claim ${b.task} collects it)`;
-    return `${head}, missed: paid to the poster ${b.refundTo} at ${when(b.settledAt)}`;
+    if (b.remainderBps !== Number(BPS)) return `${head}, missed at ${when(b.settledAt)}: ${indexed ? "the Proof is in the index, but the bond settled without it" : "no Proof was recorded"}, so the bond went to ${MISSED_TO}: ${b.refundTo}`;
+    const delivered = `${head}, delivered at ${when(b.settledAt)}: the bond less Shipped's 1% fee, ${usdg(network, b.amount - fee(b.amount))},`;
+    // The registry keeps one sum per wallet, so only an empty one says which bonds were collected.
+    return owed === 0n ? `${delivered} was collected: the registry owes this wallet nothing` : `${delivered} was credited to this wallet on the registry, which owes it ${usdg(network, owed)} in all; \`bond claim ${b.task}\` collects that`;
   }
   if (b.checkMetAt > 0n) {
     const confirmAt = b.checkMetAt + CHECK_HOLD_SEC;
     return `${head}, the Proof is in the index and the check was marked at ${when(b.checkMetAt)}; BrainChain confirms it ${now < confirmAt ? `after ${when(confirmAt)}` : "shortly"}`;
   }
-  if (now > b.deadline) return `${head}, deadline ${when(b.deadline)} passed with no Proof recorded; it settles to the poster ${b.refundTo} after ${when(b.deadline + CHECK_HOLD_SEC + CHECK_CONFIRM_SEC)}`;
-  return `${head}, open until ${when(b.deadline)}: ${indexed ? "the Proof is in the index and BrainChain marks the check shortly" : "waiting for the task to be paid and its Proof recorded"}`;
+  const settles = `it settles after ${when(b.deadline + CHECK_HOLD_SEC + CHECK_CONFIRM_SEC)} to ${MISSED_TO}: ${b.refundTo}`;
+  // Shipped sets no first mark after the deadline, so a Proof that is in the index by now does not release the bond.
+  if (now > b.deadline) return `${head}, deadline ${when(b.deadline)} passed ${indexed ? "with the Proof in the index and the check unmarked, and Shipped sets no mark after the deadline" : "with no Proof recorded"}; ${settles}`;
+  const open = `${head}, open until ${when(b.deadline)}:`;
+  if (indexed) return `${open} the Proof is in the index and BrainChain marks the check shortly`;
+  // A refunded task is final and gets no Proof, so its bond can only be missed.
+  if (taskStatus === Status.Refunded) return `${open} the task was refunded, so no Proof will be recorded; ${settles}`;
+  return `${open} ${taskStatus === Status.Paid ? "the task is paid; waiting for its Proof to be minted and recorded" : "waiting for the task to be paid and its Proof recorded"}`;
 }
 
 function closed(network: Network, config: BondConfig | undefined): string | undefined {
@@ -301,7 +319,7 @@ function closed(network: Network, config: BondConfig | undefined): string | unde
   return undefined;
 }
 
-/** Shipped's own number and page for a deed; the registry id stands in when the API cannot be reached or the bond is a test. */
+/** Shipped's own number and page for a deed, which the API may not give for a test bond or when it cannot be reached. */
 export const SHIPPED_API = "https://api.shipped.bond";
 
 export interface DeedPage {
@@ -347,7 +365,10 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   if (options.amount < t.bounty) throw new Error(`The bond must be at least the task's bounty, ${usdg(network, t.bounty)}; ${usdg(network, options.amount)} is under it.`);
   if (options.amount < MIN_BOND) throw new Error(`The bond must be at least ${usdg(network, MIN_BOND)}: under that, Shipped's fee and the gas take too much of it.`);
   const existing = (await chain.bondsOn(task)).find((b) => b.status !== DeedStatus.Settled);
-  if (existing) throw new Error(`This worker already has bond No. ${existing.deed} open on task ${task}. \`bond status ${task}\` shows where it stands.`);
+  if (existing) {
+    const page = await deedPage(existing.deed, options.fetch);
+    throw new Error(`This worker already has ${page ? `bond No. ${page.number}` : "a bond"} open on task ${task} (registry id ${existing.deed}${page ? `, ${page.url}` : ""}). \`bond status ${task}\` shows where it stands.`);
+  }
   // A task paid through the desk has the desk as its poster on the board; the bond pays the agent that paid.
   const payer = await chain.payerOf(task);
   if (payer?.toLowerCase() === chain.account.toLowerCase()) throw new Error(`Task ${task} was paid for by this wallet. A bond guarantees delivery to someone else: it earns no standing on a task the worker paid for itself.`);
@@ -380,11 +401,8 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   log(`Bonding ${usdg(network, options.amount)} on task ${task}...`);
   const { deed, tx } = await chain.create(terms, options.amount);
   const page = await deedPage(deed, options.fetch);
-  log(
-    page
-      ? `Bond No. ${page.number} is open on Shipped: ${page.url} (${tx}). Jev reads it when it hires; \`bond status ${task}\` follows it.`
-      : `Bond No. ${deed} is open on Shipped (${tx}). Jev reads it when it hires; \`bond status ${task}\` follows it.`,
-  );
+  const opened = page ? `Bond No. ${page.number} is open on Shipped: ${page.url} (${tx}).` : `A bond with registry id ${deed} is open on Shipped (${tx}).`;
+  log(`${opened} \`bond status ${task}\` follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
 }
 
 /** Prints where the worker's bonds on a task stand. */
@@ -400,26 +418,37 @@ export async function bondStatus(
   if (shut) throw new Error(shut);
   const bonds = await chain.bondsOn(task);
   if (bonds.length === 0) return log(`${chain.account} has no bond on task ${task}.`);
-  const [now, indexed, pages] = await Promise.all([chain.now(), chain.proofOf(task), Promise.all(bonds.map((b) => deedPage(b.deed, fetchImpl)))]);
+  const delivered = bonds.some((b) => b.status === DeedStatus.Settled && b.remainderBps === Number(BPS));
+  // Only a bond still waiting for its Proof is worded by where the task stands.
+  const waiting = bonds.some((b) => b.status !== DeedStatus.Settled && b.checkMetAt === 0n);
+  const [now, indexed, t, owed, pages] = await Promise.all([
+    chain.now(),
+    chain.proofOf(task),
+    waiting ? chain.task(task) : undefined,
+    delivered ? chain.owed() : 0n,
+    Promise.all(bonds.map((b) => deedPage(b.deed, fetchImpl))),
+  ]);
   bonds.forEach((b, i) => {
     const page = pages[i];
-    log(`${bondLine(network, b, indexed > 0n, now, page)}${page ? ` ${page.url}` : ""}`);
+    log(`${bondLine(network, b, { indexed: indexed > 0n, now, page, owed, taskStatus: t?.status })}${page ? ` ${page.url}` : ""}`);
   });
 }
 
 /** Collects what a settled bond left the worker: withdraw(USDG) on the registry. */
-export async function bondClaim(network: Network, config: BondConfig | undefined, chain: BondChain, task: bigint, log: (line: string) => void): Promise<void> {
+export async function bondClaim(network: Network, config: BondConfig | undefined, chain: BondChain, task: bigint, log: (line: string) => void, fetchImpl: typeof fetch = fetch): Promise<void> {
   const shut = closed(network, config);
   if (shut) throw new Error(shut);
   const [latest] = await chain.bondsOn(task);
   if (!latest) throw new Error(`${chain.account} has no bond on task ${task}.`);
+  const page = await deedPage(latest.deed, fetchImpl);
   if (latest.status !== DeedStatus.Settled) {
-    const [now, indexed] = await Promise.all([chain.now(), chain.proofOf(task)]);
-    throw new Error(`${bondLine(network, latest, indexed > 0n, now)}. It can be claimed once it has settled.`);
+    const [now, indexed, t] = await Promise.all([chain.now(), chain.proofOf(task), chain.task(task)]);
+    throw new Error(`${bondLine(network, latest, { indexed: indexed > 0n, now, page, taskStatus: t?.status })}. Nothing can be claimed before it settles.`);
   }
   const owed = await chain.owed();
   if (owed === 0n) {
-    return log(latest.remainderBps === Number(BPS) ? `Bond No. ${latest.deed} was delivered and its ${usdg(network, latest.amount - fee(latest.amount))} already withdrawn.` : `Bond No. ${latest.deed} was missed: its ${usdg(network, latest.amount)} went to the poster ${latest.refundTo}, so there is nothing to claim.`);
+    const name = bondName(latest, page);
+    return log(latest.remainderBps === Number(BPS) ? `${name} was delivered and its ${usdg(network, latest.amount - fee(latest.amount))} was collected: the registry owes this wallet nothing.` : `${name} was missed: its ${usdg(network, latest.amount)} went to ${MISSED_TO}: ${latest.refundTo}. There is nothing to claim.`);
   }
   if ((await chain.ethBalance()) === 0n) throw new Error(`${chain.account} has no ETH on ${network.proofs.name} to pay gas for the claim.`);
   log(`Claiming ${usdg(network, owed)} from Shipped's registry on ${network.proofs.name}...`);

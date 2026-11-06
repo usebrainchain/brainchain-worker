@@ -393,6 +393,11 @@ describe("answers from a real server", () => {
     "/rest": (res, req) => json(200, { args: {}, headers: { Authorization: req.headers.authorization }, url: `http://rest.example${req.url}` })(res),
     "/missing": json(200, { error: "Not Found" }),
     "/rpc": json(200, { jsonrpc: "2.0", id: 1, result: "0x10" }),
+    "/nodeerror": json(200, { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "the node says this is wrong" } }),
+    "/headersback": (res, req) => {
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end(`upstream refused auth=${req.headers.authorization ?? ""} raw=${Buffer.from((req.headers.authorization ?? "").replace("Basic ", ""), "base64").toString().split(":")[1] ?? ""}`);
+    },
     "/results/html403": html(403),
     "/results/refused": json(403, { error: "Only the hired worker can upload a result" }),
   };
@@ -446,6 +451,40 @@ describe("answers from a real server", () => {
     const line = await rpc("/echo/v2/APIKEYSECRET123?key=QUERYSECRET456");
     expect(line).toBe(`${host} answered 404 (Cannot POST …)`);
     expect(await rpc("/echo/APIKEYSECRET123")).not.toContain("APIKEYSECRET123");
+  });
+
+  describe("an RPC URL that holds a credential", () => {
+    const secretUrl = (path: string) => `http://user:PASSWORDSECRET9@${host}${path}`;
+    const withEnv = async (url: string) => {
+      vi.stubEnv("BRAINCHAIN_RPC_URL", url);
+      try {
+        const client = createPublicClient({ transport: http(url, { retryCount: 0 }) });
+        return reason(await client.getBlockNumber().catch((error: unknown) => error));
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    };
+
+    it("prints none of a non-2xx answer, which can echo the credential in any form", async () => {
+      expect(await withEnv(secretUrl("/headersback/v1/APIKEYSECRET123?k=QUERYSECRET456"))).toBe(`${host} answered 500`);
+      expect(await withEnv(`http://${host}/headersback/APIKEYSECRET123`)).toBe(`${host} answered 500`);
+    });
+
+    it("still says when the answer was a web page", async () => {
+      expect(await withEnv(secretUrl("/page502/x"))).toBe(`${host} answered 502 with a web page`);
+    });
+
+    it("strips an echoed Authorization value wherever the answer is printed", async () => {
+      const client = createPublicClient({ transport: http(secretUrl("/headersback"), { retryCount: 0 }) });
+      const line = reason(await client.getBlockNumber().catch((error: unknown) => error));
+      expect(line).toContain("auth=Basic …");
+      expect(line).not.toContain(btoa("user:PASSWORDSECRET9"));
+    });
+
+    it("gives no part of a JSON-RPC error's text, and the RPC's own words when the URL holds nothing", async () => {
+      expect(await withEnv(secretUrl("/nodeerror"))).toBe(`${host} refused the request (JSON-RPC error -32000)`);
+      expect(await rpc("/nodeerror")).toBe(`${host} refused the request: the node says this is wrong`);
+    });
   });
 
   it("gives up on a result only when the service itself refuses it", async () => {

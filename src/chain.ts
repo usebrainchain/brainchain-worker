@@ -5,6 +5,7 @@ import {
   ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
+  encodeAbiParameters,
   encodeFunctionData,
   http,
   HttpRequestError,
@@ -13,12 +14,14 @@ import {
   parseAbi,
   parseEventLogs,
   RpcRequestError,
+  slice,
   TimeoutError,
   toBytes,
   WaitForTransactionReceiptTimeoutError,
   type Address,
   type Hex,
   type PrivateKeyAccount,
+  type PublicClient,
 } from "viem";
 
 import { erc20Errors, taskBoardAbi, transferErrors, workerStakingAbi } from "./abi.js";
@@ -41,8 +44,10 @@ export const bondsAbi = [
     "event Proposed(uint256 indexed id, address indexed proposer, address indexed target, bytes data, uint128 bond, string uri)",
     "event Settled(uint256 indexed id, uint256 indexed decisionId, bool adopted)",
     "function propose(address target, bytes data, string uri) returns (uint256)",
-    "function get(uint256 id) view returns ((address proposer, uint128 bond, uint64 createdAt, uint8 state, bytes32 subject))",
+    "function get(uint256 id) view returns ((address proposer, uint128 bond, uint64 createdAt, uint8 state, bytes32 subject, uint64 deadline, uint16 thresholdBps))",
     "function bond() view returns (uint128)",
+    "function openProposal(bytes32 subject) view returns (uint256)",
+    "error AlreadyProposed(uint256 id)",
   ]),
   ...erc20Errors,
   ...transferErrors,
@@ -52,6 +57,9 @@ export const executorAbi = parseAbi([
   "event Queued(uint256 indexed changeId, uint256 indexed decisionId, address indexed target, bytes data, uint64 eta)",
   "function getChange(uint256 changeId) view returns ((address target, bytes data, uint64 eta, bool executed, bool vetoed))",
   "function timelock() view returns (uint64)",
+  "function changeSubject(address target, bytes data) view returns (bytes32)",
+  "function vetoed(address target, bytes4 selector) view returns (bool)",
+  "function vetoedCall(bytes32) view returns (bool)",
 ]);
 
 /** The appeal terms of a task on set 3.5.0 and later; earlier boards have no appeals and no Ruled or Appealed status. */
@@ -129,6 +137,28 @@ export function applicationData(account: Address): Hex {
   return encodeFunctionData({ abi: taskBoardAbi, functionName: "setWorkerAllowed", args: [account, true] });
 }
 
+type Reader = Pick<PublicClient, "readContract">;
+
+/** Whether the guardian's veto shuts a call. A set 3.4.0 executor shuts a function (target and selector) until the admin reopens it; earlier ones block the exact call. */
+export async function callVetoed(client: Reader, executor: Address, target: Address, data: Hex): Promise<boolean> {
+  try {
+    return await client.readContract({ address: executor, abi: executorAbi, functionName: "vetoed", args: [target, slice(data, 0, 4)] });
+  } catch {
+    return client.readContract({
+      address: executor,
+      abi: executorAbi,
+      functionName: "vetoedCall",
+      args: [keccak256(encodeAbiParameters([{ type: "address" }, { type: "bytes" }], [target, data]))],
+    });
+  }
+}
+
+/** The open proposal for this exact call, from any wallet, or 0n: the bond contract takes one at a time. */
+export async function openProposalOf(client: Reader, network: Network, target: Address, data: Hex): Promise<bigint> {
+  const subject = await client.readContract({ address: network.contracts.executor, abi: executorAbi, functionName: "changeSubject", args: [target, data] });
+  return client.readContract({ address: network.contracts.bonds, abi: bondsAbi, functionName: "openProposal", args: [subject] });
+}
+
 /** The contract error a call reverted with, when the ABI knows it. */
 function revertOf(error: unknown) {
   const revert = error instanceof BaseError ? error.walk((e) => e instanceof ContractFunctionRevertedError) : null;
@@ -188,6 +218,7 @@ function excerpt(details: string, url: string): string {
   let line = unquote(details);
   for (const part of secretParts(url)) line = line.replaceAll(part, "…");
   line = line
+    .replace(/\b(Basic|Bearer)\s+[\w+/=.~-]+/gi, "$1 …")
     .replace(/\s+/g, " ")
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
     .trim();
@@ -220,6 +251,19 @@ async function checkReply(response: Response, url: string): Promise<void> {
   if (!(Array.isArray(value) ? value.every(isReply) : isReply(value))) throw new NotRpcError(excerpt(text, url));
 }
 
+/**
+ * Whether BRAINCHAIN_RPC_URL holds anything but a host. viem leaves a URL's user
+ * and password out of what it reports, so they cannot be masked once an answer
+ * echoes them, and an echo can take any form: with such a URL, no answer's text
+ * is printed.
+ */
+function rpcHoldsSecret(): boolean {
+  const value = process.env.BRAINCHAIN_RPC_URL?.trim();
+  if (!value || !URL.canParse(value)) return false;
+  const { username, password, pathname, search } = new URL(value);
+  return Boolean(username || password || search || pathname.length > 1);
+}
+
 /** A request that failed, named by the RPC's host and the status it answered with. */
 function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutError): string {
   const host = hostOf(request.url);
@@ -231,7 +275,14 @@ function requestFailure(request: HttpRequestError | RpcRequestError | TimeoutErr
   if (status === undefined) return `Could not reach ${host}${details ? ` (${details})` : ""}`;
   // A proxy or CDN in front of the RPC answers an outage or a rate limit with its own page.
   if (details.startsWith("<")) return `${host} answered ${status} with a web page${status === 404 || status === 405 ? ", not as an RPC" : ""}`;
-  return `${host} answered ${status}${details ? ` (${details})` : ""}`;
+  return `${host} answered ${status}${details && !rpcHoldsSecret() ? ` (${details})` : ""}`;
+}
+
+/** A JSON-RPC error, in the RPC's own words: viem's line for an error code is generic and can send the reader after the wrong thing. */
+function rpcRefusal(answer: RpcRequestError): string {
+  const host = hostOf(answer.url);
+  if (rpcHoldsSecret()) return `${host} refused the request (JSON-RPC error ${answer.code})`;
+  return `${host} refused the request: ${excerpt(answer.details, answer.url)}`;
 }
 
 const SHORT_OF_GAS = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
@@ -268,6 +319,7 @@ const PLAIN: Record<string, string> = {
   ERC20InsufficientAllowance: "the wallet has not approved enough of the token for the contract to take",
   ERC20InsufficientBalance: "the wallet holds too little of the token",
   Locked: "the stake is still locked",
+  AlreadyProposed: "that exact call already has an open proposal, and the contract takes one at a time",
 };
 
 /** One readable line for an error. It names the RPC by host only: its URL can hold an API key. */
@@ -280,7 +332,11 @@ export function reason(error: unknown): string {
   );
   if (request instanceof HttpRequestError || request instanceof RpcRequestError || request instanceof TimeoutError) return requestFailure(request);
   const name = revertOf(error)?.errorName;
-  if (name === undefined) return error.shortMessage;
+  if (name === undefined) {
+    const answer = error.walk((e) => e instanceof RpcRequestError);
+    const reverted = error.walk((e) => e instanceof ContractFunctionRevertedError) instanceof ContractFunctionRevertedError;
+    return answer instanceof RpcRequestError && !reverted ? rpcRefusal(answer) : error.shortMessage;
+  }
   const plain = Object.hasOwn(PLAIN, name) ? PLAIN[name] : undefined;
   return plain ? `${error.shortMessage.replace(/\.$/, "")}: ${plain} (${name})` : `${error.shortMessage} (${name})`;
 }
@@ -483,6 +539,10 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     },
     apply: (profileURI: string) =>
       send({ address: bonds, abi: bondsAbi, functionName: "propose", args: [taskBoard, applicationData(account.address), profileURI] }),
+    /** Whether the guardian's veto shuts allowing a worker, which is what an application asks for. */
+    applicationVetoed: () => callVetoed(client, executor, taskBoard, applicationData(account.address)),
+    /** An open proposal to allow this worker, from any wallet, or 0n. */
+    openApplication: () => openProposalOf(client, network, taskBoard, applicationData(account.address)),
     /**
      * This worker's applications, newest last, with their state and the
      * decision that settled each, and the last change any of them queued.

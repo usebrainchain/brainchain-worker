@@ -1,4 +1,4 @@
-import { recoverTypedDataAddress, type Address, type Hex } from "viem";
+import { ContractFunctionRevertedError, HttpRequestError, parseAbi, recoverTypedDataAddress, type Address, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
 
@@ -48,5 +48,14 @@ describe("credit", () => {
     const key = privateKeyToAccount(generatePrivateKey());
     const refused = (async () => new Response(JSON.stringify({ error: "No staked BrainChain worker declared agent 501 in its application. Join with --agent-id first." }), { status: 404 })) as typeof fetch;
     await expect(credit(MAINNET, chainFor(key.address, key), { agentId: 501n, premiumBps: 0n, log: () => {}, fetcher: refused })).rejects.toThrow(/Join with --agent-id first/);
+  });
+
+  it("says there is no such agent when the registry reverts, and that it could not be read otherwise", async () => {
+    const reverted = new ContractFunctionRevertedError({ abi: parseAbi(["function ownerOf(uint256) view returns (address)"]), functionName: "ownerOf", message: 'reverted with signature 0x7e273289' });
+    const key = privateKeyToAccount(generatePrivateKey());
+    const none = { ...chainFor(key.address, key), ownerOf: async () => Promise.reject(reverted) };
+    await expect(credit(MAINNET, none, { agentId: 99_999_999_999n, premiumBps: 0n, log: () => {} })).rejects.toThrow(/^There is no ERC-8004 agent 99999999999 on Robinhood Chain\.$/);
+    const down = { ...chainFor(key.address, key), ownerOf: async () => Promise.reject(new HttpRequestError({ url: "https://rpc.example.com", details: "fetch failed" })) };
+    await expect(credit(MAINNET, down, { agentId: 5n, premiumBps: 0n, log: () => {} })).rejects.toThrow("ERC-8004 agent 5 could not be read on Robinhood Chain: Could not reach rpc.example.com (fetch failed)");
   });
 });

@@ -9,7 +9,7 @@ import { stateDir } from "./state.js";
 const HANDOFF = "BRAINCHAIN_WORKER_KEY_HANDOFF";
 const HANDOFF_NAME = /^brainchain-worker-key-[0-9a-f]{32}$/;
 
-const expandHome = (path: string) => (path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path);
+export const expandHome = (path: string) => (path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path);
 
 /** Whether the environment names a key, without reading it: a key file can be a pipe, which reads only once. */
 export const keyConfigured = (env: NodeJS.ProcessEnv = process.env) =>
@@ -82,17 +82,31 @@ function handoffDir(): string {
   }
 }
 
+/** A variable that holds a key or says where one is: the worker's and the Solana wallet's, which `run` never uses. */
+const KEY_VARIABLE = /^BRAINCHAIN_(WORKER|SOLANA)_KEY(_FILE)?$/;
+
+/** A key file that is a pipe has been read and holds nothing, so its name can stay: a restart would put a key piped in to stay out of files in one for a moment. */
+function namesOnlyAPipe(names: string[], env: NodeJS.ProcessEnv): boolean {
+  if (names.length !== 1 || names[0] !== "BRAINCHAIN_WORKER_KEY_FILE") return false;
+  try {
+    return !statSync(expandHome(env.BRAINCHAIN_WORKER_KEY_FILE!.trim())).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Restarts this process in place without BRAINCHAIN_WORKER_KEY in its
- * environment. Deleting the variable would not do: `ps eww` and /proc read the
- * block the process started with, and a command run by `run` can reach both.
- * The pid, the output and the supervisor's view all stay as they were. Returns
- * when there is nothing to clear, or when it could not be cleared.
+ * Restarts this process in place without any key variable in its environment.
+ * Deleting them would not do: `ps eww` and /proc read the block the process
+ * started with, and a command run by `run` can reach both. The pid, the output
+ * and the supervisor's view all stay as they were. Returns when there is
+ * nothing to clear, or when it could not be cleared.
  */
 export function clearKeyFromEnvironment(key: string, warn: (message: string) => void, env: NodeJS.ProcessEnv = process.env, execve = process.execve): void {
-  if (env.BRAINCHAIN_WORKER_KEY === undefined) return;
-  if (typeof execve !== "function") return warn(`warning: Node.js ${process.version} cannot clear the key from this process's environment; Node.js 22.15 or later can`);
-  const { BRAINCHAIN_WORKER_KEY: _, ...rest } = env;
+  const names = Object.keys(env).filter((name) => KEY_VARIABLE.test(name));
+  if (names.length === 0 || namesOnlyAPipe(names, env)) return;
+  if (typeof execve !== "function") return warn(`warning: Node.js ${process.version} cannot clear the key variables from this process's environment; Node.js 22.15 or later can`);
+  const rest = Object.fromEntries(Object.entries(env).filter(([name]) => !KEY_VARIABLE.test(name)));
   let file: string | undefined;
   try {
     file = join(handoffDir(), `brainchain-worker-key-${randomBytes(16).toString("hex")}`);
@@ -100,6 +114,6 @@ export function clearKeyFromEnvironment(key: string, warn: (message: string) => 
     execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1]!, ...process.argv.slice(2)], { ...rest, [HANDOFF]: file } as Record<string, string>);
   } catch (error) {
     if (file !== undefined) rmSync(file, { force: true });
-    warn(`warning: could not clear the key from this process's environment (${(error as Error).message})`);
+    warn(`warning: could not clear the key variables from this process's environment (${(error as Error).message})`);
   }
 }
