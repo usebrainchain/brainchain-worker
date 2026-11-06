@@ -14,6 +14,26 @@ beforeAll(() => void vi.spyOn(process, "exit").mockImplementation((() => undefin
 const dir = () => mkdtempSync(join(tmpdir(), "brainchain-worker-"));
 
 describe("fileStore", () => {
+  it("says what it leaves behind when the board changes, and keeps a copy", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "state-")), "state.json");
+    const oldBoard = MAINNET.retired![0]!.taskBoard.toLowerCase();
+    const saved = JSON.stringify({ board: oldBoard, tasks: {}, done: [], hired: { block: 5, tasks: ["70"] } });
+    writeFileSync(file, saved);
+    const warn = vi.fn();
+    const store = fileStore(file, MAINNET.contracts.taskBoard, warn);
+    expect(store.state.hired).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("1 hired tasks"));
+    expect(readFileSync(`${file}.${oldBoard}`, "utf8")).toBe(saved);
+  });
+
+  it("says nothing when the state left on another board holds no work", () => {
+    const file = join(mkdtempSync(join(tmpdir(), "state-")), "state.json");
+    writeFileSync(file, JSON.stringify({ board: MAINNET.retired![0]!.taskBoard.toLowerCase(), tasks: {}, done: [] }));
+    const warn = vi.fn();
+    fileStore(file, MAINNET.contracts.taskBoard, warn);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it("keeps state in a file only its owner can read", () => {
     const file = join(dir(), "worker.json");
     const store = fileStore(file, BOARD);

@@ -167,6 +167,8 @@ export interface TaskFacts {
 export interface BondView {
   deed: bigint;
   task: bigint;
+  /** The task board the bond's task is on. */
+  board: Address;
   amount: bigint;
   deadline: bigint;
   status: number;
@@ -181,7 +183,7 @@ export interface BondView {
 export interface BondChain {
   account: Address;
   /** The task on the board, or undefined when there is none. */
-  task(id: bigint): Promise<TaskFacts | undefined>;
+  task(id: bigint, board?: Address): Promise<TaskFacts | undefined>;
   now(): Promise<bigint>;
   usdgBalance(): Promise<bigint>;
   ethBalance(): Promise<bigint>;
@@ -191,7 +193,7 @@ export interface BondChain {
   create(terms: BondTerms, amount: bigint): Promise<{ deed: bigint; tx: Hex }>;
   /** The worker's bonds on one task, newest first. */
   bondsOn(task: bigint): Promise<BondView[]>;
-  proofOf(task: bigint): Promise<bigint>;
+  proofOf(task: bigint, board?: Address): Promise<bigint>;
   owed(): Promise<bigint>;
   withdraw(): Promise<{ amount: bigint; tx: Hex }>;
   /** The agent that paid BrainChain's desk for the task, as the service records it; undefined for a plain on-chain post. */
@@ -216,8 +218,8 @@ export function createBondChain(network: Network, config: BondConfig, account: P
 
   return {
     account: account.address,
-    async task(id) {
-      const t = await brainchain.readContract({ address: network.contracts.taskBoard, abi: taskBoardAbi, functionName: "get", args: [id] });
+    async task(id, board = network.contracts.taskBoard) {
+      const t = await brainchain.readContract({ address: board, abi: taskBoardAbi, functionName: "get", args: [id] });
       return t.status === 0 ? undefined : { poster: t.poster, bounty: t.bounty, deadline: t.deadline, status: t.status, model: t.model };
     },
     now: async () => (await client.getBlock()).timestamp,
@@ -249,11 +251,13 @@ export function createBondChain(network: Network, config: BondConfig, account: P
       const deeds = await client.multicall({ contracts: mine.map((id) => ({ ...registry, functionName: "getDeed", args: [id] }) as const), allowFailure: false });
       return mine.flatMap((deed, i) => {
         const d = deeds[i]!;
-        if (d.terms.check.toLowerCase() !== config.check.toLowerCase() || taskOfCheck(d.terms.checkData, config.proofIndex!, network.contracts.taskBoard) !== task) return [];
-        return [{ deed, task, amount: d.balance, deadline: d.terms.deadline, status: d.status, ruling: d.ruling, remainderBps: d.remainderBps, checkMetAt: d.checkMetAt, settledAt: d.settledAt, refundTo: d.terms.refundTo }];
+        if (d.terms.check.toLowerCase() !== config.check.toLowerCase()) return [];
+        const board = [network.contracts.taskBoard, ...(network.retired ?? []).map((r) => r.taskBoard)].find((b) => taskOfCheck(d.terms.checkData, config.proofIndex!, b) === task);
+        if (!board) return [];
+        return [{ deed, task, board, amount: d.balance, deadline: d.terms.deadline, status: d.status, ruling: d.ruling, remainderBps: d.remainderBps, checkMetAt: d.checkMetAt, settledAt: d.settledAt, refundTo: d.terms.refundTo }];
       });
     },
-    proofOf: (task) => client.readContract({ address: config.proofIndex!, abi: proofIndexAbi, functionName: "proofOf", args: [network.contracts.taskBoard, task] }),
+    proofOf: (task, board = network.contracts.taskBoard) => client.readContract({ address: config.proofIndex!, abi: proofIndexAbi, functionName: "proofOf", args: [board, task] }),
     async payerOf(task) {
       const host = new URL(network.service).host;
       const response = await fetcher(`${network.service}/bonds/refund-to/${task}`, { signal: AbortSignal.timeout(15_000) }).catch(() => {
@@ -364,7 +368,8 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   if (t.deadline <= now) throw new Error(`Task ${task}'s deadline, ${when(t.deadline)}, has passed.`);
   if (options.amount < t.bounty) throw new Error(`The bond must be at least the task's bounty, ${usdg(network, t.bounty)}; ${usdg(network, options.amount)} is under it.`);
   if (options.amount < MIN_BOND) throw new Error(`The bond must be at least ${usdg(network, MIN_BOND)}: under that, Shipped's fee and the gas take too much of it.`);
-  const existing = (await chain.bondsOn(task)).find((b) => b.status !== DeedStatus.Settled);
+  // Task ids restart with each board, so a bond on a retired board's task of this number is another task's.
+  const existing = (await chain.bondsOn(task)).find((b) => b.status !== DeedStatus.Settled && b.board.toLowerCase() === network.contracts.taskBoard.toLowerCase());
   if (existing) {
     const page = await deedPage(existing.deed, options.fetch);
     throw new Error(`This worker already has ${page ? `bond No. ${page.number}` : "a bond"} open on task ${task} (registry id ${existing.deed}${page ? `, ${page.url}` : ""}). \`bond status ${task}\` shows where it stands.`);
@@ -419,18 +424,18 @@ export async function bondStatus(
   const bonds = await chain.bondsOn(task);
   if (bonds.length === 0) return log(`${chain.account} has no bond on task ${task}.`);
   const delivered = bonds.some((b) => b.status === DeedStatus.Settled && b.remainderBps === Number(BPS));
-  // Only a bond still waiting for its Proof is worded by where the task stands.
-  const waiting = bonds.some((b) => b.status !== DeedStatus.Settled && b.checkMetAt === 0n);
-  const [now, indexed, t, owed, pages] = await Promise.all([
+  const [now, indexed, tasks, owed, pages] = await Promise.all([
     chain.now(),
-    chain.proofOf(task),
-    waiting ? chain.task(task) : undefined,
+    Promise.all(bonds.map((b) => chain.proofOf(task, b.board))),
+    // Only a bond still waiting for its Proof is worded by where the task stands.
+    Promise.all(bonds.map((b) => (b.status !== DeedStatus.Settled && b.checkMetAt === 0n ? chain.task(task, b.board) : undefined))),
     delivered ? chain.owed() : 0n,
     Promise.all(bonds.map((b) => deedPage(b.deed, fetchImpl))),
   ]);
   bonds.forEach((b, i) => {
     const page = pages[i];
-    log(`${bondLine(network, b, { indexed: indexed > 0n, now, page, owed, taskStatus: t?.status })}${page ? ` ${page.url}` : ""}`);
+    const old = network.retired?.find((r) => r.taskBoard.toLowerCase() === b.board.toLowerCase());
+    log(`${bondLine(network, b, { indexed: indexed[i]! > 0n, now, page, owed, taskStatus: tasks[i]?.status })}${old ? ` (task of set ${old.release})` : ""}${page ? ` ${page.url}` : ""}`);
   });
 }
 
@@ -442,7 +447,7 @@ export async function bondClaim(network: Network, config: BondConfig | undefined
   if (!latest) throw new Error(`${chain.account} has no bond on task ${task}.`);
   const page = await deedPage(latest.deed, fetchImpl);
   if (latest.status !== DeedStatus.Settled) {
-    const [now, indexed, t] = await Promise.all([chain.now(), chain.proofOf(task), chain.task(task)]);
+    const [now, indexed, t] = await Promise.all([chain.now(), chain.proofOf(task, latest.board), chain.task(task, latest.board)]);
     throw new Error(`${bondLine(network, latest, { indexed: indexed > 0n, now, page, taskStatus: t?.status })}. Nothing can be claimed before it settles.`);
   }
   const owed = await chain.owed();

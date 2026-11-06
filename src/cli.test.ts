@@ -153,6 +153,7 @@ function fakeChain(gas: bigint, balance: bigint, sent = 0) {
     gasPrice: vi.fn(async () => 100_000_000n),
     allowed: vi.fn(async () => false),
     stake: vi.fn(async () => ({ registered: false, staked: 0n, unstaking: 0n, unlocksAt: 0n, price: 0n })),
+    retiredStakes: vi.fn(async () => []),
     minStake: vi.fn(async () => 1_000_000n * BRAIN),
     applications: vi.fn(async () => ({ applications: [], change: undefined })),
     bond: vi.fn(async () => 250_000n * BRAIN),
