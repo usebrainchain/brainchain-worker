@@ -50,9 +50,13 @@ const COMMAND_USAGE: Record<string, string> = {
                                             place of the key.`,
   join: `  brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>]
                                             Stake the minimum and apply to take tasks. The name is at
-                                            most 60 characters, the description at most 500. --agent-id
-                                            (mainnet) names the worker's ERC-8004 agent on Robinhood Chain,
-                                            so its BrainChain record is written to that identity.`,
+                                            most 60 characters and the description at most 500, counted
+                                            as UTF-16 units: two or more for an emoji. A worker that is
+                                            allowed or has an application waiting needs neither, and join
+                                            says so if given them: it stakes back up to the minimum.
+                                            --agent-id (mainnet) names the worker's ERC-8004 agent on
+                                            Robinhood Chain, so its BrainChain record is written to that
+                                            identity.`,
   run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--mint]
                                             Do every task Jev hires the worker for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
@@ -64,32 +68,49 @@ const COMMAND_USAGE: Record<string, string> = {
   price: `  brainchain-worker price <USDG>            Change your asking price per task.`,
   mint: `  brainchain-worker mint [--count <n>] [--dry]
                                             Mint a Proof for each paid task waiting for one, up to 10 or
-                                            --count, at 0.001 WETH each on Robinhood Chain. --dry sends nothing.`,
+                                            --count, at 0.001 WETH each on Robinhood Chain. A task stays
+                                            listed until the service has seen its mint, which can take minutes,
+                                            and a mint before then pays for another piece. --dry lists them and
+                                            sends nothing.`,
   claim: `  brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
                                             --dry lists what is due and sends nothing.`,
   bond: `  brainchain-worker bond <task> <USDG> [--yes] | bond status <task> | bond claim <task>
-                                            Bond USDG on Shipped behind a task, at least its bounty and 2 USDG:
-                                            the task's Proof releases it less Shipped's 1% fee, and a task that
-                                            is not paid by its deadline pays the bond to the poster. Shows the
-                                            cost and asks before sending; --yes sends without asking. status
-                                            says where the bond stands and claim collects what a settled one
-                                            left the worker. Mainnet.`,
+                                            Bond USDG on Shipped behind a task Jev hired this worker for, at
+                                            least its bounty and 2 USDG. If the task is paid and its Proof
+                                            recorded by the bond's deadline, the task's plus 48 hours, the bond
+                                            comes back less Shipped's 1% fee; if not, it goes to the agent that
+                                            paid BrainChain's desk for the task, or to the poster for a task
+                                            posted on the board directly. Shows the cost and asks before
+                                            sending; --yes sends without asking. status says where the bond
+                                            stands and claim collects what Shipped's registry owes the worker.
+                                            Mainnet.`,
   bridge: `  brainchain-worker bridge --eth <ETH> | --stake <amount> | --bounty <amount> [--dry]
                                             Move ETH for gas, the stake token or the bounty token from Robinhood
                                             Chain to the worker's address on BrainChain; it arrives in about a
-                                            minute. --eth works on both networks, the tokens on mainnet. --dry
-                                            checks the balances and sends nothing.`,
+                                            minute. It takes one of the three at a time. --eth works on both
+                                            networks, the tokens on mainnet. --dry checks the balances and sends
+                                            nothing.`,
   exit: `  brainchain-worker exit [--amount <USDG>] [--to-solana <address>] [--dry]
-                                            Get the worker's USDG on BrainChain back within a minute, not the
-                                            bridge's seven days: the desk pays it on Robinhood Chain less a 0.5%
-                                            fee, or as USDC on Solana with --to-solana (mainnet). Without --amount,
-                                            the whole balance. --dry checks and sends nothing.`,
+                                            On testnet, get the worker's tUSDG on BrainChain back, usually within
+                                            a minute, not the bridge's seven days: the desk pays it on Robinhood
+                                            Chain testnet less a 0.5% fee, at least 0.01 tUSDG. Without --amount,
+                                            the whole balance. --dry checks and sends nothing. Fast exits are off
+                                            on mainnet, where exit says so and sends nothing. --to-solana names a
+                                            Solana wallet for the payout, which Relay can reach from mainnet only,
+                                            so neither network takes it.`,
   fund: `  brainchain-worker fund --from-solana --usdc <amount> [--stake] [--gas-usdc <amount>] [--dry]
-                                            Fund the worker from a Solana wallet: Relay turns its USDC into ETH
-                                            for gas (2 USDC by default) and, with --stake, the rest into the stake
-                                            token, on Robinhood Chain, and bridge moves both to BrainChain. Signed
-                                            with BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE; the wallet
-                                            needs about 0.002 SOL for fees. Mainnet.`,
+                                            Fund the worker from a Solana wallet. Relay turns --gas-usdc of its
+                                            USDC (2 by default, and never more than --usdc) into ETH on Robinhood
+                                            Chain. With --stake, the rest of --usdc becomes the stake token there;
+                                            without it, the rest stays on Solana. Then bridge moves on to BrainChain
+                                            only what this run brought, less the ETH a token deposit pays, leaving
+                                            a little for gas; what the wallet already held stays. A quote that would
+                                            cost more than 3% on the ETH or 5% on the stake token (or 0.50 USD on a
+                                            small move), or that asks to sign anything but this USDC's deposit into
+                                            Relay's depository, stops the command before anything is signed. Signed
+                                            with BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE, one or the
+                                            other; the wallet needs about 0.002 SOL for fees. --dry checks and sends
+                                            nothing. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry]
                                             Bond the stake token and propose a change to BrainChain for Jev to
@@ -98,13 +119,16 @@ const COMMAND_USAGE: Record<string, string> = {
   proposal: `  brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.`,
   watch: `  brainchain-worker watch [--veto] [--once]
                                             Watch the chain: judge every queued change against the constitution
-                                            and re-verify every new decision, reporting what disagrees. With the
-                                            worker's key set, each round is reported to the service toward the
-                                            worker's watchtower mark. --veto vetoes a change that crosses a floor
-                                            through the guardian gate, when the worker's key is the gate's
-                                            watcher. --once reads one round, checks the decisions added since
-                                            the last --once (the latest 10 on the first) and exits 1 on a finding
-                                            or a decision it could not check.`,
+                                            and re-verify every new decision, reporting what disagrees. A call the
+                                            monitor does not know counts as breaking a floor; one with no floor,
+                                            such as moving house treasury funds, is listed as that. A decision
+                                            served without its work is listed as withheld, with the hash checks
+                                            that did not run. With the worker's key set, each round is reported to
+                                            the service toward the worker's watchtower mark. --veto vetoes a change
+                                            that crosses a floor through the guardian gate, when the worker's key
+                                            is the gate's watcher. --once reads one round, checks the decisions
+                                            added since the last --once (the latest 10 on the first) and exits 1
+                                            on a finding or when a decision could not be checked or reported.`,
   credit: `  brainchain-worker credit --agent-id <id> [--premium <bps>]
                                             Ask BrainChain to back a credit line for the worker's ERC-8004 agent
                                             on Priors (priors.trade): signs Priors' consent with the agent owner's
@@ -138,12 +162,13 @@ Environment:
   BRAINCHAIN_RPC_URL      Overrides the network's RPC.
   BRAINCHAIN_SOLANA_KEY   For fund --from-solana: the Solana wallet's secret key, base58.
   BRAINCHAIN_SOLANA_KEY_FILE
-                          Or a Solana CLI keypair file holding it.
+                          Or a Solana CLI keypair file holding it, one or the other.
   BRAINCHAIN_SOLANA_RPC   Overrides the Solana RPC (https://api.mainnet-beta.solana.com).
   BRAINCHAIN_SERVICE_URL  Overrides the BrainChain service that keeps results: https, or http on
                           localhost or 127.0.0.1.
 
 The command sees the worker's environment without any BRAINCHAIN_ variable, plus BRAINCHAIN_TASK_ID.
+run restarts itself in place at start on Node.js 22.15 or later, so its own environment holds no key either.
 It runs as your user, so it can reach what your user can: see "Your command" in the README.
 Unfinished work is kept in ~/.config/brainchain-worker/<address>.<network>.json across restarts,
 and one run at a time works for each address on each network.
