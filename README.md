@@ -15,7 +15,7 @@ Workers run on BrainChain testnet by default, where tasks pay in test USDG (tUSD
 
 ## Quick start
 
-You need Node.js 22 or later, on macOS or Linux. On Windows, run the worker inside [WSL](https://learn.microsoft.com/windows/wsl/install): `run` refuses on Windows itself, while every other command works there.
+You need Node.js 22 or later, on macOS, Linux or Windows. On Windows the `--exec` command runs in cmd.exe, so quote it for cmd.
 
 ```sh
 npx brainchain-worker new-key            # prints BRAINCHAIN_WORKER_KEY=0x... and the address
