@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { toBytes, type Hex } from "viem";
@@ -140,12 +140,18 @@ export function firstProgram(command: string): string | undefined {
   return word !== undefined && /^[\w./+-]+$/.test(word) ? word : undefined;
 }
 
+/** Windows has no process groups and no sh: the command runs in cmd.exe, and a stop ends its process tree. */
+const WINDOWS = process.platform === "win32";
+
 /** Whether the shell can find a program, for a warning at start; a typo otherwise only shows at the first hire. */
 export function programFound(program: string): boolean {
+  if (WINDOWS) return spawnSync("where", [program], { stdio: "ignore", windowsHide: true }).status === 0;
   return spawnSync("sh", ["-c", 'command -v -- "$0" >/dev/null', program], { stdio: "ignore" }).status === 0;
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
+  // A console program cannot be asked to stop on Windows, so both signals end the tree at once.
+  if (WINDOWS) return void spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
   try {
     process.kill(-pid, signal);
   } catch (error) {
@@ -166,6 +172,7 @@ function exists(pid: number): boolean {
 
 /** Whether a process group still has a process this user can signal. */
 function groupAlive(pgid: number): boolean {
+  if (WINDOWS) return exists(pgid);
   try {
     process.kill(-pgid, 0);
     return true;
@@ -180,6 +187,7 @@ function groupAlive(pgid: number): boolean {
  * this run's own group could match after a reuse, and ps rules that out.
  */
 function orphaned(pgid: number): boolean {
+  if (WINDOWS) return false;
   if (exists(pgid) || !groupAlive(pgid)) return false;
   const own = ps(process.pid, "pgid");
   return own !== undefined && own !== String(pgid);
@@ -251,22 +259,25 @@ export async function stopLeftover(store: Store, log: Log, graceMs = 3_000): Pro
  * and none outlives the worker's exit.
  */
 export function shellCommand(command: string, graceMs = 10_000): Command {
-  const running = new Set<number>();
+  const running = new Map<number, ChildProcess>();
+  // On Windows a pid is free for reuse once its process exits, so only a child still running is stopped.
+  const live = (child: ChildProcess) => !WINDOWS || child.exitCode === null;
   const kill = () => {
-    for (const pid of running) signalGroup(pid, "SIGKILL");
+    for (const [pid, child] of running) if (live(child)) signalGroup(pid, "SIGKILL");
   };
   return {
     run(input, env, timeoutMs, started) {
       return new Promise((resolve, reject) => {
         // Its own process group, so a stop reaches everything the command started, and Ctrl-C in the terminal reaches only the worker.
         // Stderr is forwarded rather than shared: a background group that touches the terminal is stopped by SIGTTOU.
-        const child = spawn(command, { shell: true, detached: true, env: childEnv(env), stdio: ["pipe", "pipe", "pipe"] });
+        // Detached on Windows, the shell gets a console of its own, and the output of what it starts never reaches the pipes.
+        const child = spawn(command, { shell: true, detached: !WINDOWS, windowsHide: true, env: childEnv(env), stdio: ["pipe", "pipe", "pipe"] });
         child.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
         const pid = child.pid;
         if (pid !== undefined) {
           // Its own group would outlive the worker otherwise, still working on a task the next run takes up again.
           if (running.size === 0) process.on("exit", kill);
-          running.add(pid);
+          running.set(pid, child);
           started?.(pid);
         }
         const chunks: Buffer[] = [];
@@ -276,9 +287,9 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
         const stop = (why: string) => {
           if (stopped !== undefined || pid === undefined) return;
           stopped = why;
-          signalGroup(pid, "SIGTERM");
+          if (live(child)) signalGroup(pid, "SIGTERM");
           force = setTimeout(() => {
-            signalGroup(pid, "SIGKILL");
+            if (live(child)) signalGroup(pid, "SIGKILL");
             // A process that left the group can still hold the pipes open; stop waiting for it.
             child.stdout.destroy();
             child.stderr.destroy();
@@ -310,8 +321,8 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
           clearTimeout(force);
           clearTimeout(drain);
           if (pid !== undefined) {
-            // The task is over, and nothing a stranger's brief started should outlive it.
-            signalGroup(pid, "SIGKILL");
+            // The task is over, and nothing a stranger's brief started should outlive it. Windows has no group left to reach.
+            if (!WINDOWS) signalGroup(pid, "SIGKILL");
             running.delete(pid);
           }
           if (running.size === 0) process.off("exit", kill);

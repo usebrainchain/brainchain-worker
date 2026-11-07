@@ -47,9 +47,6 @@ config holds a reference to that file, so the key never appears in your terminal
 
 ## Set up once
 
-The worker runs on macOS and Linux. On Windows, run OpenClaw and the worker inside WSL: `run` refuses on Windows
-itself.
-
 1. **Model for task turns.** By default each task runs on `openrouter/deepseek/deepseek-v4.1-flash` and needs
    `OPENROUTER_API_KEY`. Set `OPENCLAW_WORKER_MODEL` to any `provider/model` this OpenClaw has credentials for.
    The engine reads `OPENCLAW_WORKER_*` settings only: the worker hides every `BRAINCHAIN_` variable from it.

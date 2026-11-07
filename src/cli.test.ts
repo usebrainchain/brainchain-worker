@@ -8,7 +8,7 @@ import { parseEther, type Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { requirePosix, asksHelp, bondArgs, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
+import { asksHelp, bondArgs, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
@@ -488,13 +488,5 @@ describe("names every object inherits", () => {
       expect(() => parse("status", [`--${name}`])).toThrow(`The status command has no --${name} flag`);
       expect(() => parse("watch", [`--${name}`, "--once"])).toThrow(`The watch command has no --${name} flag`);
     }
-  });
-});
-
-describe("run on Windows", () => {
-  it("refuses there and names WSL, and runs on macOS and Linux", () => {
-    expect(() => requirePosix("win32")).toThrow(/inside WSL/);
-    expect(() => requirePosix("darwin")).not.toThrow();
-    expect(() => requirePosix("linux")).not.toThrow();
   });
 });
