@@ -621,6 +621,13 @@ export function watching(network: Network, address: Address | undefined, veto: b
   return `watching ${network.name} as ${address}${veto ? ", vetoing through the guardian gate" : ""}, reporting rounds to the service`;
 }
 
+/** `run` starts the worker's command in its own process group, which Windows does not have, and loses its output there. */
+export function requirePosix(platform: NodeJS.Platform): void {
+  if (platform === "win32") {
+    throw new Error("run works on macOS and Linux. On Windows, run the worker inside WSL: https://learn.microsoft.com/windows/wsl/install. Every other command works on Windows as it is.");
+  }
+}
+
 export async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
@@ -648,6 +655,7 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
   const { positional, values, switches } = parse(command, rest);
+  if (command === "run") requirePosix(process.platform);
   const network = resolveNetwork(process.env);
   if (process.env.BRAINCHAIN_RPC_URL?.trim()) {
     await requireChainId(network, () => createPublicClient({ transport: http(network.rpc, { timeout: 10_000, retryCount: 0 }) }).getChainId());
