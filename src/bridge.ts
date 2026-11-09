@@ -95,10 +95,12 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount):
     async depositToken(asset, amount, value) {
       const address = token(asset);
       const spender = await gateway(address);
-      const allowance = await read.readContract({ address, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] });
-      if (allowance < amount) await wait(await wallet.writeContract({ address, abi: erc20Abi, functionName: "approve", args: [spender, amount] }));
+      // Ahead of the approval, so a refusal has sent nothing at all.
       const gasPriceBid = (await child.getGasPrice()) * 2n;
       const maxSubmissionCost = value - DEPOSIT_GAS * gasPriceBid;
+      if (maxSubmissionCost <= 0n) throw new Error(`The gas price on ${network.name} moved after this deposit was priced, so the ETH set aside no longer pays for its arrival. Nothing was sent. Run the command again.`);
+      const allowance = await read.readContract({ address, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] });
+      if (allowance < amount) await wait(await wallet.writeContract({ address, abi: erc20Abi, functionName: "approve", args: [spender, amount] }));
       const data = encodeAbiParameters([{ type: "uint256" }, { type: "bytes" }], [maxSubmissionCost, "0x"]);
       return wait(
         await wallet.writeContract({
