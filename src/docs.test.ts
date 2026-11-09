@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { BOND_LEAD_SEC } from "./bond.js";
 import { usage } from "./cli.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -81,6 +82,12 @@ describe("bonds in the README and --help", () => {
     expect(readme).toContain("After Jev hires this worker for the task");
     expect(readme).not.toMatch(/offered first|While the task is open|Not open yet|Jev reads the bond when it hires/);
     expect(flat(help)).toContain("behind a task Jev hired this worker for");
+  });
+
+  it("give the deadline the bond is created with", () => {
+    const hours = BOND_LEAD_SEC / 3_600n;
+    expect(flat(help)).toContain(`the bond's deadline, the task's plus ${hours} hours`);
+    expect(readme).toContain(`The bond's deadline is the task's plus ${hours} hours`);
   });
 
   it("name who a missed bond pays in one sentence", () => {

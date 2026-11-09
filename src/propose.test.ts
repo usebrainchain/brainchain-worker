@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { decodeFunctionData, encodeErrorResult, parseAbi, parseEther, type Address, type Hex } from "viem";
+import { decodeFunctionData, encodeErrorResult, parseAbi, parseEther, toFunctionSelector, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
@@ -38,6 +38,15 @@ describe("buildCall", () => {
     expect(decode(call).args?.[0]).toMatchObject({ minDuration: 900n, minBounty: 1000000n });
     expect(() => buildCall(TESTNET, ME, { target: "board", call: "setConfig", args: '[{"hireThresholdBps":1500}]' })).toThrow(/missing gradeThresholdBps/);
     expect(() => buildCall(TESTNET, ME, { target: "board", call: "setConfig", args: JSON.stringify([{ ...CONFIG, fee: 1 }]) })).toThrow(/no field fee/);
+  });
+
+  it("encodes setAppealConfig as the board's struct of a window and a bond", () => {
+    const call = buildCall(TESTNET, ME, { target: "board", call: "setAppealConfig", args: '[{"window":3600,"bondBps":2500}]' });
+    expect(call.address).toBe(TESTNET.contracts.taskBoard);
+    expect(call.data.slice(0, 10)).toBe(toFunctionSelector("setAppealConfig((uint64,uint16))"));
+    expect(decode(call).args).toEqual([{ window: 3600n, bondBps: 2500 }]);
+    expect(call.text).toBe("setAppealConfig({window: 3600, bondBps: 2500})");
+    expect(() => buildCall(TESTNET, ME, { target: "board", call: "setAppealConfig", args: '[{"window":3600}]' })).toThrow(/missing bondBps/);
   });
 
   it("resolves the registry and the executor, by name or address", () => {

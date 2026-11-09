@@ -10,8 +10,14 @@ import { taskBoardAbi } from "./abi.js";
 import { PermanentError, submitFailure, type HiredTask, type WorkerChain } from "./chain.js";
 import { TESTNET } from "./network.js";
 import { gasHelp } from "./standing.js";
+import { processGroup, startTime } from "./proc.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
 import { createWork, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
+
+vi.mock("./proc.js", async (original) => {
+  const proc = await original<typeof import("./proc.js")>();
+  return { ...proc, processGroup: vi.fn(proc.processGroup), startTime: vi.fn(proc.startTime) };
+});
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
 const dataURI = (text: string) => `data:application/json;base64,${Buffer.from(text).toString("base64")}`;
@@ -659,6 +665,58 @@ describe("stopLeftover", () => {
     await stopLeftover(store, log);
     expect(alive(pgid)).toBe(false);
     expect(log).toHaveBeenCalledWith(`stopped the command an earlier run left running (process group ${pgid})`);
+  });
+
+  it.runIf(process.platform === "linux")("stops what a command started after its shell exited on Linux without ps", async () => {
+    const { pgid, store } = await leaderless("sleep 30");
+    vi.stubEnv("PATH", "/nonexistent");
+    const log = vi.fn();
+    await stopLeftover(store, log);
+    vi.unstubAllEnvs();
+    await vi.waitFor(() => expect(alive(pgid)).toBe(false), { timeout: 1_000, interval: 20 });
+    expect(log).toHaveBeenCalledWith(`stopped the command an earlier run left running (process group ${pgid})`);
+    expect(store.state.command).toBeUndefined();
+  });
+
+  const unjudged = (pgid: number) =>
+    `warning: could not tell whether process group ${pgid} is the command an earlier run left running, so it was left alone. If it is still working, stop it with kill -- -${pgid}.`;
+
+  it("keeps and reports a leaderless group when its own group cannot be read, and stops it once it can", async () => {
+    const { pgid, store } = await leaderless("sleep 30");
+    const command = store.state.command;
+    vi.mocked(processGroup).mockReturnValueOnce(undefined);
+    const log = vi.fn();
+    await stopLeftover(store, log);
+    expect(alive(pgid)).toBe(true);
+    expect(log.mock.calls).toEqual([[unjudged(pgid)]]);
+    expect(store.state.command).toEqual(command);
+
+    await stopLeftover(store, log);
+    await vi.waitFor(() => expect(alive(pgid)).toBe(false), { timeout: 1_000, interval: 20 });
+    expect(log).toHaveBeenLastCalledWith(`stopped the command an earlier run left running (process group ${pgid})`);
+    expect(store.state.command).toBeUndefined();
+  });
+
+  it("keeps and reports a group whose leader's start time cannot be read", async () => {
+    const other = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    const store = memoryStore(BOARD);
+    store.state.command = { pgid: other.pid!, startedAt: Date.now() };
+    vi.mocked(startTime).mockReturnValueOnce(undefined);
+    const log = vi.fn();
+    await stopLeftover(store, log);
+    expect(alive(other.pid!)).toBe(true);
+    expect(log.mock.calls).toEqual([[unjudged(other.pid!)]]);
+    expect(store.state.command).toBeDefined();
+    process.kill(-other.pid!, "SIGKILL");
+  });
+
+  it("forgets a group that is gone without a word, as there is nothing left to judge", async () => {
+    const { pgid, store } = await leaderless("true");
+    await vi.waitFor(() => expect(alive(pgid)).toBe(false), { timeout: 1_000, interval: 20 });
+    const log = vi.fn();
+    await stopLeftover(store, log);
+    expect(log).not.toHaveBeenCalled();
+    expect(store.state.command).toBeUndefined();
   });
 
   it("kills a leftover that ignores SIGTERM once the grace is up", async () => {

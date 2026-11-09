@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { toBytes, type Hex } from "viem";
 
 import { fetchBrief, PermanentError, reason, RECEIPT_MS, type HiredTask, type WorkerChain } from "./chain.js";
-import { ps, startTime } from "./proc.js";
+import { processGroup, startTime } from "./proc.js";
 import { memoryStore, type Store, type TaskState } from "./state.js";
 
 /** The most the service accepts for one result. */
@@ -184,13 +184,14 @@ function groupAlive(pgid: number): boolean {
 /**
  * Whether a group lives on without its leader, as when the shell exits while
  * what it started runs on. Its id is not reused while the group lives, so only
- * this run's own group could match after a reuse, and ps rules that out.
+ * this run's own group could match after a reuse, and reading that rules it out.
+ * Undefined when this run's group cannot be read, or the group has a leader whose start time could not be.
  */
-function orphaned(pgid: number): boolean {
-  if (WINDOWS) return false;
-  if (exists(pgid) || !groupAlive(pgid)) return false;
-  const own = ps(process.pid, "pgid");
-  return own !== undefined && own !== String(pgid);
+function orphaned(pgid: number): boolean | undefined {
+  if (WINDOWS || !groupAlive(pgid)) return false;
+  if (exists(pgid)) return undefined;
+  const own = processGroup(process.pid);
+  return own === undefined ? undefined : own !== String(pgid);
 }
 
 /** A Linux process's name and parent; undefined where /proc has no such process or there is no /proc. */
@@ -240,13 +241,16 @@ export function npxUnderSupervisor(env: NodeJS.ProcessEnv = process.env): boolea
 export async function stopLeftover(store: Store, log: Log, graceMs = 3_000): Promise<void> {
   const left = store.state.command;
   if (left === undefined) return;
-  delete store.state.command;
-  store.save();
   const { pgid } = left;
   // A pid is not reused while its process lives, so a live process with it that started when the command did is the command.
   // Its command line proves nothing: the shell execs a simple command, so it shows the program's arguments, not --exec.
   const started = startTime(pgid);
-  if (started === undefined ? !orphaned(pgid) : Math.abs(started - left.startedAt) > 5_000) return;
+  const leftover = started === undefined ? orphaned(pgid) : Math.abs(started - left.startedAt) <= 5_000;
+  // Stays in the state: it is the only record of the group, and a later run may be able to tell.
+  if (leftover === undefined) return log(`warning: could not tell whether process group ${pgid} is the command an earlier run left running, so it was left alone. If it is still working, stop it with kill -- -${pgid}.`);
+  delete store.state.command;
+  store.save();
+  if (!leftover) return;
   signalGroup(pgid, "SIGTERM");
   for (const end = Date.now() + graceMs; Date.now() < end && groupAlive(pgid); ) await new Promise((resolve) => setTimeout(resolve, 100));
   if (groupAlive(pgid)) signalGroup(pgid, "SIGKILL");
