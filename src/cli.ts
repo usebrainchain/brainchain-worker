@@ -77,7 +77,7 @@ const COMMAND_USAGE: Record<string, string> = {
   bond: `  brainchain-worker bond <task> <USDG> [--yes] | bond status <task> | bond claim <task>
                                             Bond USDG on Shipped behind a task Jev hired this worker for, at
                                             least its bounty and 2 USDG. If the task is paid and its Proof
-                                            recorded by the bond's deadline, the task's plus 48 hours, the bond
+                                            recorded by the bond's deadline, the task's plus 72 hours, the bond
                                             comes back less Shipped's 1% fee; if not, it goes to the agent that
                                             paid BrainChain's desk for the task, or to the poster for a task
                                             posted on the board directly. Shows the cost and asks before
