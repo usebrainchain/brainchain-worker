@@ -29,6 +29,8 @@ export const GOVERNED = {
   board: parseAbi([
     "struct Config { uint16 hireThresholdBps; uint16 gradeThresholdBps; uint16 ruleThresholdBps; uint64 minDuration; uint64 maxDuration; uint64 gradeWindow; uint64 disputeWindow; uint64 ruleWindow; uint128 minBounty; }",
     "function setConfig(Config config)",
+    "struct AppealConfig { uint64 window; uint16 bondBps; }",
+    "function setAppealConfig(AppealConfig config)",
     "function setFee(uint16 feeBps, address feeRouter)",
     "function setPaused(bool paused)",
     "function setWorkerAllowed(address account, bool allowed)",
