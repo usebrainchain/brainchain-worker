@@ -125,6 +125,16 @@ describe("clearKeyFromEnvironment", () => {
     keyText({ ...passed });
   });
 
+  it("clears a key variable whatever the case of its name, as Windows reads it", () => {
+    const execve = vi.fn<Execve>();
+    const secret = "SOLANASECRETKEYMARKER";
+    clearKeyFromEnvironment(KEY, vi.fn(), { brainchain_worker_key: KEY, Brainchain_Solana_Key: secret, BRAINCHAIN_NETWORK: "mainnet" }, execve as Execve);
+    const passed = execve.mock.calls[0]![2] as NodeJS.ProcessEnv;
+    expect(Object.keys(passed).sort()).toEqual(["BRAINCHAIN_NETWORK", "BRAINCHAIN_WORKER_KEY_HANDOFF"]);
+    expect(JSON.stringify(passed)).not.toContain(secret);
+    keyText({ ...passed });
+  });
+
   it("restarts for a Solana key or a key file alone, passing the worker's key on", () => {
     for (const env of [{ BRAINCHAIN_SOLANA_KEY: "s" }, { BRAINCHAIN_SOLANA_KEY_FILE: "/keys/sol.json" }, { BRAINCHAIN_WORKER_KEY_FILE: keyFile(KEY) }]) {
       const execve = vi.fn<Execve>();

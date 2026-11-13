@@ -130,7 +130,7 @@ export interface Command {
 /** The worker's environment without its own settings, the key among them: the command reads briefs from strangers. */
 export function childEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [name, value] of Object.entries(process.env)) if (value !== undefined && !name.startsWith("BRAINCHAIN_")) env[name] = value;
+  for (const [name, value] of Object.entries(process.env)) if (value !== undefined && !name.toUpperCase().startsWith("BRAINCHAIN_")) env[name] = value;
   return { ...env, ...extra };
 }
 
