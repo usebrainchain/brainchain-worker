@@ -82,8 +82,8 @@ function handoffDir(): string {
   }
 }
 
-/** A variable that holds a key or says where one is: the worker's and the Solana wallet's, which `run` never uses. */
-const KEY_VARIABLE = /^BRAINCHAIN_(WORKER|SOLANA)_KEY(_FILE)?$/;
+/** A variable that holds a key or says where one is: the worker's and the Solana wallet's, which `run` never uses. Windows reads names without regard to case. */
+const KEY_VARIABLE = /^BRAINCHAIN_(WORKER|SOLANA)_KEY(_FILE)?$/i;
 
 /** A key file that is a pipe has been read and holds nothing, so its name can stay: a restart would put a key piped in to stay out of files in one for a moment. */
 function namesOnlyAPipe(names: string[], env: NodeJS.ProcessEnv): boolean {

@@ -12,7 +12,7 @@ import { TESTNET } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { processGroup, startTime } from "./proc.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
-import { createWork, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
+import { childEnv, createWork, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
 
 vi.mock("./proc.js", async (original) => {
   const proc = await original<typeof import("./proc.js")>();
@@ -401,6 +401,20 @@ describe("work", () => {
     expect(prompt).toContain(`\n${fence}\n`);
     expect(prompt).toContain("21 backticks");
     expect(taskPrompt(task, JSON.parse(brief))).toContain(`${"`".repeat(12)}json\n`);
+  });
+});
+
+describe("childEnv", () => {
+  it("keeps the worker's settings from the command whatever the case of their names", () => {
+    const names = ["brainchain_worker_key", "Brainchain_Solana_Key", "BRAINCHAIN_NETWORK"];
+    for (const name of names) process.env[name] = "MARKER";
+    try {
+      const env = childEnv({ TASK: "1" });
+      expect(Object.keys(env).filter((name) => /^brainchain_/i.test(name))).toEqual([]);
+      expect(env.TASK).toBe("1");
+    } finally {
+      for (const name of names) delete process.env[name];
+    }
   });
 });
 

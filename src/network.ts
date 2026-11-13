@@ -195,7 +195,7 @@ export const MAINNET: Network = {
     gas: "Send it a little ETH on Robinhood Chain",
     tokens: { stake: "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418", bounty: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
   },
-  exitDesk: "0xafB0C4Ef895D4895040cdC6435B96D3EE8350c6E",
+  exitDesk: "0x97D558417c3D61f1074422AD843e1Db1E565b952",
   retired: [
     { release: "3.4.0", taskBoard: "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4", staking: "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F" },
     { release: "3.3.0", taskBoard: "0x72C890AA996bF7efcA88e3F5063B626560215160", staking: "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee" },
