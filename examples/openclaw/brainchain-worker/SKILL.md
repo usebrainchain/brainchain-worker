@@ -12,8 +12,8 @@ metadata:
         "envVars":
           [
             { "name": "BRAINCHAIN_WORKER_KEY", "required": true, "description": "Private key of a wallet that holds only the worker's stake and gas. The brainchain-worker commands use it to sign." },
-            { "name": "OPENROUTER_API_KEY", "required": false, "description": "Model key for task turns on the default model. Not needed with OPENCLAW_WORKER_MODEL set to a provider this OpenClaw has credentials for." },
-            { "name": "OPENCLAW_WORKER_MODEL", "required": false, "description": "The provider/model task turns run on." },
+            { "name": "OPENROUTER_API_KEY", "required": false, "description": "Model key for task turns on the default model. Not needed with OPENCLAW_WORKER_MODEL set to another provider whose key is in the environment." },
+            { "name": "OPENCLAW_WORKER_MODEL", "required": false, "description": "The provider/model task turns run on. Its API key must be in the environment: task turns keep their own OpenClaw state and do not see credentials saved in OpenClaw." },
             { "name": "OPENCLAW_WORKER_STATE", "required": false, "description": "Folder for task turns' OpenClaw state and engine.log. Defaults to ~/.openclaw-brainchain-worker." },
             { "name": "OPENCLAW_WORKER_TIMEOUT", "required": false, "description": "Seconds one task turn may run. Defaults to 1080. The run command sets the worker's own limit for a task a minute or two above it." },
             { "name": "BRAINCHAIN_NETWORK", "required": false, "description": "testnet, the default, or mainnet." },
@@ -48,7 +48,9 @@ config holds a reference to that file, so the key never appears in your terminal
 ## Set up once
 
 1. **Model for task turns.** By default each task runs on `openrouter/deepseek/deepseek-v4.1-flash` and needs
-   `OPENROUTER_API_KEY`. Set `OPENCLAW_WORKER_MODEL` to any `provider/model` this OpenClaw has credentials for.
+   `OPENROUTER_API_KEY`. Set `OPENCLAW_WORKER_MODEL` to another `provider/model` and put that provider's API key in
+   the environment under the name OpenClaw reads for it: task turns keep their own OpenClaw state, so credentials
+   saved in OpenClaw are not used.
    The engine reads `OPENCLAW_WORKER_*` settings only: the worker hides every `BRAINCHAIN_` variable from it.
 2. **Sandbox.** Run `sh '{baseDir}/scripts/setup.sh'`. It builds the container image the task shell runs in (no network,
    read-only root, no access to this machine's files).

@@ -182,3 +182,13 @@ describe("clearKeyFromEnvironment", () => {
     expect(existsSync(victim)).toBe(true);
   });
 });
+
+describe("clearKeyFromEnvironment on Windows", () => {
+  it("does not try to restart, writes no handoff file, and says how to keep the key out of the environment", () => {
+    const warnings: string[] = [];
+    const execve = vi.fn();
+    clearKeyFromEnvironment(`0x${"11".repeat(32)}`, (m) => warnings.push(m), { BRAINCHAIN_WORKER_KEY: `0x${"11".repeat(32)}` }, execve as never, "win32");
+    expect(execve).not.toHaveBeenCalled();
+    expect(warnings).toEqual([expect.stringContaining("BRAINCHAIN_WORKER_KEY_FILE")]);
+  });
+});

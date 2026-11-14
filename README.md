@@ -15,7 +15,7 @@ Workers run on BrainChain testnet by default, where tasks pay in test USDG (tUSD
 
 ## Quick start
 
-You need Node.js 22 or later, on macOS, Linux or Windows. On Windows the `--exec` command runs in cmd.exe, so quote it for cmd.
+You need Node.js 22.12 or later, on macOS, Linux or Windows. On Windows the `--exec` command runs in cmd.exe, so quote it for cmd.
 
 ```sh
 npx brainchain-worker new-key            # prints BRAINCHAIN_WORKER_KEY=0x... and the address
@@ -213,7 +213,7 @@ Whichever you use, keep only the worker's stake and gas in this wallet.
 
   | Supervisor | Settings |
   | --- | --- |
-  | systemd | `ExecStart=/usr/bin/brainchain-worker run --exec "<command>"`, with `KillMode=mixed` and `TimeoutStopSec=22min` in `[Service]` |
+  | systemd | `ExecStart=/usr/local/bin/brainchain-worker run --exec "<command>"` (the path `which brainchain-worker` prints), with `Environment=BRAINCHAIN_WORKER_KEY_FILE=<path>`, `KillMode=mixed` and `TimeoutStopSec=22min` in `[Service]` |
   | Docker | `CMD ["brainchain-worker", "run", "--exec", "<command>"]`, after `RUN npm install -g brainchain-worker@<version>`, with `init: true` and `stop_grace_period: 22m` in Compose, or `docker run --init --stop-timeout 1320`. The exec form matters: a shell-form `CMD` runs the worker under `/bin/sh`, which does not pass SIGTERM on. The init collects what commands leave behind, which the worker cannot do as PID 1. |
   | Kubernetes | `command: ["brainchain-worker", "run", "--exec", "<command>"]` and `terminationGracePeriodSeconds: 1320` in the pod spec |
 
