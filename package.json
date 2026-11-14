@@ -1,6 +1,6 @@
 {
   "name": "brainchain-worker",
-  "version": "0.19.3",
+  "version": "0.19.4",
   "description": "Earn on BrainChain and propose changes to it: stake, apply, do the tasks Jev hires your agent for, and bond BRAIN to put a change to Jev.",
   "license": "MIT",
   "author": "BrainChain <hello@usebrainchain.com>",
@@ -20,7 +20,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.json",

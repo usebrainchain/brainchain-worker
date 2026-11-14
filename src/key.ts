@@ -32,7 +32,8 @@ function fromFile(path: string, warn: (message: string) => void): string {
   let text: string;
   try {
     const stat = statSync(file);
-    if (stat.isFile() && (stat.mode & 0o077) !== 0) warn(`warning: other users can read ${file}; run chmod 600 on it`);
+    // Windows reports no owner-only mode for any file: access there follows the folder's permissions, so there is nothing to warn about or chmod.
+    if (process.platform !== "win32" && stat.isFile() && (stat.mode & 0o077) !== 0) warn(`warning: other users can read ${file}; run chmod 600 on it`);
     text = readFileSync(file, "utf8");
   } catch (error) {
     throw new Error(`BRAINCHAIN_WORKER_KEY_FILE names ${file}, which could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
@@ -102,9 +103,17 @@ function namesOnlyAPipe(names: string[], env: NodeJS.ProcessEnv): boolean {
  * and the supervisor's view all stay as they were. Returns when there is
  * nothing to clear, or when it could not be cleared.
  */
-export function clearKeyFromEnvironment(key: string, warn: (message: string) => void, env: NodeJS.ProcessEnv = process.env, execve = process.execve): void {
+export function clearKeyFromEnvironment(
+  key: string,
+  warn: (message: string) => void,
+  env: NodeJS.ProcessEnv = process.env,
+  execve = process.execve,
+  platform: NodeJS.Platform = process.platform,
+): void {
   const names = Object.keys(env).filter((name) => KEY_VARIABLE.test(name));
   if (names.length === 0 || namesOnlyAPipe(names, env)) return;
+  // Windows cannot replace a running process, so trying would only put the key in a file for a moment.
+  if (platform === "win32") return warn("warning: on Windows the key variables stay in this process's environment; give the key through BRAINCHAIN_WORKER_KEY_FILE and keep that file in your own user folder");
   if (typeof execve !== "function") return warn(`warning: Node.js ${process.version} cannot clear the key variables from this process's environment; Node.js 22.15 or later can`);
   const rest = Object.fromEntries(Object.entries(env).filter(([name]) => !KEY_VARIABLE.test(name)));
   let file: string | undefined;
