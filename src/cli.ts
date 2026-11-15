@@ -710,7 +710,8 @@ export async function main(argv: string[]): Promise<void> {
   if (command === "credit") {
     if (!network.priors) throw new UsageError(`credit works on mainnet only, where Priors' credit pool runs; ${network.name} has none`);
     const agentId = values.get("agent-id");
-    if (agentId === undefined || !/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError("--agent-id is the worker's ERC-8004 agent id, the one it declared with join --agent-id");
+    if (agentId === undefined) throw new UsageError("credit needs --agent-id: the worker's ERC-8004 agent id, the one it declared with join --agent-id");
+    if (!/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError(`--agent-id is a whole number, the worker's ERC-8004 agent id, not "${agentId}"`);
     const premium = values.get("premium") ?? "0";
     if (!/^\d{1,3}$/.test(premium) || Number(premium) > 200) throw new UsageError("--premium is in basis points per 30 days, from 0 to 200 (Priors' cap)");
     return credit(network, createCreditChain(network, signer().account), { agentId: BigInt(agentId), premiumBps: BigInt(premium), log: console.log });

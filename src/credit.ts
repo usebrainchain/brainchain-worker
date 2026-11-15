@@ -92,5 +92,6 @@ export async function credit(
   if (!response.ok) throw new Error(answer.error ?? `${response.status} from ${network.service}`);
   log(`Consent sent for agent ${agentId}, valid for ${CONSENT_DAYS} days.`);
   log("BrainChain backs a 25 USDG line on Priors once this worker has 3 accepted tasks, more accepted than refunded,");
-  log("and has not let two hires in a row expire. Borrow and repay it with Priors' own tools: https://priors.trade/skill.md");
+  log("and has not let two hires in a row expire, as long as BrainChain has 25 USDG of stake free. Borrow and repay it");
+  log("with Priors' own tools: https://priors.trade/skill.md");
 }

@@ -2,7 +2,7 @@ import { ContractFunctionRevertedError, HttpRequestError, parseAbi, recoverTyped
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it } from "vitest";
 
-import { CONSENT_DAYS, CONSENT_TYPES, credit, type CreditChain } from "./credit.js";
+import { CONSENT_DAYS, CONSENT_TYPES, createCreditChain, credit, type CreditChain } from "./credit.js";
 import { MAINNET } from "./network.js";
 
 const NOW = 1_800_000_000n;
@@ -57,5 +57,19 @@ describe("credit", () => {
     await expect(credit(MAINNET, none, { agentId: 99_999_999_999n, premiumBps: 0n, log: () => {} })).rejects.toThrow(/^There is no ERC-8004 agent 99999999999 on Robinhood Chain\.$/);
     const down = { ...chainFor(key.address, key), ownerOf: async () => Promise.reject(new HttpRequestError({ url: "https://rpc.example.com", details: "fetch failed" })) };
     await expect(credit(MAINNET, down, { agentId: 5n, premiumBps: 0n, log: () => {} })).rejects.toThrow("ERC-8004 agent 5 could not be read on Robinhood Chain: Could not reach rpc.example.com (fetch failed)");
+  });
+
+  it("signs on mainnet under the pool's own EIP-712 domain, so the pool takes the consent", async () => {
+    const key = privateKeyToAccount(generatePrivateKey());
+    const message = { agentId: 501n, sponsorId: 20423n, owner: key.address, maxPremiumBps: 0n, nonce: 0n, deadline: NOW };
+    const signature = await createCreditChain(MAINNET, key).sign(message);
+    const signer = await recoverTypedDataAddress({
+      domain: { name: "Priors Credit", version: "2", chainId: 4663, verifyingContract: "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21" },
+      types: CONSENT_TYPES,
+      primaryType: "Consent",
+      message,
+      signature,
+    });
+    expect(signer).toBe(key.address);
   });
 });
