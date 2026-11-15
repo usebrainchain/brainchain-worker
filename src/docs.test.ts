@@ -77,10 +77,10 @@ describe("watch in the README and --help", () => {
 });
 
 describe("bonds in the README and --help", () => {
-  it("are placed after the hire, and read by Jev once settled, at later hires", () => {
-    expect(readme).toContain("Jev reads a worker's settled bonds, delivered and missed, at later hires");
-    expect(readme).toContain("After Jev hires this worker for the task");
-    expect(readme).not.toMatch(/offered first|While the task is open|Not open yet|Jev reads the bond when it hires/);
+  it("are placed after the hire, and read by BrainChain once settled, at later hires", () => {
+    expect(readme).toContain("BrainChain reads a worker's settled bonds, delivered and missed, at later hires");
+    expect(readme).toContain("After BrainChain hires this worker for the task");
+    expect(readme).not.toMatch(/offered first|While the task is open|Not open yet|(?:Jev|BrainChain) reads the bond when it hires/);
     expect(flat(help)).toContain("behind a task Jev hired this worker for");
   });
 

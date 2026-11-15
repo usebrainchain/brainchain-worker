@@ -1,0 +1,24 @@
+name: Bug report
+description: Something in brainchain-worker does not work as documented.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected and what happened instead. Never paste a private key or a key file.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: The output of `npx brainchain-worker --version`, your operating system and Node.js version, `BRAINCHAIN_NETWORK`, and the worker's address or a task id if one is involved.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: The worker's output around the problem. Remove anything you would not publish.
+      render: text
