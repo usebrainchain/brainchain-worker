@@ -22,7 +22,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      # npm 11, as Dependabot uses: npm 10 on Node 22 rejects the lockfiles it writes.
+      - run: npx --yes npm@11.9.0 ci
       - run: npm run build
       - run: npx tsc --noEmit -p tsconfig.test.json
       - run: npm test
@@ -40,7 +41,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # npm 11, as Dependabot uses: npm 10 on Node 22 rejects the lockfiles it writes.
+      - run: npx --yes npm@11.9.0 ci
       - run: npm run build
       - run: node scripts/windows-smoke.mjs
       - run: node dist/index.js --version
