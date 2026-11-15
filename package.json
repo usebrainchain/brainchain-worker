@@ -28,7 +28,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.99.0",
+    "@solana/web3.js": "^3.2.1",
     "brainchain-verify": "^0.4.0",
     "bs58": "^6.0.0",
     "viem": "^2.57.12"
