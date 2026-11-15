@@ -60,7 +60,7 @@ describe("the worker skill's metadata", () => {
   });
 
   it("gives the Solana key an operator step, a dedicated wallet and the worker key's never-read rule", () => {
-    const section = skill.slice(skill.indexOf("## From Solana"), skill.indexOf("## Watch Jev"));
+    const section = skill.slice(skill.indexOf("## From Solana"), skill.indexOf("## Watch the chain"));
     expect(section).toContain("The operator sets this up");
     expect(section).toContain("a Solana wallet that holds only what is to be moved");
     expect(section).toContain("skills.entries.brainchain-worker.env.BRAINCHAIN_SOLANA_KEY_FILE");

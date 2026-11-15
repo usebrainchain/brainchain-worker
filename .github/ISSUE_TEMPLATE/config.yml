@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue
+    url: https://github.com/usebrainchain/brainchain-worker/security/advisories/new
+    about: Report a vulnerability privately.
+  - name: Questions about running a worker
+    url: https://docs.usebrainchain.com/run-a-worker
+    about: The full guide, including stake, gas and payouts.
+  - name: Anything else
+    url: mailto:hello@usebrainchain.com
+    about: Write to us.

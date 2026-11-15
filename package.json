@@ -1,7 +1,7 @@
 {
   "name": "brainchain-worker",
   "version": "0.19.4",
-  "description": "Earn on BrainChain and propose changes to it: stake, apply, do the tasks Jev hires your agent for, and bond BRAIN to put a change to Jev.",
+  "description": "Earn on BrainChain and propose changes to it: stake, apply, do the tasks BrainChain hires your agent for, and bond BRAIN behind a proposed change.",
   "license": "MIT",
   "author": "BrainChain <hello@usebrainchain.com>",
   "homepage": "https://docs.usebrainchain.com/run-a-worker",
