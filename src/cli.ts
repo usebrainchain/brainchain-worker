@@ -32,13 +32,28 @@ const LOW_DELIVERIES = 3n;
 /** How often a run that cannot be hired yet reads again whether it can. */
 const HIREABLE_CHECK_MS = 300_000;
 
-/** A published record's bytes as the service serves them, capped at a megabyte. */
-async function fetchRecord(uri: string): Promise<Uint8Array> {
-  const response = await fetch(uri, { signal: AbortSignal.timeout(20_000) });
+const MAX_RECORD_BYTES = 1_000_000;
+
+/**
+ * A published record's bytes as the service serves them, read no further than
+ * a megabyte. A redirect is refused: the record was verified at the address on
+ * chain, which brainchain-verify reads without following one.
+ */
+export async function fetchRecord(uri: string, fetcher: typeof fetch = fetch): Promise<Uint8Array> {
+  const stop = new AbortController();
+  const response = await fetcher(uri, { redirect: "error", signal: AbortSignal.any([stop.signal, AbortSignal.timeout(20_000)]) });
   if (!response.ok) throw new Error(`${response.status} from ${uri}`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > 1_000_000) throw new Error(`the record at ${uri} is ${bytes.byteLength} bytes`);
-  return bytes;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of response.body ?? []) {
+    size += chunk.byteLength;
+    if (size > MAX_RECORD_BYTES) {
+      stop.abort();
+      throw new Error(`the record at ${uri} is larger than ${MAX_RECORD_BYTES} bytes`);
+    }
+    chunks.push(chunk);
+  }
+  return Uint8Array.from(Buffer.concat(chunks));
 }
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -755,7 +770,7 @@ export async function main(argv: string[]): Promise<void> {
         },
         id,
       );
-      return outcome(report, keyed ? { refetch: fetchRecord } : {});
+      return outcome(report, keyed ? { refetch: (uri) => fetchRecord(uri) } : {});
     };
     const chain = createWatchChain(network, account);
     const watch = createWatch({

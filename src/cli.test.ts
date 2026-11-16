@@ -8,7 +8,7 @@ import { parseEther, type Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { asksHelp, bondArgs, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace, watchResume } from "./cli.js";
+import { asksHelp, bondArgs, fetchRecord, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace, watchResume } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
@@ -433,6 +433,36 @@ describe("watchPlace", () => {
     expect(readWatched(watchPlace(LOG, undefined), folder)).toBe(100n);
     expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBe(94n);
     expect(readWatched(watchPlace(LOG, "0x00000000000000000000000000000000000000c2"), folder)).toBeUndefined();
+  });
+});
+
+describe("fetchRecord", () => {
+  it("stops reading a record past a megabyte", async () => {
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+    });
+    await expect(fetchRecord("https://brain.example/records/1.json", async () => new Response(endless))).rejects.toThrow("the record at https://brain.example/records/1.json is larger than 1000000 bytes");
+    expect(pulled).toBeLessThan(20);
+  });
+
+  it("follows no redirect", async () => {
+    const asked: string[] = [];
+    const server = createServer((req, res) => {
+      asked.push(req.url!);
+      if (req.url === "/records/1.json") res.writeHead(302, { location: "/elsewhere/1.json" });
+      res.end("a record");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      await expect(fetchRecord(`http://127.0.0.1:${(server.address() as AddressInfo).port}/records/1.json`)).rejects.toThrow("fetch failed");
+      expect(asked).toEqual(["/records/1.json"]);
+    } finally {
+      server.close();
+    }
   });
 });
 
