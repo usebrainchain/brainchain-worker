@@ -71,7 +71,14 @@ export function writeWatched(log: string, seen: bigint, dir = stateDir()): void 
   const file = join(dir, `watch.${log.toLowerCase()}.json`);
   // Each write its own temp file: runs from cron overlap, and nothing else keeps them apart.
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  writeFileSync(temp, JSON.stringify({ seen: seen.toString() }), { mode: 0o600 });
+  const fd = openSync(temp, "w", 0o600);
+  try {
+    writeFileSync(fd, JSON.stringify({ seen: seen.toString() }));
+    // On disk before the rename, so a power loss leaves the old place or the new one, never an empty file.
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(temp, file);
 }
 

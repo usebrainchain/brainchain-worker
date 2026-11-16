@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, fsyncSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +7,11 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MAINNET, TESTNET } from "./network.js";
 import { fileStore, lock, openStore, readWatched, writeWatched } from "./state.js";
+
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, fsyncSync: vi.fn(fs.fsyncSync), renameSync: vi.fn(fs.renameSync) };
+});
 
 const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
 // Several tests overwrite a lock this process holds, which a run answers by exiting at its next touch.
@@ -254,6 +259,14 @@ describe("writeWatched", () => {
     writeWatched(log, 9n, folder);
     expect(readWatched(log, folder)).toBe(9n);
     expect(readdirSync(folder).filter((name) => name.endsWith(".tmp"))).toEqual(["watch.0xabc.json.tmp"]);
+  });
+
+  it("flushes the place to disk before it replaces the last one", () => {
+    vi.mocked(fsyncSync).mockClear();
+    vi.mocked(renameSync).mockClear();
+    writeWatched("0xABC", 7n, dir());
+    expect(fsyncSync).toHaveBeenCalledOnce();
+    expect(vi.mocked(fsyncSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(renameSync).mock.invocationCallOrder[0]!);
   });
 });
 
