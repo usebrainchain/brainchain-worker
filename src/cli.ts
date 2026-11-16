@@ -16,7 +16,7 @@ import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint
 import { chainOf, resolveNetwork, rpcTransport, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
 import { deliveries, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
-import { openStore, readWatched, writeWatched } from "./state.js";
+import { openStore, privateDir, readWatched, stateDir, writeWatched } from "./state.js";
 import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
@@ -473,6 +473,8 @@ function runFlags(values: Map<string, string>): { exec: string; format: "prompt"
 
 async function run(network: Network, { key, account }: Signer, { exec, format, minutes }: ReturnType<typeof runFlags>, once: boolean, mints: boolean): Promise<void> {
   const { log, quietFor } = timedLog((line) => console.log(line));
+  // Checked before the restart, so a home this user cannot write to is the one thing said.
+  privateDir(stateDir(), log);
   clearKeyFromEnvironment(key, log);
   for (const problem of execProblems(exec)) log(`warning: ${problem}, so --exec will fail when the worker is hired`);
   const store = openStore(account.address, network, log);

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, copyFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -59,9 +59,22 @@ export const stateDir = () => join(homedir(), ".config", "brainchain-worker");
 /**
  * Makes the worker's folder, which holds its saved work and its locks, for its
  * owner alone, and narrows one an earlier tool or umask left open to others.
+ * A folder this user cannot make or write to is one error that says which and
+ * what to do, not the system's EACCES.
  */
 export function privateDir(dir: string, log: (line: string) => void): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    accessSync(dir, constants.W_OK);
+  } catch (error) {
+    // The nearest folder that exists is the one this user could not make the rest in.
+    let blocked = dir;
+    while (!existsSync(blocked) && dirname(blocked) !== blocked) blocked = dirname(blocked);
+    throw new Error(
+      `${dir} could not be ${blocked === dir ? "written to" : "made"} (${(error as NodeJS.ErrnoException).code ?? "unknown error"}), and it holds the worker's saved work and its lock. ` +
+        `Let this user write to ${blocked}, or set HOME to a folder this user can write to.`,
+    );
+  }
   // Windows has no owner-only mode: access there follows the folder's permissions.
   if (process.platform === "win32" || (statSync(dir).mode & 0o077) === 0) return;
   try {

@@ -283,6 +283,24 @@ describe.skipIf(process.platform === "win32")("privateDir", () => {
     expect(log).toHaveBeenCalledWith(`${fresh} was open to other users, so it is now yours alone (mode 700)`);
   });
 
+  it.skipIf(process.getuid?.() === 0)("says which folder this user cannot write to and how to fix it, as one error", () => {
+    const home = dir();
+    chmodSync(home, 0o555);
+    const target = join(home, ".config", "brainchain-worker");
+    try {
+      expect(() => privateDir(target, vi.fn())).toThrow(
+        new Error(`${target} could not be made (EACCES), and it holds the worker's saved work and its lock. Let this user write to ${home}, or set HOME to a folder this user can write to.`),
+      );
+      chmodSync(home, 0o755);
+      mkdirSync(join(home, ".config"));
+      mkdirSync(target, { mode: 0o500 });
+      expect(() => privateDir(target, vi.fn())).toThrow(`${target} could not be written to (EACCES), and it holds the worker's saved work and its lock. Let this user write to ${target}, or`);
+    } finally {
+      chmodSync(home, 0o755);
+      if (existsSync(target)) chmodSync(target, 0o700);
+    }
+  });
+
   it("is where a run's state goes, so a run narrows it at start", () => {
     const folder = dir();
     chmodSync(folder, 0o775);
