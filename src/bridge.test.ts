@@ -11,7 +11,7 @@ import { MAINNET, TESTNET } from "./network.js";
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
 const TX: Hex = `0x${"fe".repeat(32)}`;
 
-function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cost?: bigint } = {}) {
+function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cost?: bigint; moved?: boolean } = {}) {
   const sent: string[] = [];
   const chain: BridgeChain = {
     account: ACCOUNT,
@@ -26,6 +26,7 @@ function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cos
       sent.push(`${asset} ${amount} value ${value}`);
       return TX;
     }),
+    moveClosed: vi.fn(async () => options.moved ?? false),
   };
   return { chain, sent };
 }
@@ -163,4 +164,12 @@ describe("depositToken", () => {
     expect(args[5]).toBe(GAS_PRICE * 2n);
     expect(decodeAbiParameters([{ type: "uint256" }, { type: "bytes" }], args[6])[0]).toBe(submission);
   });
+
+  it("refuses to bridge the old stake token once the $BRAIN move has closed, and still bridges the bounty token", async () => {
+    const { chain, sent } = fakeChain({ moved: true });
+    await expect(bridge(MAINNET, chain, { asset: "stake", amount: "1000", dry: false, log: () => {} })).rejects.toThrow(/moved to new contracts/);
+    await bridge(MAINNET, chain, { asset: "bounty", amount: "5", dry: false, log: () => {} });
+    expect(sent).toEqual([expect.stringMatching(/^bounty /)]);
+  });
 });
+

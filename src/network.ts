@@ -87,6 +87,8 @@ export interface Network {
     gas: string;
     /** The stake and bounty tokens on the parent chain; absent where the token is minted on BrainChain only. */
     tokens?: Partial<Record<"stake" | "bounty", Address>>;
+    /** The $BRAIN move's contract: once it has closed, the stake token above is the old $BRAIN. */
+    move?: Address;
   };
 }
 
@@ -194,6 +196,7 @@ export const MAINNET: Network = {
     router: "0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96",
     gas: "Send it a little ETH on Robinhood Chain",
     tokens: { stake: "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418", bounty: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
+    move: "0xe91Bee560aFbefc5Ad3E8C970640F26Fe6E6BE9c",
   },
   exitDesk: "0x97D558417c3D61f1074422AD843e1Db1E565b952",
   retired: [
