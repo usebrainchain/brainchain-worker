@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Status, type Flight } from "./chain.js";
 import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { aboutEth, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, shortOfStake, stake, unapplied, wallet, type Snapshot } from "./standing.js";
+import { aboutEth, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, shortOfStake, stake, unapplied, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
@@ -135,7 +135,10 @@ describe("gasLine", () => {
   });
 
   it("gives the balance when the wallet has enough, and how many results it delivers once joined", () => {
-    expect(gasLine(TESTNET, WORKER, applying, 10n ** 15n, GWEI_TENTH, true, 0)).toBe("0.001 ETH");
+    // Joining comes out of the same ETH: the faucet claim, the stake and the application, 536,000 gas.
+    expect(gasLine(TESTNET, WORKER, applying, 10n ** 15n, GWEI_TENTH, true, 0)).toBe("0.001 ETH, enough to join and then for about 89 deliveries at the current gas price");
+    expect(deliveriesAfterJoin(applying, 10n ** 15n, GWEI_TENTH, true)).toBe(deliveriesLeft(10n ** 15n - 536_000n * GWEI_TENTH, GWEI_TENTH));
+    expect(deliveriesAfterJoin(staked, 10n ** 15n, GWEI_TENTH)).toBe(deliveriesLeft(10n ** 15n, GWEI_TENTH));
     expect(gasLine(TESTNET, WORKER, staked, 10n ** 15n, GWEI_TENTH, false, 6)).toBe("0.001 ETH, enough for about 94 deliveries at the current gas price");
     // What a drip leaves after join, as the newcomer audit measured it.
     expect(gasLine(TESTNET, WORKER, staked, 51_081_600_000_000n, GWEI_TENTH, false, 6)).toBe("0.0000510816 ETH, enough for about 3 deliveries at the current gas price");

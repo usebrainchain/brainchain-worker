@@ -15,7 +15,7 @@ import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, rpcTransport, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
-import { deliveries, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
+import { deliveries, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
 import { openStore, privateDir, readWatched, stateDir, writeWatched } from "./state.js";
 import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
@@ -550,17 +550,20 @@ async function run(network: Network, { key, account }: Signer, { exec, format, m
   }
   if (gas === 0n) throw await noGas(chain, network);
   const held = gas;
-  const [standing, sick, left] = await Promise.all([
+  const [standing, sick, gasPrice] = await Promise.all([
     Promise.all([snapshot(chain), chain.held()]).catch((error: unknown) => new Error(reason(error))),
     unhealthy(network.service),
-    held === undefined ? undefined : chain.gasPrice().then((price) => deliveriesLeft(held, price), () => undefined),
+    held === undefined ? undefined : chain.gasPrice().catch(() => undefined),
   ]);
   // Nothing comes to a worker that never applied, so a run would wait forever, and a --once run would pass every time.
   if (!(standing instanceof Error) && unapplied(...standing)) {
     throw new Error(`${chain.account} has not applied on ${network.name}, so no task can be hired to it. Apply first with ${cli('join --name "<name>" --about "<what your agent does>"')}, then start run again.`);
   }
   const line = standing instanceof Error ? `could not check (${standing.message})` : hireable(standing[0], network, "run");
-  log(`worker ${chain.account} on ${network.name}; hireable: ${line}${left === undefined ? "" : `; gas for ${deliveries(left)}`}`);
+  // Joining is paid out of the same ETH, so a worker that has still to join has that much less for deliveries.
+  const joins = !(standing instanceof Error) && joinLimits(standing[0], false, false).length > 0;
+  const left = held === undefined || gasPrice === undefined ? undefined : standing instanceof Error ? deliveriesLeft(held, gasPrice) : deliveriesAfterJoin(standing[0], held, gasPrice);
+  log(`worker ${chain.account} on ${network.name}; hireable: ${line}${left === undefined ? "" : `; gas for ${deliveries(left)}${joins ? " after joining" : ""}`}`);
   if (sick) log(`warning: ${sick}`);
   if (once) {
     const result = await work.round().catch((error: unknown) => {

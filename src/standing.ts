@@ -191,16 +191,23 @@ export function deliveriesLeft(gas: bigint, gasPrice: bigint): bigint {
 /** About how many results the wallet's ETH delivers, for `status` and `run`. */
 export const deliveries = (count: bigint) => `about ${count} ${count === 1n ? "delivery" : "deliveries"}`;
 
+/** How many results the wallet's ETH delivers once what join still has to send, if anything, is paid for out of it. */
+export function deliveriesAfterJoin(s: Snapshot, gas: bigint, gasPrice: bigint, claims = false): bigint {
+  const cost = joinLimits(s, claims, false).reduce((sum, limit) => sum + limit * gasPrice, 0n);
+  return deliveriesLeft(gas > cost ? gas - cost : 0n, gasPrice);
+}
+
 /**
  * The wallet's ETH, and what more join or the next delivery needs, since a
- * send the wallet cannot cover fails partway through. A worker with nothing to
- * join hears how many results its ETH delivers.
+ * send the wallet cannot cover fails partway through, or else how many results
+ * its ETH delivers, after what join costs for a worker that has not joined.
  */
 export function gasLine(network: Network, address: string, s: Snapshot, gas: bigint, gasPrice: bigint, claims: boolean, sent: number): string {
   const limits = joinLimits(s, claims, false);
   const need = ethNeeded(limits.length > 0 ? limits : [SUBMIT_GAS], gasPrice);
   if (gas < need) return shortOfGas(network, address, gas, sent, need, limits.length > 0 ? "join" : "delivering a result");
-  return limits.length > 0 ? `${formatEther(gas)} ETH` : `${formatEther(gas)} ETH, enough for ${deliveries(deliveriesLeft(gas, gasPrice))} at the current gas price`;
+  const after = limits.length > 0 ? "enough to join and then for" : "enough for";
+  return `${formatEther(gas)} ETH, ${after} ${deliveries(deliveriesAfterJoin(s, gas, gasPrice, claims))} at the current gas price`;
 }
 
 /** What join says when the wallet holds too little of a stake token that has no faucet. */
