@@ -149,7 +149,7 @@ describe("help", () => {
       const example = usage(command).split("\n").at(-1)!;
       expect(example).toMatch(new RegExp(`^Example: (BRAINCHAIN_NETWORK=mainnet )?brainchain-worker ${command}( |$)`));
       // The words as the shell would pass them, so a flag the command does not take shows here.
-      const words = [...example.matchAll(/'([^']*)'|"((?:\\.|[^"])*)"|(\S+)/g)].map(([, single, double, bare]) => single ?? (double === undefined ? bare! : double.replace(/\\(.)/g, "$1")));
+      const words = [...example.matchAll(/'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+)/g)].map(([, single, double, bare]) => single ?? (double === undefined ? bare! : double.replace(/\\(.)/g, "$1")));
       const args = words.slice(words.indexOf(command) + 1);
       expect(() => parse(command, args), example).not.toThrow();
     }
