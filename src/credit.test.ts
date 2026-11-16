@@ -48,6 +48,8 @@ describe("credit", () => {
     const key = privateKeyToAccount(generatePrivateKey());
     const refused = (async () => new Response(JSON.stringify({ error: "No staked BrainChain worker declared agent 501 in its application. Join with --agent-id first." }), { status: 404 })) as typeof fetch;
     await expect(credit(MAINNET, chainFor(key.address, key), { agentId: 501n, premiumBps: 0n, log: () => {}, fetcher: refused })).rejects.toThrow(/Join with --agent-id first/);
+    const garbled = (async () => new Response(JSON.stringify({ error: "\x1b[31mno\u202e line" }), { status: 400 })) as typeof fetch;
+    await expect(credit(MAINNET, chainFor(key.address, key), { agentId: 501n, premiumBps: 0n, log: () => {}, fetcher: garbled })).rejects.toThrow(/^no line$/);
   });
 
   it("says there is no such agent when the registry reverts, and that it could not be read otherwise", async () => {

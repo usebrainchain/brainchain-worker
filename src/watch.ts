@@ -3,6 +3,7 @@ import { concat, createPublicClient, createWalletClient, keccak256, parseAbi, to
 
 import { brainchainTransport, executorAbi, reason } from "./chain.js";
 import { chainOf, type Network } from "./network.js";
+import { printable } from "./work.js";
 
 /**
  * The calls the constitution's monitor knows, by the function a change calls.
@@ -236,9 +237,10 @@ export function createReporter(network: Network, account: PrivateKeyAccount, fet
       body: JSON.stringify({ report: text, signature }),
       signal: AbortSignal.timeout(20_000),
     });
-    const body = (await response.json().catch(() => ({}))) as { error?: string; checked?: number; mark?: { since: string } | null; markAfter?: number };
-    if (response.status >= 400 && response.status < 500) throw new ReportRefused(body.error ?? `${response.status} from ${network.service}`);
-    if (!response.ok) throw new Error(body.error ?? `${response.status} from ${network.service}`);
+    const body = (await response.json().catch(() => ({}))) as { error?: unknown; checked?: number; mark?: { since: string } | null; markAfter?: number };
+    const said = typeof body.error === "string" ? printable(body.error) : `${response.status} from ${network.service}`;
+    if (response.status >= 400 && response.status < 500) throw new ReportRefused(said);
+    if (!response.ok) throw new Error(said);
     return body.mark
       ? `reported to ${network.name}: ${body.checked} decisions re-verified in all, watchtower mark since ${body.mark.since}`
       : `reported to ${network.name}: ${body.checked} of the ${body.markAfter} re-verified decisions that earn the watchtower mark`;

@@ -505,6 +505,8 @@ describe("reporting rounds", () => {
     expect(await granted([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).toBe("reported to BrainChain testnet: 12 decisions re-verified in all, watchtower mark since 2026-11-02");
     const refused = createReporter(TESTNET, worker, (async () => new Response(JSON.stringify({ error: "The proof for decision 1 does not match its record." }), { status: 400 })) as typeof fetch);
     await expect(refused([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).rejects.toThrow("The proof for decision 1 does not match its record.");
+    const garbled = createReporter(TESTNET, worker, (async () => new Response(JSON.stringify({ error: "\x1b]0;owned\x07bad\nproof" }), { status: 400 })) as typeof fetch);
+    await expect(garbled([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).rejects.toThrow(/^bad proof$/);
   });
 
   it("sends a long round in several reports, each signed later than the last, so no decision is passed unreported", async () => {

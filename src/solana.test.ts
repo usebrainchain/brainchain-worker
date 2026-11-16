@@ -8,7 +8,7 @@ import { parseEther, type Address } from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DepositSent } from "./bridge.js";
-import { NATIVE, SOLANA_USDC, type RelayQuote, type SvmItem } from "./relay.js";
+import { NATIVE, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, type RelayQuote, type SvmItem } from "./relay.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM,
   createSolanaFunding,
@@ -394,6 +394,14 @@ describe("sendSvmStep", () => {
     expect(failure).not.toContain("did not move");
     const timeout = connection({ sendTransaction: vi.fn(async () => Promise.reject(new Error("fetch failed"))) });
     await expect(sendSvmStep(timeout, SIGNER, deposit(1n))).rejects.toThrow("could not be confirmed (fetch failed)");
+  });
+});
+
+describe("relayQuote", () => {
+  it("passes on Relay's reason for having no route as one plain line", async () => {
+    const answer = (async () => new Response(JSON.stringify({ message: "\x1b[2JAmount too low\r\nfor this route" }), { status: 400 })) as typeof fetch;
+    const request = { user: OWNER, recipient: WORKER, originChainId: SOLANA_CHAIN_ID, destinationChainId: 4663, originCurrency: SOLANA_USDC, destinationCurrency: NATIVE, amount: 1n };
+    await expect(relayQuote(request, answer)).rejects.toThrow(/^Relay has no route for this move right now: Amount too low for this route$/);
   });
 });
 
