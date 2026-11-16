@@ -239,14 +239,30 @@ export async function fundFromSolana(
   if (options.stake && !options.stakeToken) throw new Error("This network's stake token is not on the parent chain");
   const spends = parts.gas + parts.stake;
   const [held, lamports] = await Promise.all([funding.usdcBalance(), funding.solBalance()]);
-  if (held < spends) throw new Error(`The Solana wallet ${funding.owner} holds ${formatUnits(held, 6)} USDC, less than ${formatUnits(spends, 6)}`);
-  if (lamports < MIN_LAMPORTS) throw new Error(`The Solana wallet ${funding.owner} needs about 0.002 SOL for Solana's fees; it holds ${formatUnits(lamports, 9)}`);
-  const stays = usdc > spends ? ` The other ${formatUnits(usdc - spends, 6)} USDC stays on Solana.` : "";
-  log(`From ${funding.owner} on Solana: ${formatUnits(parts.gas, 6)} USDC to ETH for gas${parts.stake ? ` and ${formatUnits(parts.stake, 6)} USDC to the stake token` : ""}, for ${options.worker}.${stays}`);
+  const usdcs = (amount: bigint) => `${formatUnits(amount, 6)} USDC`;
+  // Said after the quote, so a wallet not yet funded still learns what its USDC would bring.
+  const short = [
+    ...(held >= spends
+      ? []
+      : parts.stake > 0n
+        ? [`The Solana wallet ${funding.owner} holds ${usdcs(held)} of the ${usdcs(spends)} this run spends: ${usdcs(parts.gas)} for gas and ${usdcs(parts.stake)} for the stake token.`]
+        : [`The Solana wallet ${funding.owner} holds ${usdcs(held)}. Without --stake this run spends only the ${usdcs(parts.gas)} it turns into ETH for gas, and the wallet holds less than that.`]),
+    ...(lamports < MIN_LAMPORTS ? [`The Solana wallet ${funding.owner} needs about 0.002 SOL for Solana's fees; it holds ${formatUnits(lamports, 9)}.`] : []),
+  ];
+  const stays = usdc > spends ? ` The other ${usdcs(usdc - spends)} stays on Solana.` : "";
+  log(`From ${funding.owner} on Solana: ${usdcs(parts.gas)} to ETH for gas${parts.stake ? ` and ${usdcs(parts.stake)} to the stake token` : ""}, for ${options.worker}.${stays}`);
   // Both legs are priced and checked before either moves, and those same quotes are signed, so a refused leg never leaves the other spent alone.
-  const gasQuote = await funding.preview(NATIVE, parts.gas, options.worker);
-  const stakeQuote = parts.stake ? await funding.preview(options.stakeToken!, parts.stake, options.worker) : undefined;
+  let gasQuote: RelayQuote;
+  let stakeQuote: RelayQuote | undefined;
+  try {
+    gasQuote = await funding.preview(NATIVE, parts.gas, options.worker);
+    stakeQuote = parts.stake ? await funding.preview(options.stakeToken!, parts.stake, options.worker) : undefined;
+  } catch (error) {
+    if (short.length === 0) throw error;
+    throw new Error([reason(error), ...short].join("\n"));
+  }
   log(`Relay quotes ${gasQuote.outFormatted} ETH${stakeQuote ? ` and ${stakeQuote.outFormatted} of the stake token` : ""}.`);
+  if (short.length > 0) throw new Error(`${short.join("\n")}${options.dry ? "\nDry run, nothing sent." : " Nothing was sent."}`);
   if (options.dry) {
     log("Dry run, nothing sent.");
     return;

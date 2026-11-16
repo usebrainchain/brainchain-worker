@@ -128,8 +128,8 @@ const COMMAND_USAGE: Record<string, string> = {
                                             small move), or that asks to sign anything but this USDC's deposit into
                                             Relay's depository, stops the command before anything is signed. Signed
                                             with BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE, one or the
-                                            other; the wallet needs about 0.002 SOL for fees. --dry checks and sends
-                                            nothing. Mainnet.`,
+                                            other; the wallet needs about 0.002 SOL for fees. --dry quotes the
+                                            move, then says what the wallet lacks, and sends nothing. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]
                                             Bond the stake token and propose a change to BrainChain for Jev to

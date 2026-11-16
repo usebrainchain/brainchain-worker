@@ -311,8 +311,34 @@ describe("fund", () => {
     vi.mocked(poor.funding.usdcBalance).mockResolvedValue(3_000_000n);
     await poor.run({ stake: false, dry: true });
     expect(poor.log[0]).toContain("2 USDC to ETH for gas");
+  });
+
+  it("quotes for a wallet that is not funded yet, then names what it lacks: only the gas amount without --stake", async () => {
+    const poor = rig();
     vi.mocked(poor.funding.usdcBalance).mockResolvedValue(1_000_000n);
-    await expect(poor.run({ stake: false, dry: true })).rejects.toThrow("holds 1 USDC, less than 2");
+    await expect(poor.run({ usdc: "5", stake: false, dry: true })).rejects.toThrow(
+      `The Solana wallet ${OWNER} holds 1 USDC. Without --stake this run spends only the 2 USDC it turns into ETH for gas, and the wallet holds less than that.\nDry run, nothing sent.`,
+    );
+    expect(poor.log).toEqual([`From ${OWNER} on Solana: 2 USDC to ETH for gas, for ${WORKER}. The other 3 USDC stays on Solana.`, "Relay quotes 0.0006 ETH."]);
+
+    const empty = rig();
+    vi.mocked(empty.funding.usdcBalance).mockResolvedValue(0n);
+    vi.mocked(empty.funding.solBalance).mockResolvedValue(0n);
+    await expect(empty.run({ usdc: "120", dry: true })).rejects.toThrow(
+      `The Solana wallet ${OWNER} holds 0 USDC of the 120 USDC this run spends: 2 USDC for gas and 118 USDC for the stake token.\n` +
+        `The Solana wallet ${OWNER} needs about 0.002 SOL for Solana's fees; it holds 0.\nDry run, nothing sent.`,
+    );
+    expect(empty.log.at(-1)).toBe("Relay quotes 0.0006 ETH and 55000 of the stake token.");
+    expect(empty.funding.send).not.toHaveBeenCalled();
+  });
+
+  it("refuses a short wallet without --dry before anything is signed, and names the shortfall beside a refused quote", async () => {
+    const poor = rig();
+    vi.mocked(poor.funding.usdcBalance).mockResolvedValue(0n);
+    await expect(poor.run({ stake: false })).rejects.toThrow(/and the wallet holds less than that\. Nothing was sent\.$/);
+    expect(poor.funding.send).not.toHaveBeenCalled();
+    vi.mocked(poor.funding.preview).mockRejectedValue(new Error("Relay has no route for this move right now"));
+    await expect(poor.run({ stake: false, dry: true })).rejects.toThrow(`Relay has no route for this move right now\nThe Solana wallet ${OWNER} holds 0 USDC.`);
   });
 
   it("signs the quotes it priced, each once, with no second quote to refuse after the first leg moved", async () => {
