@@ -176,7 +176,10 @@ describe("clearKeyFromEnvironment", () => {
   it("restarts when something else is set beside a piped key", () => {
     const execve = vi.fn<Execve>();
     clearKeyFromEnvironment(KEY, vi.fn(), { BRAINCHAIN_WORKER_KEY_FILE: "/dev/null", BRAINCHAIN_SOLANA_KEY: "s" }, execve as Execve);
-    expect(Object.keys(execve.mock.calls[0]![2] as object)).toEqual(["BRAINCHAIN_WORKER_KEY_HANDOFF"]);
+    const passed = { ...(execve.mock.calls[0]![2] as NodeJS.ProcessEnv) };
+    expect(Object.keys(passed)).toEqual(["BRAINCHAIN_WORKER_KEY_HANDOFF"]);
+    // As the new image would, so no handoff file outlives the test.
+    expect(keyText(passed)).toBe(KEY);
   });
 
   it("goes on with a warning where it cannot restart, and leaves no file behind", () => {
