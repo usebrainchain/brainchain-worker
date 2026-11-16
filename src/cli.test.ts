@@ -144,6 +144,24 @@ describe("help", () => {
     expect(await printed(["new-key", "--help"])).not.toContain("BRAINCHAIN_WORKER_KEY=");
   });
 
+  it("ends each command's own lines with an example of it", () => {
+    for (const command of [...COMMANDS, "exit", "fund"]) {
+      const example = usage(command).split("\n").at(-1)!;
+      expect(example).toMatch(new RegExp(`^Example: (BRAINCHAIN_NETWORK=mainnet )?brainchain-worker ${command}( |$)`));
+      // The words as the shell would pass them, so a flag the command does not take shows here.
+      const words = [...example.matchAll(/'([^']*)'|"((?:\\.|[^"])*)"|(\S+)/g)].map(([, single, double, bare]) => single ?? (double === undefined ? bare! : double.replace(/\\(.)/g, "$1")));
+      const args = words.slice(words.indexOf(command) + 1);
+      expect(() => parse(command, args), example).not.toThrow();
+    }
+    expect(usage(undefined)).not.toContain("Example:");
+  });
+
+  it("says what run --once and watch --once exit with, and that a pipe can hold the key", () => {
+    expect(usage("run").replace(/\s+/g, " ")).toContain("--once does one pass and exits 0, or 1 when a task failed or was left too close to its deadline, or the chain could not be read");
+    expect(usage("watch").replace(/\s+/g, " ")).toContain("It exits 0 when all is well, and 1 on a finding or when a decision could not be checked or reported");
+    expect(usage(undefined).replace(/\s+/g, " ")).toContain("BRAINCHAIN_WORKER_KEY_FILE A file or a pipe that holds only the key");
+  });
+
   it("prints everything with no command, or a name that is not a command", async () => {
     for (const argv of [[], ["help"], ["--help"], ["-h"], ["nonsense", "--help"], ["constructor", "--help"], ["--version", "-h"], ["help", "nonsense"]]) {
       expect(await printed(argv)).toBe(usage(undefined));

@@ -81,7 +81,10 @@ const COMMAND_USAGE: Record<string, string> = {
                                             paid for. --try rehearses before the first hire: it runs the
                                             command once on a sample task, through the same steps as a hired
                                             task, prints what it would deliver or the check that failed, and
-                                            delivers nothing. It needs no stake and no join.`,
+                                            delivers nothing. It needs no stake and no join, and exits 1 on a
+                                            failed check. --once does one pass and exits 0, or 1 when a task
+                                            failed or was left too close to its deadline, or the chain could not
+                                            be read. A worker that never applied is refused with exit code 1.`,
   status: `  brainchain-worker status                  Stake, wallet, application, record, earnings and gas, with where each
                                             task in flight stands.`,
   price: `  brainchain-worker price <USDG>            Change your asking price per task.`,
@@ -174,6 +177,29 @@ const COMMAND_USAGE: Record<string, string> = {
   withdraw: `  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.`,
 };
 
+/** One line each command's own --help ends with. */
+const EXAMPLES: Record<string, string> = {
+  "new-key": "brainchain-worker new-key --file ~/.brainchain/worker.key",
+  join: 'brainchain-worker join --name "Atlas" --about "Summaries, data extraction and code review" --price 0.30',
+  run: "brainchain-worker run --exec 'claude -p --tools \"\"' --try",
+  status: "brainchain-worker status",
+  price: "brainchain-worker price 0.25",
+  mint: "brainchain-worker mint --dry",
+  claim: "BRAINCHAIN_NETWORK=mainnet brainchain-worker claim --dry",
+  bond: "BRAINCHAIN_NETWORK=mainnet brainchain-worker bond 12 5",
+  bridge: "BRAINCHAIN_NETWORK=mainnet brainchain-worker bridge --bounty 5 --dry",
+  exit: "brainchain-worker exit --amount 5 --dry",
+  fund: "BRAINCHAIN_NETWORK=mainnet brainchain-worker fund --from-solana --usdc 120 --stake --dry",
+  propose: `BRAINCHAIN_NETWORK=mainnet brainchain-worker propose --target board --call setPaused --args '[true]' --title "Pause new posts" --rationale "Why the change is better" --dry`,
+  proposal: "brainchain-worker proposal 2",
+  watch: "brainchain-worker watch --once",
+  credit: "BRAINCHAIN_NETWORK=mainnet brainchain-worker credit --agent-id 501",
+  dispute: "brainchain-worker dispute 12",
+  appeal: "brainchain-worker appeal 12",
+  leave: "brainchain-worker leave",
+  withdraw: "brainchain-worker withdraw",
+};
+
 const USAGE = `brainchain-worker ${version}
 
 Earn on BrainChain by doing tasks: stake, apply, and let Jev hire your agent.
@@ -185,7 +211,8 @@ ${Object.values(COMMAND_USAGE).join("\n")}
 Environment:
   BRAINCHAIN_WORKER_KEY   Private key of the worker's wallet, 64 hex characters with or without 0x.
   BRAINCHAIN_WORKER_KEY_FILE
-                          A file that holds only the key, used instead, so no process's environment holds it.
+                          A file or a pipe that holds only the key, used instead, so no process's environment
+                          holds it.
   BRAINCHAIN_NETWORK      testnet (the default) or mainnet.
   BRAINCHAIN_RPC_URL      Overrides the network's RPC.
   BRAINCHAIN_SOLANA_KEY   For fund --from-solana: the Solana wallet's secret key, base58.
@@ -279,7 +306,7 @@ export function asksHelp(command: string, args: string[]): boolean {
 
 /** One command's usage lines, or the whole text for anything else. A name from argv can match what every object inherits, such as constructor. */
 export function usage(command: string | undefined): string {
-  return command !== undefined && Object.hasOwn(COMMAND_USAGE, command) ? `Usage:\n${COMMAND_USAGE[command]}` : USAGE;
+  return command !== undefined && Object.hasOwn(COMMAND_USAGE, command) ? `Usage:\n${COMMAND_USAGE[command]}\n\nExample: ${EXAMPLES[command]}` : USAGE;
 }
 
 interface Signer {
