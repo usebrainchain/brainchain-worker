@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Status, type Flight } from "./chain.js";
 import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { aboutEth, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
+import { aboutEth, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
@@ -165,6 +165,44 @@ describe("hireable", () => {
     }
   });
 
+  describe("with an application waiting", () => {
+    const filed = BigInt(Date.parse("2026-11-16T14:00:00Z") / 1000);
+    const open = { ...standing(), allowed: false, applying: false, applications: [{ id: 70n, state: 1, createdAt: filed, decisionId: undefined }] } as unknown as Snapshot;
+    const at = (time: string) => {
+      vi.setSystemTime(new Date(time));
+      try {
+        return hireable(open, TESTNET, "status");
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+
+    it("says how long it has waited for BrainChain and where to look if it runs long", () => {
+      expect(at("2026-11-16T14:25:30Z")).toBe(
+        "no: application 70 has waited 25 minutes for BrainChain's decision (since 2026-11-16T14:00:00Z). It usually takes a few minutes; " +
+          "if it takes more than an hour, check https://brain.testnet.usebrainchain.com/health or write to hello@usebrainchain.com.",
+      );
+      expect(at("2026-11-16T17:10:00Z")).toBe(
+        "no: application 70 has waited 3 hours 10 minutes for BrainChain's decision (since 2026-11-16T14:00:00Z), longer than the few minutes it usually takes. " +
+          "Check https://brain.testnet.usebrainchain.com/health, and if the service answers, write to hello@usebrainchain.com with the application's number.",
+      );
+    });
+
+    it("gives run a line that stays the same while nothing changes, since run logs each new one", () => {
+      const line = hireable(open, TESTNET, "run");
+      expect(line).toBe(
+        "no: application 70 has waited for BrainChain's decision since 2026-11-16T14:00:00Z. It usually takes a few minutes; " +
+          "if it takes more than an hour, check https://brain.testnet.usebrainchain.com/health or write to hello@usebrainchain.com.",
+      );
+      vi.setSystemTime(Date.now() + 600_000);
+      try {
+        expect(hireable(open, TESTNET, "run")).toBe(line);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("does not promise a time already past while the change waits to run", () => {
     vi.setSystemTime(new Date("2026-11-04T12:00:00Z"));
     try {
@@ -173,6 +211,18 @@ describe("hireable", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("lasted", () => {
+  it("gives a length of time in its largest two units", () => {
+    expect(lasted(0n)).toBe("less than a minute");
+    expect(lasted(59n)).toBe("less than a minute");
+    expect(lasted(60n)).toBe("1 minute");
+    expect(lasted(25n * 60n + 30n)).toBe("25 minutes");
+    expect(lasted(3_900n)).toBe("1 hour 5 minutes");
+    expect(lasted(2n * 86_400n + 3n * 3_600n + 120n)).toBe("2 days 3 hours");
+    expect(lasted(2n * 86_400n + 120n)).toBe("2 days");
   });
 });
 

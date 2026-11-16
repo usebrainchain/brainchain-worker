@@ -563,8 +563,8 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     /** An open proposal to allow this worker, from any wallet, or 0n. */
     openApplication: () => openProposalOf(client, network, taskBoard, applicationData(account.address)),
     /**
-     * This worker's applications, newest last, with their state and the
-     * decision that settled each, and the last change any of them queued.
+     * This worker's applications, newest last, with their state, when each was
+     * filed and the decision that settled it, and the last change any of them queued.
      * Everything is read at one block, so a bond settled just after its change
      * was queued is never seen without the change.
      */
@@ -601,11 +601,10 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       };
       const decided = new Map(settled.map((log) => [log.args.id!, log.args.decisionId!]));
       const applications = await Promise.all(
-        proposed.map(async (log) => ({
-          id: log.args.id!,
-          state: (await client.readContract({ address: bonds, abi: bondsAbi, functionName: "get", args: [log.args.id!], blockNumber })).state,
-          decisionId: decided.get(log.args.id!),
-        })),
+        proposed.map(async (log) => {
+          const { state, createdAt } = await client.readContract({ address: bonds, abi: bondsAbi, functionName: "get", args: [log.args.id!], blockNumber });
+          return { id: log.args.id!, state, createdAt, decisionId: decided.get(log.args.id!) };
+        }),
       );
       return { applications, change };
     },

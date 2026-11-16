@@ -71,6 +71,42 @@ export function aboutEth(wei: bigint): string {
   return formatEther(((wei + unit - 1n) / unit) * unit);
 }
 
+/** Where a worker writes when something on BrainChain's side looks stuck. */
+const CONTACT = "hello@usebrainchain.com";
+/** BrainChain usually decides an application within minutes; one waiting longer than this is worth asking about. */
+const DECIDES_WITHIN_SEC = 3_600n;
+
+/** A length of time in its largest two units, such as 25 minutes, 1 hour 5 minutes or 2 days 3 hours. */
+export function lasted(seconds: bigint): string {
+  const counts = [
+    [seconds / 86_400n, "day"],
+    [(seconds % 86_400n) / 3_600n, "hour"],
+    [(seconds % 3_600n) / 60n, "minute"],
+  ] as const;
+  const first = counts.findIndex(([count]) => count > 0n);
+  if (first < 0) return "less than a minute";
+  return counts
+    .slice(first, first + 2)
+    .filter(([count]) => count > 0n)
+    .map(([count, name]) => `${count} ${name}${count === 1n ? "" : "s"}`)
+    .join(" ");
+}
+
+/**
+ * Where an open application stands. `status` says how long it has waited; `run`
+ * names when it was filed, so the line it checks again every few minutes only
+ * changes when the application does.
+ */
+function waiting(application: { id: bigint; createdAt: bigint }, network: Network, from: "run" | "status"): string {
+  const health = `${network.service}/health`;
+  const usual = `It usually takes a few minutes; if it takes more than an hour, check ${health} or write to ${CONTACT}.`;
+  if (from === "run") return `no: application ${application.id} has waited for BrainChain's decision since ${when(application.createdAt)}. ${usual}`;
+  const waited = BigInt(Math.floor(Date.now() / 1000)) - application.createdAt;
+  const head = `no: application ${application.id} has waited ${lasted(waited > 0n ? waited : 0n)} for BrainChain's decision (since ${when(application.createdAt)})`;
+  if (waited <= DECIDES_WITHIN_SEC) return `${head}. ${usual}`;
+  return `${head}, longer than the few minutes it usually takes. Check ${health}, and if the service answers, write to ${CONTACT} with the application's number.`;
+}
+
 /** Why the worker can or cannot be hired right now, in one line for `run` or for `status`, which shows the rest itself. */
 export function hireable({ allowed, w, min, applications, change, pending }: Snapshot, network: Network, from: "run" | "status"): string {
   if (allowed) {
@@ -85,7 +121,7 @@ export function hireable({ allowed, w, min, applications, change, pending }: Sna
   }
   const last = applications.at(-1);
   if (last === undefined) return `no: run ${cli("join")} to apply`;
-  if (last.state === ApplicationState.Open) return `no: application ${last.id} is waiting for Jev`;
+  if (last.state === ApplicationState.Open) return waiting(last, network, from);
   if (last.state === ApplicationState.Burned) return `no: Jev did not allow application ${last.id}, and its bond was burned. Run ${cli("join")} to apply again.`;
   if (change?.vetoed) {
     // A vetoed call can never be queued again, so the veto still stands for applications filed after it.
