@@ -282,7 +282,6 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
           // Its own group would outlive the worker otherwise, still working on a task the next run takes up again.
           if (running.size === 0) process.on("exit", kill);
           running.set(pid, child);
-          started?.(pid);
         }
         const chunks: Buffer[] = [];
         let size = 0;
@@ -342,6 +341,13 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
         // A command that does not read stdin closes it early; that is not an error.
         child.stdin.on("error", () => undefined);
         child.stdin.end(input);
+        if (pid === undefined) return;
+        // Last, with the timer and handlers in place, so a group that cannot be recorded is stopped rather than left running unseen.
+        try {
+          started?.(pid);
+        } catch (error) {
+          stop(`The command's process group could not be recorded, so it was stopped: ${reason(error)}`);
+        }
       });
     },
     kill,

@@ -637,6 +637,18 @@ describe("shellCommand", () => {
     expect(readFileSync(beat).byteLength).toBe(size);
   });
 
+  it("stops a command whose process group cannot be recorded, and does not leave it running", async () => {
+    let group: number | undefined;
+    const started = Date.now();
+    const run = shellCommand("sleep 30", 300).run("", {}, 60_000, (pgid) => {
+      group = pgid;
+      throw new Error("ENOSPC: no space left on device");
+    });
+    await expect(run).rejects.toThrow("The command's process group could not be recorded, so it was stopped: ENOSPC: no space left on device");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(() => process.kill(-group!, 0)).toThrow();
+  });
+
   it("kills a running command at once", async () => {
     const command = shellCommand("sleep 30");
     const running = command.run("", {}, 60_000);
