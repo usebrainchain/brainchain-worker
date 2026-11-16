@@ -169,8 +169,9 @@ export interface SolanaFunding {
   owner: string;
 }
 
-export function createSolanaFunding(keypair: Keypair, parentChainId: number, rpc = SOLANA_RPC): SolanaFunding {
-  const connection = new Connection(rpc, "confirmed");
+export function createSolanaFunding(keypair: Keypair, parentChainId: number, rpc = SOLANA_RPC, requestMs = 30_000): SolanaFunding {
+  // The client sets no limit of its own, so an RPC that stops answering would hold the command forever.
+  const connection = new Connection(rpc, { commitment: "confirmed", fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(requestMs) }) });
   const owner = keypair.publicKey.toBase58();
   return {
     owner,

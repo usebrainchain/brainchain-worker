@@ -176,6 +176,17 @@ describe("preview", () => {
     vi.stubGlobal("fetch", answering(96, deposit(50_000_000n)));
     await expect(funding.preview(STAKE, 100_000_000n, WORKER)).rejects.toThrow("Relay's quote was refused before signing: it deposits 50 USDC, not the 100 asked for. Nothing was sent.");
   });
+
+  it("gives up on a Solana RPC that stops answering", async () => {
+    const silent = vi.fn((_input: unknown, init?: RequestInit) => new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason))));
+    vi.stubGlobal("fetch", silent);
+    try {
+      await expect(createSolanaFunding(SIGNER, 4663, "https://solana.example", 50).solBalance()).rejects.toThrow("TimeoutError: The operation was aborted due to timeout");
+      expect(silent).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("split", () => {
