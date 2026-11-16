@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,7 +12,7 @@ import { TESTNET } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { processGroup, startTime } from "./proc.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
-import { childEnv, createWork, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
+import { childEnv, createWork, execProblems, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, rehearse, SAMPLE_BRIEF, scriptOf, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
 
 vi.mock("./proc.js", async (original) => {
   const proc = await original<typeof import("./proc.js")>();
@@ -26,6 +26,16 @@ const task = hiredTask(7n);
 const KEY = `0x${"4f".repeat(32)}`;
 const TX: Hex = `0x${"fe".repeat(32)}`;
 const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
+const NO_RESULT: Hex = `0x${"0".repeat(64)}`;
+
+const badStatus = () =>
+  submitFailure(
+    new ContractFunctionExecutionError(new ContractFunctionRevertedError({ abi: taskBoardAbi, data: encodeErrorResult({ abi: taskBoardAbi, errorName: "BadStatus" }), functionName: "submit" }), {
+      abi: taskBoardAbi,
+      functionName: "submit",
+      args: [7n, task.briefHash, "uri"],
+    }),
+  );
 
 function setup(
   output: (at: (t: bigint) => void) => Promise<string>,
@@ -34,17 +44,20 @@ function setup(
   let now = 1_000n;
   const at = (t: bigint) => void (now = t);
   let hired = options.tasks ?? [task];
+  const results = new Map<bigint, Hex>();
   const chain = {
     now: vi.fn(async () => now),
     hired: vi.fn(async () => hired),
     ethBalance: vi.fn(async () => 10n ** 15n),
     publish: vi.fn(async (id: bigint, text: string) => ({ uri: `https://brain.example/records/${id}.txt`, hash: keccak256(toBytes(text)) })),
-    submit: vi.fn(async (id: bigint, _hash: Hex, _uri: string, sent: (tx: Hex) => void): Promise<Hex> => {
+    submit: vi.fn(async (id: bigint, hash: Hex, _uri: string, sent: (tx: Hex) => void): Promise<Hex> => {
       sent("0xabc");
+      results.set(id, hash);
       hired = hired.filter((t) => t.id !== id);
       return "0xabc";
     }),
     landed: vi.fn(async (_tx: Hex, _waitMs: number): Promise<boolean | undefined> => true),
+    resultHash: vi.fn(async (id: bigint): Promise<Hex> => results.get(id) ?? NO_RESULT),
   } satisfies WorkerChain;
   const command = {
     run: vi.fn(async (_input: string, _env: Record<string, string>, _timeoutMs: number, _started?: (pgid: number) => void) => output(at)),
@@ -342,10 +355,59 @@ describe("work", () => {
 
     // The submit landed, so the task no longer waits on this worker.
     const second = setup(async () => "different work", { store: fileStore(file, BOARD), tasks: [] });
+    second.chain.resultHash.mockResolvedValue(keccak256(toBytes("paid work")));
     expect(await second.work.round()).toEqual({ hired: 0, delivered: 1, failed: 0 });
-    expect(second.chain.landed).toHaveBeenCalledWith(TX, 5_000);
-    expect(lastLog(second.log)).toBe(`task 7: delivered (9 bytes, ${TX}). Jev grades it next.`);
+    expect(second.chain.resultHash).toHaveBeenCalledWith(7n);
+    expect(lastLog(second.log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
     expect(second.command.run).not.toHaveBeenCalled();
+  });
+
+  it("counts a result as delivered once the board holds it, though the send timed out before its hash was saved", async () => {
+    const delivered = vi.fn();
+    const { chain, log, work, at } = setup(async () => "paid work", { delivered });
+    chain.submit.mockRejectedValueOnce(new Error("The request took too long to respond."));
+    expect(await work.round()).toMatchObject({ delivered: 0, failed: 1 });
+    // The node had taken the send, so the task moved on with this worker's result.
+    chain.hired.mockResolvedValue([]);
+    chain.resultHash.mockResolvedValue(keccak256(toBytes("paid work")));
+    at(1_100n);
+    expect(await work.round()).toEqual({ hired: 0, delivered: 1, failed: 0 });
+    expect(lastLog(log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
+    expect(delivered).toHaveBeenCalledWith(7n);
+    expect(chain.submit).toHaveBeenCalledOnce();
+  });
+
+  it("does not count a task that moved on without its result as delivered", async () => {
+    const { chain, work, at } = setup(async () => "paid work");
+    chain.submit.mockRejectedValueOnce(new Error("nonce too low"));
+    await work.round();
+    chain.hired.mockResolvedValue([]);
+    at(1_100n);
+    expect(await work.round()).toEqual({ hired: 0, delivered: 0, failed: 0 });
+    expect(chain.resultHash).toHaveBeenCalledWith(7n);
+  });
+
+  it("counts a resend the board refused as delivered when an earlier submit of the result landed, and as failed when none did", async () => {
+    const { chain, log, work, at } = setup(async () => "paid work");
+    chain.submit.mockImplementationOnce(async (_id, _hash, _uri, sent) => {
+      sent(TX);
+      throw new Error(`Timed out while waiting for transaction with hash ${TX} to be confirmed`);
+    });
+    chain.landed.mockResolvedValueOnce(undefined);
+    await work.round();
+    // The first submit lands while the resend is on its way, so the board refuses the resend.
+    chain.submit.mockImplementationOnce(async () => {
+      chain.resultHash.mockResolvedValue(keccak256(toBytes("paid work")));
+      throw badStatus();
+    });
+    at(1_100n);
+    expect(await work.round()).toEqual({ hired: 1, delivered: 1, failed: 0 });
+    expect(lastLog(log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
+
+    const refused = setup(async () => "paid work");
+    refused.chain.submit.mockRejectedValueOnce(badStatus());
+    expect(await refused.work.round()).toEqual({ hired: 1, delivered: 0, failed: 1 });
+    expect(lastLog(refused.log)).toBe("task 7: failed (The task no longer waits for a result); no retry can fix that, so it is not tried again");
   });
 
   it("reuses an upload saved by an earlier process instead of running the command again", async () => {
@@ -373,7 +435,7 @@ describe("work", () => {
   });
 
   it("logs poster text without characters that hide or turn text around", async () => {
-    // A title built like the report's application name: an override that reverses "public" and zero-width spaces around "Jev".
+    // Built like an application name seen on testnet: an override that reverses "public" and zero-width spaces around "Jev".
     const title = "Claude official \u202ecilbup\u202c \u200bJev\u200b";
     const text = JSON.stringify({ title, brief: "b", levels: ["a"], passIndex: 0 });
     const { log, work } = setup(async () => "ok", { tasks: [{ ...task, briefURI: dataURI(text), briefHash: keccak256(toBytes(text)) }] });
@@ -494,15 +556,85 @@ describe("checking --exec at start", () => {
   it("names a plain program and leaves anything the shell must interpret", () => {
     expect(firstProgram(`claude -p --tools ""`)).toBe("claude");
     expect(firstProgram("./engine.sh")).toBe("./engine.sh");
-    expect(firstProgram("FOO=1 claude -p")).toBeUndefined();
     expect(firstProgram("$HOME/bin/engine")).toBeUndefined();
     expect(firstProgram("   ")).toBeUndefined();
+  });
+
+  it("looks past the variables a command sets in front of it", () => {
+    expect(firstProgram("FOO=1 claude -p")).toBe("claude");
+    expect(firstProgram("OPENROUTER_MODEL=deepseek/v4 LOG= ./engine.sh")).toBe("./engine.sh");
+    expect(firstProgram('FOO="a b" claude')).toBeUndefined();
+    expect(firstProgram("FOO=1")).toBeUndefined();
+  });
+
+  it("names the script an interpreter is plainly given, and nothing a flag or a subcommand could be", () => {
+    expect(scriptOf("python agent.py")).toBe("agent.py");
+    expect(scriptOf("node examples/openrouter.mjs")).toBe("examples/openrouter.mjs");
+    expect(scriptOf("FOO=1 /usr/bin/python3 ~/agent.py --fast")).toBe("~/agent.py");
+    expect(scriptOf("sh examples/openclaw/brainchain-worker/scripts/engine.sh")).toBe("examples/openclaw/brainchain-worker/scripts/engine.sh");
+    for (const command of ["python -m http.server", "node --env-file=.env app.js", "deno run main.ts", "ollama run llama3.3", `claude -p --tools ""`, "node", "python $SCRIPT"]) {
+      expect(scriptOf(command), command).toBeUndefined();
+    }
+  });
+
+  it("says when a program or a script it names is not there, or the program cannot run", () => {
+    const folder = mkdtempSync(join(tmpdir(), "brainchain-worker-exec-"));
+    writeFileSync(join(folder, "agent.py"), "print(1)\n");
+    writeFileSync(join(folder, "engine.sh"), "echo hi\n", { mode: 0o644 });
+    expect(execProblems("python3 agent.py", folder)).toEqual([]);
+    expect(execProblems("FOO=1 node examples/openrouter.mjs", folder)).toEqual([`examples/openrouter.mjs does not exist (looked for ${join(folder, "examples/openrouter.mjs")})`]);
+    expect(execProblems("FOO=1 definitely-not-a-command-xyz --flag", folder)).toEqual(["the shell cannot find definitely-not-a-command-xyz"]);
+    expect(execProblems("./missing.sh", folder)).toEqual([`./missing.sh does not exist (looked for ${join(folder, "missing.sh")})`]);
+    if (process.platform !== "win32") expect(execProblems("./engine.sh", folder)).toEqual(["./engine.sh is not executable; run chmod +x on it, or start it with its interpreter"]);
+    expect(execProblems("cat", folder)).toEqual([]);
+    expect(execProblems("$TOOL --x", folder)).toEqual([]);
   });
 
   it("finds what the shell finds, builtins included", () => {
     expect(programFound("sh")).toBe(true);
     expect(programFound("cat")).toBe(true);
     expect(programFound("definitely-not-a-command-xyz")).toBe(false);
+  });
+});
+
+describe("rehearse", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const tried = async (exec: string, options: { format?: "prompt" | "json"; timeoutMs?: number; secrets?: string[] } = {}) => {
+    const lines: string[] = [];
+    const ok = await rehearse(shellCommand(exec, 200), { format: options.format ?? "prompt", timeoutMs: options.timeoutMs ?? 10_000, secrets: options.secrets ?? [KEY, KEY.slice(2)], log: (line) => lines.push(line) });
+    return { ok, lines };
+  };
+
+  it("gives the command the sample task on stdin, as a hired one gets its prompt, and prints what would be delivered", async () => {
+    const { ok, lines } = await tried("grep -c 'Summarise a paragraph' && printf '\\033[1mbold\\033[0m\\n\\n'");
+    expect(ok).toBe(true);
+    expect(lines[0]).toBe(`Trying the command on a sample task, ${loggedTitle(SAMPLE_BRIEF.title)}, with the prompt on stdin and 10 seconds to finish. Nothing is delivered or sent.`);
+    expect(lines[1]).toBe("Would deliver these 6 bytes, which pass every check a result must:\n1\nbold");
+  });
+
+  it("gives the task as JSON with --format json, with the id the command sees in BRAINCHAIN_TASK_ID", async () => {
+    const { ok, lines } = await tried(`node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{const t=JSON.parse(s);console.log(t.task,process.env.BRAINCHAIN_TASK_ID,t.passLevel)})'`, { format: "json", timeoutMs: 120_000 });
+    expect(ok).toBe(true);
+    expect(lines[0]).toContain("with the task as JSON on stdin and 2 minutes to finish");
+    expect(lines[1]!.split("\n")[1]).toBe(`0 0 ${SAMPLE_BRIEF.levels[SAMPLE_BRIEF.passIndex]}`);
+  });
+
+  it("names the check that failed, and delivers nothing", async () => {
+    expect((await tried("cat >/dev/null; exit 3")).lines[1]).toBe("Would not deliver: The command exited with code 3. A hired task would be tried again a minute later.");
+    expect((await tried("cat >/dev/null")).lines[1]).toBe("Would not deliver: The command printed nothing. A hired task would be tried again a minute later.");
+    expect((await tried("definitely-not-a-command-xyz")).lines[1]).toContain("Would not deliver: The command exited with code 127: the shell could not find it.");
+    expect((await tried("sleep 5", { timeoutMs: 300 })).lines[1]).toContain("Would not deliver: The command ran past 0 seconds and was stopped.");
+    const leak = await tried(`echo ${KEY.slice(2).toUpperCase()}`);
+    expect(leak.ok).toBe(false);
+    expect(leak.lines[1]).toBe("Would not deliver: The result contains the worker's private key, so it was not uploaded. Check what the command can read. A hired task would be left there, since no retry can fix that.");
+    expect(leak.lines.join("\n")).not.toContain(KEY.slice(2).toUpperCase());
+  });
+
+  it("runs the command without the worker's variables, as a hired task does", async () => {
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY", KEY);
+    vi.stubEnv("BRAINCHAIN_NETWORK", "testnet");
+    const { lines } = await tried("env | grep ^BRAINCHAIN_ | sort");
+    expect(lines[1]).toBe("Would deliver these 20 bytes, which pass every check a result must:\nBRAINCHAIN_TASK_ID=0");
   });
 });
 
@@ -573,6 +705,18 @@ describe("shellCommand", () => {
     expect(size).toBeGreaterThan(0);
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(readFileSync(beat).byteLength).toBe(size);
+  });
+
+  it("stops a command whose process group cannot be recorded, and does not leave it running", async () => {
+    let group: number | undefined;
+    const started = Date.now();
+    const run = shellCommand("sleep 30", 300).run("", {}, 60_000, (pgid) => {
+      group = pgid;
+      throw new Error("ENOSPC: no space left on device");
+    });
+    await expect(run).rejects.toThrow("The command's process group could not be recorded, so it was stopped: ENOSPC: no space left on device");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(() => process.kill(-group!, 0)).toThrow();
   });
 
   it("kills a running command at once", async () => {

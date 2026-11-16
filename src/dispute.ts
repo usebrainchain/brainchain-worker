@@ -2,6 +2,7 @@ import { createPublicClient, createWalletClient, encodeFunctionData, formatUnits
 
 import { erc20Errors, transferErrors } from "./abi.js";
 import { appealAbi, brainchainTransport, erc20Abi, explainRevert, faucetReopens, reason, RECEIPT_MS, Status } from "./chain.js";
+import { cli } from "./invoked.js";
 import { chainOf, type Network } from "./network.js";
 import { ethNeeded, GAS, shortOfGas } from "./standing.js";
 
@@ -129,7 +130,6 @@ export function createDisputeChain(network: Network, account: PrivateKeyAccount)
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const at = (seconds: bigint) => new Date(Number(seconds) * 1000).toISOString().replace(/\.000Z$/, "Z");
 
-/** Disputes a grade on a task the worker delivered, within the dispute window. */
 export async function dispute(network: Network, chain: DisputeChain, id: bigint, log: (line: string) => void): Promise<void> {
   const [task, now] = await Promise.all([chain.task(id), chain.now()]);
   if (task.status === 0) throw new Error(`There is no task ${id} on ${network.name}.`);
@@ -170,7 +170,7 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
   const holds = `The appeal bond is ${amount}, and this wallet holds ${formatUnits(balance, 6)}.`;
   // Test USDG comes from its faucet, as tBRAIN does for join; only mainnet's USDG is bridged in.
   const claims = balance < bond && network.bountyFaucet === true;
-  if (balance < bond && !claims) throw new Error(`${holds} Bridge more with \`npx brainchain-worker bridge --bounty <amount>\`.`);
+  if (balance < bond && !claims) throw new Error(`${holds} Bridge more with ${cli("bridge --bounty <amount>")}.`);
   const closed = (opensAt: bigint) =>
     new Error(
       `${holds} The ${network.bountySymbol} faucet allows one claim a day, and this wallet can claim again at ${at(opensAt)}` +

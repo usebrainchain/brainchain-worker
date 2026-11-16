@@ -7,7 +7,9 @@ import bs58 from "bs58";
 import { parseEther, type Address } from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { NATIVE, SOLANA_USDC, type RelayQuote, type SvmItem } from "./relay.js";
+import { DepositSent } from "./bridge.js";
+import { cli } from "./invoked.js";
+import { NATIVE, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, type RelayQuote, type SvmItem } from "./relay.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM,
   createSolanaFunding,
@@ -103,7 +105,7 @@ describe("depositProblem", () => {
     expect(depositProblem(quote(amount, STAKE.toLowerCase(), 1n), want(amount, STAKE))).toBeUndefined();
   });
 
-  it("refuses the auditor's stand-in: a plain token transfer out of the wallet", () => {
+  it("refuses a quote whose instruction is a plain token transfer out of the wallet", () => {
     const le = Buffer.alloc(8);
     le.writeBigUInt64LE(50_000_000n);
     const evil: SvmItem = {
@@ -174,6 +176,17 @@ describe("preview", () => {
     await expect(funding.preview(NATIVE, 100_000_000n, WORKER)).rejects.toThrow("more than the 3.00 this command accepts (3%, or 0.50 USD on a small move). Nothing was sent");
     vi.stubGlobal("fetch", answering(96, deposit(50_000_000n)));
     await expect(funding.preview(STAKE, 100_000_000n, WORKER)).rejects.toThrow("Relay's quote was refused before signing: it deposits 50 USDC, not the 100 asked for. Nothing was sent.");
+  });
+
+  it("gives up on a Solana RPC that stops answering", async () => {
+    const silent = vi.fn((_input: unknown, init?: RequestInit) => new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason))));
+    vi.stubGlobal("fetch", silent);
+    try {
+      await expect(createSolanaFunding(SIGNER, 4663, "https://solana.example", 50).solBalance()).rejects.toThrow("TimeoutError: The operation was aborted due to timeout");
+      expect(silent).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -270,7 +283,7 @@ describe("fund", () => {
   it("stops and says what the wallet holds when the increase cannot be established", async () => {
     const r = rig({ eth: parseEther("1"), stake: parseEther("500000"), landsEth: 0n, landsStake: 0n });
     await expect(r.run()).rejects.toThrow(
-      `Relay reports the move settled, but the wallet on Robinhood Chain shows no increase, so what this run brought cannot be told from what it held. It holds 1 ETH and 500000 of the stake token, and held 1 ETH and 500000 before. Nothing was bridged. This run already brought 0.0006 ETH and 55000 of the stake token to ${WORKER} on Robinhood Chain; \`brainchain-worker bridge\` moves that on to BrainChain, and running fund again moves more USDC.`,
+      `Relay reports the move settled, but the wallet on Robinhood Chain shows no increase, so what this run brought cannot be told from what it held. It holds 1 ETH and 500000 of the stake token, and held 1 ETH and 500000 before. Nothing was bridged. This run already brought 0.0006 ETH and 55000 of the stake token to ${WORKER} on Robinhood Chain; ${cli("bridge")} moves that on to BrainChain, and running fund again moves more USDC.`,
     );
     expect(r.bridged).toEqual([]);
   });
@@ -298,8 +311,34 @@ describe("fund", () => {
     vi.mocked(poor.funding.usdcBalance).mockResolvedValue(3_000_000n);
     await poor.run({ stake: false, dry: true });
     expect(poor.log[0]).toContain("2 USDC to ETH for gas");
+  });
+
+  it("quotes for a wallet that is not funded yet, then names what it lacks: only the gas amount without --stake", async () => {
+    const poor = rig();
     vi.mocked(poor.funding.usdcBalance).mockResolvedValue(1_000_000n);
-    await expect(poor.run({ stake: false, dry: true })).rejects.toThrow("holds 1 USDC, less than 2");
+    await expect(poor.run({ usdc: "5", stake: false, dry: true })).rejects.toThrow(
+      `The Solana wallet ${OWNER} holds 1 USDC. Without --stake this run spends only the 2 USDC it turns into ETH for gas, and the wallet holds less than that.\nDry run, nothing sent.`,
+    );
+    expect(poor.log).toEqual([`From ${OWNER} on Solana: 2 USDC to ETH for gas, for ${WORKER}. The other 3 USDC stays on Solana.`, "Relay quotes 0.0006 ETH."]);
+
+    const empty = rig();
+    vi.mocked(empty.funding.usdcBalance).mockResolvedValue(0n);
+    vi.mocked(empty.funding.solBalance).mockResolvedValue(0n);
+    await expect(empty.run({ usdc: "120", dry: true })).rejects.toThrow(
+      `The Solana wallet ${OWNER} holds 0 USDC of the 120 USDC this run spends: 2 USDC for gas and 118 USDC for the stake token.\n` +
+        `The Solana wallet ${OWNER} needs about 0.002 SOL for Solana's fees; it holds 0.\nDry run, nothing sent.`,
+    );
+    expect(empty.log.at(-1)).toBe("Relay quotes 0.0006 ETH and 55000 of the stake token.");
+    expect(empty.funding.send).not.toHaveBeenCalled();
+  });
+
+  it("refuses a short wallet without --dry before anything is signed, and names the shortfall beside a refused quote", async () => {
+    const poor = rig();
+    vi.mocked(poor.funding.usdcBalance).mockResolvedValue(0n);
+    await expect(poor.run({ stake: false })).rejects.toThrow(/and the wallet holds less than that\. Nothing was sent\.$/);
+    expect(poor.funding.send).not.toHaveBeenCalled();
+    vi.mocked(poor.funding.preview).mockRejectedValue(new Error("Relay has no route for this move right now"));
+    await expect(poor.run({ stake: false, dry: true })).rejects.toThrow(`Relay has no route for this move right now\nThe Solana wallet ${OWNER} holds 0 USDC.`);
   });
 
   it("signs the quotes it priced, each once, with no second quote to refuse after the first leg moved", async () => {
@@ -313,7 +352,7 @@ describe("fund", () => {
     const second = rig();
     vi.mocked(second.funding.send).mockImplementationOnce(async () => "sig-gas").mockRejectedValueOnce(new Error("Solana refused the deposit, so its USDC did not move: blockhash"));
     const failure = await second.run().catch((error: Error) => error.message);
-    expect(failure).toBe(`Solana refused the deposit, so its USDC did not move: blockhash. This run already brought 0.0006 ETH to ${WORKER} on Robinhood Chain; \`brainchain-worker bridge\` moves that on to BrainChain, and running fund again moves more USDC.`);
+    expect(failure).toBe(`Solana refused the deposit, so its USDC did not move: blockhash. This run already brought 0.0006 ETH to ${WORKER} on Robinhood Chain; ${cli("bridge")} moves that on to BrainChain, and running fund again moves more USDC.`);
     expect(second.bridged).toEqual([]);
 
     const bridge = rig();
@@ -322,6 +361,18 @@ describe("fund", () => {
     const first = rig();
     vi.mocked(first.funding.send).mockRejectedValueOnce(new Error("Relay reports a refund"));
     await expect(first.run()).rejects.toThrow(/^Relay reports a refund$/);
+  });
+
+  it("leaves a deposit that was sent out of what it says to bridge, since it can still land", async () => {
+    const sent = (asset: string) => new DepositSent(`The deposit was sent on Robinhood Chain (0x${asset}) and could not be confirmed (timed out). It can still land, so check it before running bridge again: another run sends another deposit.`);
+    const stake = rig();
+    const failure = await stake.run({ bridgeOn: async (asset) => Promise.reject(sent(asset)) }).catch((error: Error) => error.message);
+    expect(failure).toBe(
+      `The deposit was sent on Robinhood Chain (0xstake) and could not be confirmed (timed out). It can still land, so check it before running bridge again: another run sends another deposit. This run already brought 0.0006 ETH to ${WORKER} on Robinhood Chain; ${cli("bridge")} moves that on to BrainChain, and running fund again moves more USDC.`,
+    );
+
+    const eth = rig();
+    await expect(eth.run({ stake: false, bridgeOn: async (asset) => Promise.reject(sent(asset)) })).rejects.toThrow(/^The deposit was sent on Robinhood Chain \(0xeth\).* another run sends another deposit\.$/);
   });
 
   it("keeps the stake's bridge out of what it names once it has gone", async () => {
@@ -342,7 +393,7 @@ describe("unsettled", () => {
     expect(unsettled("refund", "0xreq", "sig", OWNER)).toBe(`Relay reports a refund for request 0xreq: the USDC of Solana transaction sig goes back to ${OWNER}. Check the wallet before running fund again.`);
     for (const status of ["failure", "pending"] as const) {
       const line = unsettled(status, "0xreq", "sig", OWNER)!;
-      expect(line).toBe(`Relay has not settled request 0xreq (it reports "${status}"). The USDC left the wallet in Solana transaction sig. Check https://api.relay.link/intents/status/v2?requestId=0xreq before running fund again: another run moves USDC again.`);
+      expect(line).toBe(`Relay has not settled request 0xreq (it reports "${status}"). The USDC left the wallet in Solana transaction sig. Check https://api.relay.link/intents/status/v2?requestId=0xreq before running fund again: another run moves more USDC.`);
       expect(line).not.toContain("refund");
       expect(line).not.toContain("Nothing was sent");
     }
@@ -377,17 +428,25 @@ describe("sendSvmStep", () => {
   it("says to check before another run when it cannot tell", async () => {
     const lost = connection({ confirmTransaction: vi.fn(async () => Promise.reject(new Error("socket hang up"))) });
     const failure = await sendSvmStep(lost, SIGNER, deposit(1n)).catch((error: Error) => error.message);
-    expect(failure).toMatch(/^the Solana transaction \w+ could not be confirmed \(socket hang up\)\. Check it before running fund again: if it landed, its USDC left the wallet, and another run moves USDC again\.$/);
+    expect(failure).toMatch(/^the Solana transaction \w+ could not be confirmed \(socket hang up\)\. Check it before running fund again: if it landed, its USDC left the wallet, and another run moves more USDC\.$/);
     expect(failure).not.toContain("did not move");
     const timeout = connection({ sendTransaction: vi.fn(async () => Promise.reject(new Error("fetch failed"))) });
     await expect(sendSvmStep(timeout, SIGNER, deposit(1n))).rejects.toThrow("could not be confirmed (fetch failed)");
   });
 });
 
+describe("relayQuote", () => {
+  it("passes on Relay's reason for having no route as one plain line", async () => {
+    const answer = (async () => new Response(JSON.stringify({ message: "\x1b[2JAmount too low\r\nfor this route" }), { status: 400 })) as typeof fetch;
+    const request = { user: OWNER, recipient: WORKER, originChainId: SOLANA_CHAIN_ID, destinationChainId: 4663, originCurrency: SOLANA_USDC, destinationCurrency: NATIVE, amount: 1n };
+    await expect(relayQuote(request, answer)).rejects.toThrow(/^Relay has no route for this move right now: Amount too low for this route$/);
+  });
+});
+
 describe("solanaKeypair", () => {
-  const file = (text: string) => {
+  const file = (text: string, mode = 0o600) => {
     const path = join(mkdtempSync(join(tmpdir(), "brainchain-solana-")), "id.json");
-    writeFileSync(path, text);
+    writeFileSync(path, text, { mode });
     return path;
   };
 
@@ -407,5 +466,15 @@ describe("solanaKeypair", () => {
     const path = file(JSON.stringify([...SIGNER.secretKey]));
     expect(() => solanaKeypair({ BRAINCHAIN_SOLANA_KEY: "x", BRAINCHAIN_SOLANA_KEY_FILE: path })).toThrow("not both");
     expect(() => solanaKeypair({ BRAINCHAIN_SOLANA_KEY_FILE: `${path}.absent` })).toThrow(`names ${path}.absent, which could not be read (ENOENT)`);
+  });
+
+  it("warns about a keypair file other users can read, as for the worker's key", () => {
+    const warn = vi.fn();
+    const open = file(JSON.stringify([...SIGNER.secretKey]), 0o644);
+    expect(solanaKeypair({ BRAINCHAIN_SOLANA_KEY_FILE: open }, warn).publicKey.toBase58()).toBe(OWNER);
+    expect(warn).toHaveBeenCalledWith(`warning: other users can read ${open}; run chmod 600 on it`);
+    warn.mockClear();
+    solanaKeypair({ BRAINCHAIN_SOLANA_KEY_FILE: file(JSON.stringify([...SIGNER.secretKey])) }, warn);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

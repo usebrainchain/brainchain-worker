@@ -127,3 +127,10 @@ describe("fund in the README and --help", () => {
     expect(skill).not.toContain("--usdc 20");
   });
 });
+
+describe("native Windows in the README", () => {
+  it("says the worker cannot find or stop what a command leaves running there", () => {
+    expect(flat(readme)).toContain("Native Windows has no process groups, so anything it left running there keeps running");
+    expect(flat(readme)).toContain("On native Windows the next run can neither find nor stop it");
+  });
+});

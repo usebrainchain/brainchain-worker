@@ -13,6 +13,7 @@ import {
 } from "viem";
 
 import { reason, RECEIPT_MS, REFUND_REASONS, type Settlement } from "./chain.js";
+import { cli } from "./invoked.js";
 import { proofsChainOf, proofsTransport, type Network } from "./network.js";
 import type { ProofTask, Store } from "./state.js";
 import { stake, usdg, when } from "./standing.js";
@@ -225,7 +226,7 @@ export async function mint(
   }
   if (rest) log(rest.trim());
   // The service scans in rounds and caches the list, so it still shows these tasks for a while.
-  log("`mint --dry` lists these tasks until the service has seen these mints, which can take minutes. A mint before then, here or by `run --mint`, pays for another piece.");
+  log(`${cli("mint --dry")} lists these tasks until the service has seen these mints, which can take minutes. A mint before then, here or by \`run --mint\`, pays for another piece.`);
 }
 
 /**
@@ -243,7 +244,7 @@ export function createSettlementWatch(options: {
   settlement: (task: bigint) => Promise<Settlement | undefined>;
   store: Store;
   log: (message: string) => void;
-  /** False under --no-mint. */
+  /** True only under run --mint; without it, --no-mint included, nothing is minted. */
   mints: boolean;
   fetcher?: typeof fetch;
   /** Wall-clock seconds. */
@@ -337,7 +338,6 @@ export function createSettlementWatch(options: {
   }
 
   return {
-    /** Watches a task the worker just delivered. */
     track(task: bigint): void {
       const now = clock();
       watched()[task.toString()] = { deliveredAt: now, nextAt: now + STATUS_SEC };
@@ -350,7 +350,7 @@ export function createSettlementWatch(options: {
       const paid: [string, ProofTask][] = [];
       for (const [key, entry] of due) if (entry.paidAt !== undefined || (await settle(key, entry))) paid.push([key, entry]);
       if (paid.length === 0) return;
-      // A run under --no-mint after one that minted leaves those tasks' Proofs to `mint`.
+      // A run without --mint after one with it leaves those tasks' Proofs to `mint`.
       if (!options.mints) {
         for (const [key] of paid) drop(key);
         return;

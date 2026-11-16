@@ -1,9 +1,12 @@
-import { encodeFunctionData, parseAbi, verifyMessage, type Address, type Hex } from "viem";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { encodeAbiParameters, encodeFunctionData, keccak256, parseAbi, verifyMessage, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
 import { TESTNET } from "./network.js";
-import { argumentsOf, FLOORS, createReporter, createWatch, fetchProof, judge, MAX_CHECKED, MAX_FINDINGS, outcome, REPORT_PREFIX, UNREADABLE_MS, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
+import { argumentsOf, FLOORS, createReporter, createWatch, createWatchChain, fetchProof, judge, MAX_CHECKED, MAX_FINDINGS, outcome, REPORT_PREFIX, UNREADABLE_MS, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
 
 const TX: Hex = `0x${"ab".repeat(32)}`;
 const BOARD: Address = TESTNET.contracts.taskBoard;
@@ -213,6 +216,46 @@ describe("watch", () => {
     expect(verify.mock.calls.map((c) => c[0])).toEqual([4n, 5n]);
     expect(lines.slice(1)).toEqual(["decision 4 verified", "decision 5 does not verify: record hash: does not match payloadHash"]);
   });
+
+  it("keeps its place from the first round, where it only notes where the log stands", async () => {
+    const { chain } = fakeChain({ decisions: [3n] });
+    const seen: bigint[] = [];
+    await createWatch({ network: TESTNET, chain, verify: async () => ({ findings: [] }), veto: false, log: () => {}, saw: (n) => seen.push(n) }).round();
+    expect(seen).toEqual([3n]);
+  });
+});
+
+describe("a veto sent through the gate", () => {
+  it("fails when its transaction reverted, so the change stays owed", async () => {
+    const watcher = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const { id, method, params } = JSON.parse(body) as { id: number; method: string; params: string[] };
+        const answers: Record<string, unknown> = {
+          eth_chainId: `0x${TESTNET.chainId.toString(16)}`,
+          eth_call: encodeAbiParameters([{ type: "address" }], [watcher.address]),
+          eth_getTransactionCount: "0x1",
+          eth_getBlockByNumber: { number: "0x900", hash: TX, parentHash: TX, timestamp: "0x1", baseFeePerGas: "0x1", transactions: [], logsBloom: null, nonce: null },
+          eth_maxPriorityFeePerGas: "0x0",
+          eth_estimateGas: "0x5208",
+          eth_sendRawTransaction: method === "eth_sendRawTransaction" ? keccak256(params[0] as Hex) : undefined,
+          eth_blockNumber: "0x901",
+          eth_getTransactionReceipt: { transactionHash: TX, blockHash: TX, blockNumber: "0x900", status: "0x0", logs: [], from: watcher.address, to: TESTNET.contracts.gate, gasUsed: "0x1", cumulativeGasUsed: "0x1", effectiveGasPrice: "0x1", transactionIndex: "0x0", type: "0x2", logsBloom: `0x${"0".repeat(512)}`, contractAddress: null },
+        };
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ jsonrpc: "2.0", id, result: answers[method] ?? null }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const chain = createWatchChain({ ...TESTNET, rpc: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }, watcher);
+      await expect(chain.veto!(2n, "Breaks the constitution: a protocol fee above 5%")).rejects.toThrow(/^the veto 0x[0-9a-f]{64} reverted$/);
+    } finally {
+      server.close();
+    }
+  });
 });
 
 describe("a one-shot run", () => {
@@ -236,6 +279,36 @@ describe("a one-shot run", () => {
     const verify = vi.fn(async () => ({ findings: [] }));
     await createWatch({ network: TESTNET, chain, verify, veto: false, log: () => {}, seenDecision: 34n, recent: 10n }).round();
     expect(verify.mock.calls.map((c) => (c as unknown as [bigint])[0])).toEqual([1n, 2n]);
+  });
+});
+
+describe("a run that picks up from a saved place", () => {
+  const closed = (id: bigint, block: bigint) => ({ ...change(id, encodeFunctionData({ abi, functionName: "setPaused", args: [true] })), block });
+
+  it("lists a closed change only when it was queued after the latest change an earlier run listed", async () => {
+    const queued = [closed(1n, 100n), closed(2n, 200n), closed(3n, 300n)];
+    const lines: string[] = [];
+    const saw: (bigint | undefined)[] = [];
+    const { chain } = fakeChain({ queued, open: false, decisions: [5n] });
+    await createWatch({ network: TESTNET, chain, verify: async () => ({ findings: [] }), veto: false, log: (l) => lines.push(l), seenDecision: 5n, seenBlock: 200n, recent: 10n, once: true, saw: (_, block) => saw.push(block) }).round();
+    expect(lines.filter((l) => l.startsWith("change"))).toEqual([`change 3: setPaused on ${BOARD}; closed, it has run or was vetoed`]);
+    expect(saw).toEqual([300n]);
+  });
+
+  it("still judges an open change every run, since a veto owed on it may not have landed", async () => {
+    const lines: string[] = [];
+    const { chain } = fakeChain({ queued: [closed(1n, 100n)], open: true, decisions: [5n] });
+    await createWatch({ network: TESTNET, chain, verify: async () => ({ findings: [] }), veto: false, log: (l) => lines.push(l), seenDecision: 5n, seenBlock: 200n, once: true }).round();
+    expect(lines[0]).toMatch(/^change 1: setPaused on .* pauses or resumes new posts, which no floor covers, runs after/);
+  });
+
+  it("says so in one line when no decision is new, on a single round only", async () => {
+    const once: string[] = [];
+    await createWatch({ network: TESTNET, chain: fakeChain({ decisions: [357n] }).chain, verify: async () => ({ findings: [] }), veto: false, log: (l) => once.push(l), seenDecision: 357n, recent: 10n, once: true }).round();
+    expect(once).toEqual(["No new decisions since 357."]);
+    const long: string[] = [];
+    await createWatch({ network: TESTNET, chain: fakeChain({ decisions: [357n] }).chain, verify: async () => ({ findings: [] }), veto: false, log: (l) => long.push(l), seenDecision: 357n }).round();
+    expect(long).toEqual([]);
   });
 });
 
@@ -462,6 +535,8 @@ describe("reporting rounds", () => {
     expect(await granted([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).toBe("reported to BrainChain testnet: 12 decisions re-verified in all, watchtower mark since 2026-11-02");
     const refused = createReporter(TESTNET, worker, (async () => new Response(JSON.stringify({ error: "The proof for decision 1 does not match its record." }), { status: 400 })) as typeof fetch);
     await expect(refused([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).rejects.toThrow("The proof for decision 1 does not match its record.");
+    const garbled = createReporter(TESTNET, worker, (async () => new Response(JSON.stringify({ error: "\x1b]0;owned\x07bad\nproof" }), { status: 400 })) as typeof fetch);
+    await expect(garbled([{ id: 1n, proof: fetchProof(record, worker.address) }], [])).rejects.toThrow(/^bad proof$/);
   });
 
   it("sends a long round in several reports, each signed later than the last, so no decision is passed unreported", async () => {

@@ -9,8 +9,10 @@ import bs58 from "bs58";
 import { AddressLookupTableAccount, Connection, Keypair, PublicKey, SendTransactionError, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { formatEther, formatUnits, parseUnits, type Address } from "viem";
 
+import { DepositSent } from "./bridge.js";
 import { reason } from "./chain.js";
-import { expandHome } from "./key.js";
+import { cli } from "./invoked.js";
+import { expandHome, warnIfOthersCanRead } from "./key.js";
 import { checkReturn, MAX_LOSS, MAX_STAKE_LOSS, NATIVE, RELAY_API, RelayError, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, waitForRelay, type RelayQuote, type RelayStatus, type SvmItem } from "./relay.js";
 
 export const SOLANA_RPC = "https://api.mainnet-beta.solana.com";
@@ -39,11 +41,11 @@ export function usdcAccount(owner: string): string {
 }
 
 /** The Solana key from BRAINCHAIN_SOLANA_KEY (base58) or BRAINCHAIN_SOLANA_KEY_FILE (a Solana CLI keypair file). */
-export function solanaKeypair(env: NodeJS.ProcessEnv = process.env): Keypair {
+export function solanaKeypair(env: NodeJS.ProcessEnv = process.env, warn: (message: string) => void = console.warn): Keypair {
   const file = env.BRAINCHAIN_SOLANA_KEY_FILE?.trim();
   const inline = env.BRAINCHAIN_SOLANA_KEY?.trim();
   if (file && inline) throw new Error("Set BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE, not both");
-  const raw = file ? readKeyFile(file) : inline;
+  const raw = file ? readKeyFile(file, warn) : inline;
   if (!raw) throw new Error("Set BRAINCHAIN_SOLANA_KEY to the Solana wallet's secret key (base58), or BRAINCHAIN_SOLANA_KEY_FILE to its keypair file");
   try {
     const bytes = raw.startsWith("[") ? Uint8Array.from(JSON.parse(raw) as number[]) : bs58.decode(raw);
@@ -53,9 +55,10 @@ export function solanaKeypair(env: NodeJS.ProcessEnv = process.env): Keypair {
   }
 }
 
-function readKeyFile(path: string): string {
+function readKeyFile(path: string, warn: (message: string) => void): string {
   const file = expandHome(path);
   try {
+    warnIfOthersCanRead(file, warn);
     return readFileSync(file, "utf8").trim();
   } catch (error) {
     throw new Error(`BRAINCHAIN_SOLANA_KEY_FILE names ${file}, which could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
@@ -114,7 +117,7 @@ function readDeposit(quote: RelayQuote, want: DepositWanted): string | undefined
 }
 
 const notConfirmed = (signature: string, why: unknown) =>
-  new Error(`the Solana transaction ${signature} could not be confirmed (${reason(why)}). Check it before running fund again: if it landed, its USDC left the wallet, and another run moves USDC again.`);
+  new Error(`the Solana transaction ${signature} could not be confirmed (${reason(why)}). Check it before running fund again: if it landed, its USDC left the wallet, and another run moves more USDC.`);
 
 /** Sends Relay's Solana deposit: its instructions, compiled against its lookup tables, signed by the agent's key. Each failure says whether the USDC moved. */
 export async function sendSvmStep(connection: Connection, keypair: Keypair, item: SvmItem): Promise<string> {
@@ -154,7 +157,7 @@ export async function sendSvmStep(connection: Connection, keypair: Keypair, item
 export function unsettled(status: RelayStatus, requestId: string, signature: string, owner: string): string | undefined {
   if (status === "success") return undefined;
   if (status === "refund") return `Relay reports a refund for request ${requestId}: the USDC of Solana transaction ${signature} goes back to ${owner}. Check the wallet before running fund again.`;
-  return `Relay has not settled request ${requestId} (it reports "${status}"). The USDC left the wallet in Solana transaction ${signature}. Check ${RELAY_API}/intents/status/v2?requestId=${requestId} before running fund again: another run moves USDC again.`;
+  return `Relay has not settled request ${requestId} (it reports "${status}"). The USDC left the wallet in Solana transaction ${signature}. Check ${RELAY_API}/intents/status/v2?requestId=${requestId} before running fund again: another run moves more USDC.`;
 }
 
 export interface SolanaFunding {
@@ -167,8 +170,9 @@ export interface SolanaFunding {
   owner: string;
 }
 
-export function createSolanaFunding(keypair: Keypair, parentChainId: number, rpc = SOLANA_RPC): SolanaFunding {
-  const connection = new Connection(rpc, "confirmed");
+export function createSolanaFunding(keypair: Keypair, parentChainId: number, rpc = SOLANA_RPC, requestMs = 30_000): SolanaFunding {
+  // The client sets no limit of its own, so an RPC that stops answering would hold the command forever.
+  const connection = new Connection(rpc, { commitment: "confirmed", fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(requestMs) }) });
   const owner = keypair.publicKey.toBase58();
   return {
     owner,
@@ -235,14 +239,30 @@ export async function fundFromSolana(
   if (options.stake && !options.stakeToken) throw new Error("This network's stake token is not on the parent chain");
   const spends = parts.gas + parts.stake;
   const [held, lamports] = await Promise.all([funding.usdcBalance(), funding.solBalance()]);
-  if (held < spends) throw new Error(`The Solana wallet ${funding.owner} holds ${formatUnits(held, 6)} USDC, less than ${formatUnits(spends, 6)}`);
-  if (lamports < MIN_LAMPORTS) throw new Error(`The Solana wallet ${funding.owner} needs about 0.002 SOL for Solana's fees; it holds ${formatUnits(lamports, 9)}`);
-  const stays = usdc > spends ? ` The other ${formatUnits(usdc - spends, 6)} USDC stays on Solana.` : "";
-  log(`From ${funding.owner} on Solana: ${formatUnits(parts.gas, 6)} USDC to ETH for gas${parts.stake ? ` and ${formatUnits(parts.stake, 6)} USDC to the stake token` : ""}, for ${options.worker}.${stays}`);
+  const usdcs = (amount: bigint) => `${formatUnits(amount, 6)} USDC`;
+  // Said after the quote, so a wallet not yet funded still learns what its USDC would bring.
+  const short = [
+    ...(held >= spends
+      ? []
+      : parts.stake > 0n
+        ? [`The Solana wallet ${funding.owner} holds ${usdcs(held)} of the ${usdcs(spends)} this run spends: ${usdcs(parts.gas)} for gas and ${usdcs(parts.stake)} for the stake token.`]
+        : [`The Solana wallet ${funding.owner} holds ${usdcs(held)}. Without --stake this run spends only the ${usdcs(parts.gas)} it turns into ETH for gas, and the wallet holds less than that.`]),
+    ...(lamports < MIN_LAMPORTS ? [`The Solana wallet ${funding.owner} needs about 0.002 SOL for Solana's fees; it holds ${formatUnits(lamports, 9)}.`] : []),
+  ];
+  const stays = usdc > spends ? ` The other ${usdcs(usdc - spends)} stays on Solana.` : "";
+  log(`From ${funding.owner} on Solana: ${usdcs(parts.gas)} to ETH for gas${parts.stake ? ` and ${usdcs(parts.stake)} to the stake token` : ""}, for ${options.worker}.${stays}`);
   // Both legs are priced and checked before either moves, and those same quotes are signed, so a refused leg never leaves the other spent alone.
-  const gasQuote = await funding.preview(NATIVE, parts.gas, options.worker);
-  const stakeQuote = parts.stake ? await funding.preview(options.stakeToken!, parts.stake, options.worker) : undefined;
+  let gasQuote: RelayQuote;
+  let stakeQuote: RelayQuote | undefined;
+  try {
+    gasQuote = await funding.preview(NATIVE, parts.gas, options.worker);
+    stakeQuote = parts.stake ? await funding.preview(options.stakeToken!, parts.stake, options.worker) : undefined;
+  } catch (error) {
+    if (short.length === 0) throw error;
+    throw new Error([reason(error), ...short].join("\n"));
+  }
   log(`Relay quotes ${gasQuote.outFormatted} ETH${stakeQuote ? ` and ${stakeQuote.outFormatted} of the stake token` : ""}.`);
+  if (short.length > 0) throw new Error(`${short.join("\n")}${options.dry ? "\nDry run, nothing sent." : " Nothing was sent."}`);
   if (options.dry) {
     log("Dry run, nothing sent.");
     return;
@@ -254,6 +274,16 @@ export async function fundFromSolana(
   });
 
   const onParent = new Map<"eth" | "stake", string>();
+  const bridgeOn = async (asset: "eth" | "stake", amount: bigint) => {
+    try {
+      await options.bridgeOn(asset, amount);
+    } catch (error) {
+      // A deposit that was sent can still land, so what it carries is not left on the parent chain to bridge again.
+      if (error instanceof DepositSent) onParent.delete(asset);
+      throw error;
+    }
+    onParent.delete(asset);
+  };
   try {
     const gas = await funding.send(gasQuote);
     onParent.set("eth", `${gasQuote.outFormatted} ETH`);
@@ -271,21 +301,18 @@ export async function fundFromSolana(
       throw new Error(`Relay reports the move settled, but the wallet on Robinhood Chain shows no increase, so what this run brought cannot be told from what it held. It holds ${holds}, and held ${had} before. Nothing was bridged.`);
     }
     // The stake goes first: its deposit pays for its arrival in ETH on the parent chain, out of what the ETH bridge would take.
-    if (stake) {
-      await options.bridgeOn("stake", stake.brought);
-      onParent.delete("stake");
-    }
+    if (stake) await bridgeOn("stake", stake.brought);
     const left = await options.parentEth();
     const spent = eth.held > left ? eth.held - left : 0n;
     const ours = eth.brought > spent ? eth.brought - spent : 0n;
     const room = left > PARENT_ETH_KEEP ? left - PARENT_ETH_KEEP : 0n;
     const onward = ours < room ? ours : room;
     if (onward === 0n) log("Not enough ETH to send on to BrainChain beyond what stays for gas on Robinhood Chain.");
-    else await options.bridgeOn("eth", onward);
+    else await bridgeOn("eth", onward);
   } catch (error) {
     const moved = [...onParent.values()].join(" and ");
     if (!moved) throw new Error(reason(error));
-    throw new Error(`${reason(error).replace(/\.?$/, ".")} This run already brought ${moved} to ${options.worker} on Robinhood Chain; \`brainchain-worker bridge\` moves that on to BrainChain, and running fund again moves more USDC.`);
+    throw new Error(`${reason(error).replace(/\.?$/, ".")} This run already brought ${moved} to ${options.worker} on Robinhood Chain; ${cli("bridge")} moves that on to BrainChain, and running fund again moves more USDC.`);
   }
-  log("Done. `brainchain-worker status` shows the balances on BrainChain once the deposits arrive, in about a minute.");
+  log(`Done. ${cli("status")} shows the balances on BrainChain once the deposits arrive, in about a minute.`);
 }

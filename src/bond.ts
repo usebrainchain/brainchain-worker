@@ -11,7 +11,6 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   formatEther,
-  http,
   isAddress,
   parseAbi,
   parseEventLogs,
@@ -22,7 +21,8 @@ import {
 
 import { taskBoardAbi } from "./abi.js";
 import { erc20Abi, RECEIPT_MS, Status } from "./chain.js";
-import { chainOf, proofsChainOf, proofsTransport, type Network } from "./network.js";
+import { cli } from "./invoked.js";
+import { chainOf, proofsChainOf, proofsTransport, rpcTransport, type Network } from "./network.js";
 import { usdg, when } from "./standing.js";
 
 export const proofIndexAbi = parseAbi(["function proofOf(address board, uint256 taskId) view returns (uint256)"]);
@@ -45,9 +45,8 @@ export const shippedAbi = parseAbi([
   "error NothingOwed()",
 ]);
 
-/** ShippedDeeds.Status and Ruling. */
+/** ShippedDeeds.Status. */
 export const DeedStatus = { None: 0, Open: 1, Ruled: 2, Appealed: 3, Settled: 4 } as const;
-export const Ruling = { None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 4, Conceded: 5, Default: 6, CheckMet: 7 } as const;
 /** Who a missed bond pays, in the words every line about one uses. */
 export const MISSED_TO = "the agent that paid BrainChain's desk for the task, or to the poster for a task posted on the board directly";
 const BPS = 10_000n;
@@ -201,7 +200,7 @@ export interface BondChain {
 }
 
 export function createBondChain(network: Network, config: BondConfig, account: PrivateKeyAccount, fetcher: typeof fetch = fetch): BondChain {
-  const brainchain = createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000, retryCount: 2 }) });
+  const brainchain = createPublicClient({ chain: chainOf(network), transport: rpcTransport(network.rpc) });
   const chain = proofsChainOf(network.proofs);
   const transport = proofsTransport(network.proofs);
   const client = createPublicClient({ chain, transport, pollingInterval: 1_000 });
@@ -301,7 +300,7 @@ export function bondLine(network: Network, b: BondView, facts: { indexed: boolea
     if (b.remainderBps !== Number(BPS)) return `${head}, missed at ${when(b.settledAt)}: ${indexed ? "the Proof is in the index, but the bond settled without it" : "no Proof was recorded"}, so the bond went to ${MISSED_TO}: ${b.refundTo}`;
     const delivered = `${head}, delivered at ${when(b.settledAt)}: the bond less Shipped's 1% fee, ${usdg(network, b.amount - fee(b.amount))},`;
     // The registry keeps one sum per wallet, so only an empty one says which bonds were collected.
-    return owed === 0n ? `${delivered} was collected: the registry owes this wallet nothing` : `${delivered} was credited to this wallet on the registry, which owes it ${usdg(network, owed)} in all; \`bond claim ${b.task}\` collects that`;
+    return owed === 0n ? `${delivered} was collected: the registry owes this wallet nothing` : `${delivered} was credited to this wallet on the registry, which owes it ${usdg(network, owed)} in all; ${cli(`bond claim ${b.task}`)} collects that`;
   }
   if (b.checkMetAt > 0n) {
     const confirmAt = b.checkMetAt + CHECK_HOLD_SEC;
@@ -318,7 +317,7 @@ export function bondLine(network: Network, b: BondView, facts: { indexed: boolea
 }
 
 function closed(network: Network, config: BondConfig | undefined): string | undefined {
-  if (!config) return `Bonds run on Robinhood Chain against Shipped's registry, which ${network.name} has no counterpart of. Set BRAINCHAIN_NETWORK=mainnet.`;
+  if (!config) return `Bonds run against Shipped's registry on Robinhood Chain, and ${network.name} has no such registry. Set BRAINCHAIN_NETWORK=mainnet.`;
   if (!config.proofIndex) return "Bonds are not open yet: BrainChain's ProofIndex on Robinhood Chain, which a bond's check reads, is not deployed. A later release of brainchain-worker names it.";
   return undefined;
 }
@@ -372,7 +371,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   const existing = (await chain.bondsOn(task)).find((b) => b.status !== DeedStatus.Settled && b.board.toLowerCase() === network.contracts.taskBoard.toLowerCase());
   if (existing) {
     const page = await deedPage(existing.deed, options.fetch);
-    throw new Error(`This worker already has ${page ? `bond No. ${page.number}` : "a bond"} open on task ${task} (registry id ${existing.deed}${page ? `, ${page.url}` : ""}). \`bond status ${task}\` shows where it stands.`);
+    throw new Error(`This worker already has ${page ? `bond No. ${page.number}` : "a bond"} open on task ${task} (registry id ${existing.deed}${page ? `, ${page.url}` : ""}). ${cli(`bond status ${task}`)} shows where it stands.`);
   }
   // A task paid through the desk has the desk as its poster on the board; the bond pays the agent that paid.
   const payer = await chain.payerOf(task);
@@ -387,7 +386,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   log(
     [
       `Bond ${usdg(network, options.amount)} on task ${task} (bounty ${usdg(network, t.bounty)}, deadline ${when(t.deadline)}).`,
-      `  Released by the task's Proof: ${usdg(network, back)} back after Shipped's 1% fee (${usdg(network, fee(options.amount))}), collected with \`bond claim ${task}\`.`,
+      `  Released by the task's Proof: ${usdg(network, back)} back after Shipped's 1% fee (${usdg(network, fee(options.amount))}), collected with ${cli(`bond claim ${task}`)}.`,
       `  Missed: if no Proof is recorded by ${when(terms.deadline)}, the ${usdg(network, options.amount)} goes to ${refundTo}, ${payer ? "the agent that paid for the task" : "the poster"}.`,
       `  Gas now: about ${formatEther(gas)} ETH on ${network.proofs.name} for ${approves ? "the approval and the bond" : "the bond"} at ${formatEther(gasPrice * 1_000_000_000n)} gwei; the claim later costs about ${formatEther(GAS.withdraw * gasPrice)} ETH.`,
     ].join("\n"),
@@ -407,10 +406,9 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   const { deed, tx } = await chain.create(terms, options.amount);
   const page = await deedPage(deed, options.fetch);
   const opened = page ? `Bond No. ${page.number} is open on Shipped: ${page.url} (${tx}).` : `A bond with registry id ${deed} is open on Shipped (${tx}).`;
-  log(`${opened} \`bond status ${task}\` follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+  log(`${opened} ${cli(`bond status ${task}`)} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
 }
 
-/** Prints where the worker's bonds on a task stand. */
 export async function bondStatus(
   network: Network,
   config: BondConfig | undefined,

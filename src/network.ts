@@ -1,4 +1,6 @@
-import { defineChain, fallback, http, zeroAddress, type Address } from "viem";
+import { defineChain, fallback, http, zeroAddress, type Address, type HttpTransportConfig } from "viem";
+
+import { cli } from "./invoked.js";
 
 export interface Network {
   /** As BRAINCHAIN_NETWORK names it, and the worker's files on this network. */
@@ -104,7 +106,7 @@ export const TESTNET: Network = {
   bountyFaucet: true,
   gas:
     "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
-    "so a person claims it, and move it here with `npx brainchain-worker bridge --eth 0.001`",
+    `so a person claims it, and move it here with ${cli("bridge --eth 0.001")}`,
   drip: {
     wei: 100_000_000_000_000n,
     request: (address) => `\`curl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H 'content-type: application/json' -d '{"address":"${address}"}'\``,
@@ -145,10 +147,10 @@ export const TESTNET: Network = {
 };
 
 // The 3.5.0 set. Its DecisionExecutor is new too, and applications are read from its events.
-export const MAINNET_TASK_BOARD: Address = "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211";
-export const MAINNET_WORKER_STAKING: Address = "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F";
-export const MAINNET_PROPOSAL_BONDS: Address = "0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4";
-export const MAINNET_DECISION_EXECUTOR: Address = "0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29";
+const MAINNET_TASK_BOARD: Address = "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211";
+const MAINNET_WORKER_STAKING: Address = "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F";
+const MAINNET_PROPOSAL_BONDS: Address = "0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4";
+const MAINNET_DECISION_EXECUTOR: Address = "0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29";
 
 const BRAIN: Address = "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37";
 
@@ -163,10 +165,10 @@ export const MAINNET: Network = {
   explorer: "https://usebrainchain.com",
   stakeSymbol: "BRAIN",
   bountySymbol: "USDG",
-  gas: "Send this address ETH on Robinhood Chain, then move it here with `npx brainchain-worker bridge --eth 0.001`",
+  gas: `Send this address ETH on Robinhood Chain, then move it here with ${cli("bridge --eth 0.001")}`,
   buyStake:
     "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
-    `brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
+    `${cli("bridge --stake <amount>")} (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
   proofs: {
     chainId: 4663,
     name: "Robinhood Chain",
@@ -274,8 +276,15 @@ export function proofsChainOf(proofs: Network["proofs"]) {
   });
 }
 
+/** How long any RPC request waits for an answer before it is tried again, once, or fails. */
+const RPC_TIMEOUT_MS = 10_000;
+
+/** An RPC that does not answer fails a command in about 20 seconds, naming its host, rather than holding it in silence. */
+export const rpcTransport = (url: string, config: Omit<HttpTransportConfig, "timeout" | "retryCount"> = {}) => http(url, { ...config, timeout: RPC_TIMEOUT_MS, retryCount: 1 });
+
 /** The Proofs chain's RPCs in order; the next answers when one fails to, a revert being an answer. */
 export function proofsTransport(proofs: Network["proofs"]) {
   const urls = [proofs.rpc, ...(proofs.rpcFallbacks ?? [])];
-  return fallback(urls.map((url) => http(url, { timeout: 20_000, retryCount: urls.length > 1 ? 1 : 3 })), { rank: false, retryCount: 0 });
+  // Each fallback is the retry where there are several.
+  return fallback(urls.map((url) => http(url, { timeout: RPC_TIMEOUT_MS, retryCount: urls.length > 1 ? 0 : 1 })), { rank: false, retryCount: 0 });
 }

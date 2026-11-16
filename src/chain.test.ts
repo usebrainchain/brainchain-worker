@@ -20,7 +20,8 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi, workerStakingAbi } from "./abi.js";
-import { appealAbi, createChain, erc20Abi, faucetReopens, fetchBrief, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
+import { appealAbi, createChain, erc20Abi, faucetReopens, fetchBrief, NotWaiting, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
+import { cli } from "./invoked.js";
 import { resolveNetwork, TESTNET } from "./network.js";
 import { flightLine } from "./standing.js";
 
@@ -78,7 +79,7 @@ describe("chain helpers", () => {
 
   it("makes a submit that can never succeed permanent", () => {
     expect(submitFailure(reverted(taskBoardAbi, "TooLate", "submit"))).toEqual(new PermanentError("The deadline passed before the result could be submitted"));
-    expect(submitFailure(reverted(taskBoardAbi, "BadStatus", "submit"))).toBeInstanceOf(PermanentError);
+    expect(submitFailure(reverted(taskBoardAbi, "BadStatus", "submit"))).toBeInstanceOf(NotWaiting);
     const other = reverted(taskBoardAbi, "NotWorker", "submit");
     expect(submitFailure(other)).toBe(other);
   });
@@ -144,7 +145,7 @@ describe("chain helpers", () => {
 });
 
 describe("a wallet short of gas", () => {
-  const plain = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
+  const plain = `The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. ${cli("status")} shows what it holds`;
 
   it("is said plainly, in the words of either failure", () => {
     const estimate = new BaseError("Execution reverted with reason: gas required exceeds allowance (38928).");
@@ -159,14 +160,15 @@ describe("a wallet short of gas", () => {
 });
 
 describe("requireChainId", () => {
-  it("refuses an RPC serving another chain, and leaves one that does not answer to the commands", async () => {
+  it("refuses an RPC serving another chain, and fails on one that does not answer unless the command outlasts it", async () => {
     await expect(requireChainId(TESTNET, async () => 46_630)).rejects.toThrow("BRAINCHAIN_RPC_URL serves chain 46630; BrainChain testnet is chain 274630.");
+    await expect(requireChainId(TESTNET, async () => 46_630, true)).rejects.toThrow("BRAINCHAIN_RPC_URL serves chain 46630");
     await expect(requireChainId(TESTNET, async () => 274_630)).resolves.toBeUndefined();
-    await expect(
-      requireChainId(TESTNET, async () => {
-        throw new Error("no answer");
-      }),
-    ).resolves.toBeUndefined();
+    const silent = async () => {
+      throw new Error("no answer");
+    };
+    await expect(requireChainId(TESTNET, silent)).rejects.toThrow("no answer");
+    await expect(requireChainId(TESTNET, silent, true)).resolves.toBeUndefined();
   });
 });
 
@@ -264,7 +266,7 @@ describe("record", () => {
         lines.push(flightLine(inFlight[0]!));
       }
       expect(lines).toEqual([
-        "task 1: the ruling refunds the poster after 1970-01-01T01:01:40Z unless appealed with `appeal 1`",
+        `task 1: the ruling refunds the poster after 1970-01-01T01:01:40Z unless appealed with ${cli("appeal 1")}`,
         "task 1: ruling appealed, Jev rules again by 1970-01-01T06:03:20Z",
         "task 1: hired, due by 2033-05-18T03:33:20Z",
         "task 1: grade disputed by this worker, Jev rules by 1970-01-01T06:00:03Z",
@@ -357,7 +359,7 @@ describe("a send the gas cap made revert", () => {
     try {
       const chain = createChain({ ...TESTNET, rpc: rpc.url }, account);
       expect(reason(await chain.withdraw().catch((error: unknown) => error))).toBe(
-        "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds",
+        `The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. ${cli("status")} shows what it holds`,
       );
       callPasses = false;
       expect(reason(await chain.withdraw().catch((error: unknown) => error))).toBe(

@@ -1,9 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
-
-import { stateDir } from "./state.js";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 
 /** Names the file a run passes its key through when it restarts itself without the key in its environment. */
 const HANDOFF = "BRAINCHAIN_WORKER_KEY_HANDOFF";
@@ -27,13 +25,18 @@ function keyFileProblem(text: string): string | undefined {
   return "holds characters that are not hex digits";
 }
 
+/** Warns when a key file is open to other users; it throws as statSync does for a file that is not there. */
+export function warnIfOthersCanRead(file: string, warn: (message: string) => void): void {
+  const stat = statSync(file);
+  // Windows reports no owner-only mode for any file: access there follows the folder's permissions, so there is nothing to warn about or chmod.
+  if (process.platform !== "win32" && stat.isFile() && (stat.mode & 0o077) !== 0) warn(`warning: other users can read ${file}; run chmod 600 on it`);
+}
+
 function fromFile(path: string, warn: (message: string) => void): string {
   const file = expandHome(path);
   let text: string;
   try {
-    const stat = statSync(file);
-    // Windows reports no owner-only mode for any file: access there follows the folder's permissions, so there is nothing to warn about or chmod.
-    if (process.platform !== "win32" && stat.isFile() && (stat.mode & 0o077) !== 0) warn(`warning: other users can read ${file}; run chmod 600 on it`);
+    warnIfOthersCanRead(file, warn);
     text = readFileSync(file, "utf8");
   } catch (error) {
     throw new Error(`BRAINCHAIN_WORKER_KEY_FILE names ${file}, which could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
@@ -60,9 +63,12 @@ export function keyText(env: NodeJS.ProcessEnv = process.env, warn: (message: st
   return file ? fromFile(file, warn) : inline || undefined;
 }
 
-/** Writes a new key to a file only its owner can read; an existing file is left alone, since it may hold a wallet's only key. */
-export function writeKeyFile(path: string, key: string): void {
-  const file = expandHome(path);
+/**
+ * Writes a new key to a file only its owner can read and returns the file's full
+ * path; an existing file is left alone, since it may hold a wallet's only key.
+ */
+export function writeKeyFile(path: string, key: string): string {
+  const file = resolve(expandHome(path));
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   try {
     writeFileSync(file, `${key}\n`, { flag: "wx", mode: 0o600 });
@@ -70,16 +76,21 @@ export function writeKeyFile(path: string, key: string): void {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`${file} already exists, and new-key never replaces a key`);
     throw error;
   }
+  return file;
 }
 
-/** Memory rather than disk where the system offers it. The file lives for the milliseconds a restart takes. */
-function handoffDir(): string {
+/**
+ * Where the key waits for the milliseconds a restart takes: memory where the
+ * system offers it, else the temp folder, which macOS keeps per user. A pipe
+ * would keep it off disk, but execve leaves the new image only stdin, stdout
+ * and stderr, and those stay the worker's own.
+ */
+export function handoffDir(): string {
   try {
     accessSync("/dev/shm", constants.W_OK);
     return "/dev/shm";
   } catch {
-    mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
-    return stateDir();
+    return tmpdir();
   }
 }
 

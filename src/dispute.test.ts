@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { explainRevert, reason, Status } from "./chain.js";
 import { appeal, Appealed, dispute, Ruled, type DisputeChain, type DisputeTask } from "./dispute.js";
+import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
 
 const WORKER = "0x00000000000000000000000000000000000000c1" as Address;
@@ -122,14 +123,14 @@ describe("appeal", () => {
   it("sends a mainnet wallet short of the bond to the bridge", async () => {
     const chain = fake({ status: Ruled }, undefined, 1_000_000n);
     await expect(appeal(MAINNET, chain, 7n, () => {})).rejects.toThrow(
-      "The appeal bond is 1.25 USDG, and this wallet holds 1. Bridge more with `npx brainchain-worker bridge --bounty <amount>`.",
+      `The appeal bond is 1.25 USDG, and this wallet holds 1. Bridge more with ${cli("bridge --bounty <amount>")}.`,
     );
     expect(chain.claimBounty).not.toHaveBeenCalled();
     expect(chain.approveBounty).not.toHaveBeenCalled();
   });
 
   it("refuses before sending anything when the wallet cannot pay the gas of both the approval and the appeal", async () => {
-    // What the wallet in the report held: enough for the approval, not for the appeal after it.
+    // A balance a worker really hit: enough for the approval, not for the appeal after it.
     const chain = fake({ status: Ruled }, undefined, undefined, { eth: parseEther("0.0000295") });
     const refusal = appeal(TESTNET, chain, 7n, () => {});
     await expect(refusal).rejects.toThrow(
@@ -145,7 +146,7 @@ describe("appeal", () => {
     await appeal(TESTNET, approved, 7n, () => {});
     expect(approved.appeal).toHaveBeenCalledWith(7n);
 
-    // The report's second attempt: the bond approved, 0.0000208 ETH left, and a raw selector where words belonged.
+    // The same worker's second attempt: the bond approved, 0.0000208 ETH left, and a raw selector where words belonged.
     const second = fake({ status: Ruled }, undefined, undefined, { eth: parseEther("0.0000208345"), allowance: 1_250_000n });
     await expect(appeal(TESTNET, second, 7n, () => {})).rejects.toThrow(`${WORKER} holds 0.0000208345 ETH on BrainChain testnet; the appeal needs about 0.000034 ETH for gas.`);
     expect(second.appeal).not.toHaveBeenCalled();
@@ -178,7 +179,7 @@ describe("the board's errors", () => {
   it("reads a revert that only the gas cap caused as a wallet short of gas, and leaves a real one as it is", async () => {
     // The RPC runs the estimate with no more gas than the wallet pays for, and the bond's transfer runs out inside it.
     expect(reason(await explainRevert(reverted("FailedInnerCall"), async () => "0x"))).toBe(
-      "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds",
+      `The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. ${cli("status")} shows what it holds`,
     );
     const real = reverted("NotAppellant");
     expect(

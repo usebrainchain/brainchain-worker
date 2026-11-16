@@ -99,6 +99,19 @@ describe("exit", () => {
     expect(lines.at(-1)).toBe(`The desk holds this exit for a person: Relay will not refund the Solana move (DEPOSIT_ADDRESS_MISMATCH). Nothing more is sent for it until it is settled; follow it at ${TESTNET.service}/exits/${TX}.`);
   });
 
+  it("prints the service's words as one plain line, and says so when it cannot read the amount paid", async () => {
+    const { chain } = chainWith(5_000_000n);
+    const { lines, log } = quiet();
+    try {
+      await exit(TESTNET, chain, { dry: false, log, fetchImpl: fetchWith([{ state: "returned", net: "4975000", fee: "25000", reason: "\x1b[2Jno route\nok", returnTx: TX }]), sleep: async () => {} });
+    } finally {
+      process.exitCode = 0;
+    }
+    expect(lines.at(-1)).toBe(`The desk sent it back on BrainChain testnet: no route ok (${TX}).`);
+    await exit(TESTNET, chain, { dry: false, log, fetchImpl: fetchWith([{ state: "paid", net: "4.9", fee: "25000", payoutTx: TX }]), sleep: async () => {} });
+    expect(lines.at(-1)).toBe(`The desk reports this exit paid, with an amount exit cannot read; follow it at ${TESTNET.service}/exits/${TX}.`);
+  });
+
   it("says what a long wait can still come to, with the hold where one can happen", async () => {
     const { chain } = chainWith(5_000_000n);
     for (const [network, toSolana, named, line] of [

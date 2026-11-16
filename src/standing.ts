@@ -1,6 +1,7 @@
 import { formatEther, formatUnits } from "viem";
 
 import { ApplicationState, Status, type Chain, type Flight } from "./chain.js";
+import { cli } from "./invoked.js";
 import type { Network } from "./network.js";
 
 /** A token amount with thousands separators, such as 1,250,000; a fraction is kept as it is. */
@@ -33,6 +34,13 @@ export async function snapshot(chain: Chain) {
 }
 
 export type Snapshot = Awaited<ReturnType<typeof snapshot>>;
+
+/**
+ * Whether no task can come to this worker until it joins: it is not allowed,
+ * nothing allowing it waits to run, it has never applied, and no task of its
+ * own is in flight to finish.
+ */
+export const unapplied = (s: Snapshot, inFlight: number) => !s.allowed && !s.pending && s.applications.length === 0 && inFlight === 0;
 
 /** The highest gas limit seen for each transaction join can send, across testnet and mainnet. */
 export const GAS = { faucet: 76_000n, approve: 50_000n, stake: 120_000n, setPrice: 31_000n, apply: 240_000n };
@@ -70,28 +78,64 @@ export function aboutEth(wei: bigint): string {
   return formatEther(((wei + unit - 1n) / unit) * unit);
 }
 
+/** Where a worker writes when something on BrainChain's side looks stuck. */
+const CONTACT = "hello@usebrainchain.com";
+/** BrainChain usually decides an application within minutes; one waiting longer than this is worth asking about. */
+const DECIDES_WITHIN_SEC = 3_600n;
+
+/** A length of time in its largest two units, such as 25 minutes, 1 hour 5 minutes or 2 days 3 hours. */
+export function lasted(seconds: bigint): string {
+  const counts = [
+    [seconds / 86_400n, "day"],
+    [(seconds % 86_400n) / 3_600n, "hour"],
+    [(seconds % 3_600n) / 60n, "minute"],
+  ] as const;
+  const first = counts.findIndex(([count]) => count > 0n);
+  if (first < 0) return "less than a minute";
+  return counts
+    .slice(first, first + 2)
+    .filter(([count]) => count > 0n)
+    .map(([count, name]) => `${count} ${name}${count === 1n ? "" : "s"}`)
+    .join(" ");
+}
+
+/**
+ * Where an open application stands. `status` says how long it has waited; `run`
+ * names when it was filed, so the line it checks again every few minutes only
+ * changes when the application does.
+ */
+function waiting(application: { id: bigint; createdAt: bigint }, network: Network, from: "run" | "status"): string {
+  const health = `${network.service}/health`;
+  const usual = `It usually takes a few minutes; if it takes more than an hour, check ${health} or write to ${CONTACT}.`;
+  if (from === "run") return `no: application ${application.id} has waited for BrainChain's decision since ${when(application.createdAt)}. ${usual}`;
+  const waited = BigInt(Math.floor(Date.now() / 1000)) - application.createdAt;
+  const head = `no: application ${application.id} has waited ${lasted(waited > 0n ? waited : 0n)} for BrainChain's decision (since ${when(application.createdAt)})`;
+  if (waited <= DECIDES_WITHIN_SEC) return `${head}. ${usual}`;
+  return `${head}, longer than the few minutes it usually takes. Check ${health}, and if the service answers, write to ${CONTACT} with the application's number.`;
+}
+
 /** Why the worker can or cannot be hired right now, in one line for `run` or for `status`, which shows the rest itself. */
 export function hireable({ allowed, w, min, applications, change, pending }: Snapshot, network: Network, from: "run" | "status"): string {
   if (allowed) {
     if (w.staked >= min) return "yes";
-    return `no: your stake is below the minimum of ${stake(network, min)}. Run join to stake again${from === "run" ? "; status shows what it needs" : ""}.`;
+    return `no: your stake is below the minimum of ${stake(network, min)}. Run ${cli("join")} to stake again${from === "run" ? `; ${cli("status")} shows what it needs` : ""}.`;
   }
   // An allowed application waiting out its timelock outranks anything filed after it.
   if (change && pending) {
     const due = BigInt(Math.floor(Date.now() / 1000)) >= change.eta;
     const allowed = `no: Jev allowed this worker; ${due ? `the change that allows it was due at ${when(change.eta)} and has not run yet` : `it can be hired after ${when(change.eta)}`}`;
-    return w.staked >= min ? allowed : `${allowed}. Its stake is below the minimum of ${stake(network, min)}, so run join to stake again first.`;
+    return w.staked >= min ? allowed : `${allowed}. Its stake is below the minimum of ${stake(network, min)}, so run ${cli("join")} to stake again first.`;
   }
   const last = applications.at(-1);
-  if (last === undefined) return "no: run `npx brainchain-worker join` to apply";
-  if (last.state === ApplicationState.Open) return `no: application ${last.id} is waiting for Jev`;
-  if (last.state === ApplicationState.Burned) return `no: Jev did not allow application ${last.id}, and its bond was burned. Run join to apply again.`;
+  if (last === undefined) return `no: run ${cli("join")} to apply`;
+  if (last.state === ApplicationState.Open) return waiting(last, network, from);
+  if (last.state === ApplicationState.Burned) return `no: Jev did not allow application ${last.id}, and its bond was burned. Run ${cli("join")} to apply again.`;
   if (change?.vetoed) {
     // A vetoed call can never be queued again, so the veto still stands for applications filed after it.
     const vetoed = applications.find((a) => a.decisionId === change.decisionId);
     return `no: the guardian vetoed ${vetoed ? `application ${vetoed.id}` : "allowing this worker"}`;
   }
-  return `no: application ${last.id} closed without a decision; its bond was returned. Run join to apply again.`;
+  return `no: application ${last.id} closed without a decision; its bond was returned. Run ${cli("join")} to apply again.`;
 }
 
 /**
@@ -147,22 +191,29 @@ export function deliveriesLeft(gas: bigint, gasPrice: bigint): bigint {
 /** About how many results the wallet's ETH delivers, for `status` and `run`. */
 export const deliveries = (count: bigint) => `about ${count} ${count === 1n ? "delivery" : "deliveries"}`;
 
+/** How many results the wallet's ETH delivers once what join still has to send, if anything, is paid for out of it. */
+export function deliveriesAfterJoin(s: Snapshot, gas: bigint, gasPrice: bigint, claims = false): bigint {
+  const cost = joinLimits(s, claims, false).reduce((sum, limit) => sum + limit * gasPrice, 0n);
+  return deliveriesLeft(gas > cost ? gas - cost : 0n, gasPrice);
+}
+
 /**
  * The wallet's ETH, and what more join or the next delivery needs, since a
- * send the wallet cannot cover fails partway through. A worker with nothing to
- * join hears how many results its ETH delivers.
+ * send the wallet cannot cover fails partway through, or else how many results
+ * its ETH delivers, after what join costs for a worker that has not joined.
  */
 export function gasLine(network: Network, address: string, s: Snapshot, gas: bigint, gasPrice: bigint, claims: boolean, sent: number): string {
   const limits = joinLimits(s, claims, false);
   const need = ethNeeded(limits.length > 0 ? limits : [SUBMIT_GAS], gasPrice);
   if (gas < need) return shortOfGas(network, address, gas, sent, need, limits.length > 0 ? "join" : "delivering a result");
-  return limits.length > 0 ? `${formatEther(gas)} ETH` : `${formatEther(gas)} ETH, enough for ${deliveries(deliveriesLeft(gas, gasPrice))} at the current gas price`;
+  const after = limits.length > 0 ? "enough to join and then for" : "enough for";
+  return `${formatEther(gas)} ETH, ${after} ${deliveries(deliveriesAfterJoin(s, gas, gasPrice, claims))} at the current gas price`;
 }
 
 /** What join says when the wallet holds too little of a stake token that has no faucet. */
 export function shortOfStake(network: Network, w: Snapshot["w"], balance: bigint, need: bigint, now: bigint): string {
   const withdraw = now >= w.unlocksAt ? "now" : `after ${when(w.unlocksAt)}`;
-  const unstaking = w.unstaking > 0n ? ` Or run withdraw ${withdraw} and join with the ${stake(network, w.unstaking)} it returns.` : "";
+  const unstaking = w.unstaking > 0n ? ` Or run ${cli("withdraw")} ${withdraw} and join with the ${stake(network, w.unstaking)} it returns.` : "";
   return `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs. ${network.buyStake}${unstaking}`;
 }
 
@@ -178,7 +229,7 @@ export function flightLine(f: Flight): string {
       const closes = when(f.gradedAt + f.disputeWindow);
       return f.accepted
         ? `${task}: accepted, paid after ${closes} unless the grade is disputed`
-        : `${task}: not accepted, refunded to the poster after ${closes} unless the grade is disputed with \`dispute ${f.id}\``;
+        : `${task}: not accepted, refunded to the poster after ${closes} unless the grade is disputed with ${cli(`dispute ${f.id}`)}`;
     }
     case Status.Disputed:
       return `${task}: grade disputed by ${f.disputedByModel ? "this worker" : "the poster"}, Jev rules by ${when(f.disputedAt + f.ruleWindow)}`;
@@ -187,7 +238,7 @@ export function flightLine(f: Flight): string {
       const closes = when(a.ruledAt + a.window);
       return a.pays
         ? `${task}: the ruling pays this worker after ${closes} unless the poster appeals`
-        : `${task}: the ruling refunds the poster after ${closes} unless appealed with \`appeal ${f.id}\``;
+        : `${task}: the ruling refunds the poster after ${closes} unless appealed with ${cli(`appeal ${f.id}`)}`;
     }
     default:
       return `${task}: ruling appealed, Jev rules again by ${when(f.appeal!.appealedAt + f.ruleWindow)}`;

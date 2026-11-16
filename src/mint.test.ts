@@ -6,6 +6,7 @@ import { encodeAbiParameters, encodeEventTopics, parseAbi, parseEther, zeroAddre
 import { describe, expect, it, vi } from "vitest";
 
 import type { Settlement } from "./chain.js";
+import { cli } from "./invoked.js";
 import { collectionAbi, createSettlementWatch, mint, mintedToken, type ProofsChain } from "./mint.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
@@ -53,7 +54,7 @@ async function mintRun(chain: ProofsChain, fetcher: typeof fetch, options: { dry
   return lines;
 }
 
-const LAG = "`mint --dry` lists these tasks until the service has seen these mints, which can take minutes. A mint before then, here or by `run --mint`, pays for another piece.";
+const LAG = `${cli("mint --dry")} lists these tasks until the service has seen these mints, which can take minutes. A mint before then, here or by \`run --mint\`, pays for another piece.`;
 
 describe("mint", () => {
   it("approves the price and mints one piece for each task the service lists, and prints the task, token id and hash", async () => {
@@ -265,7 +266,7 @@ describe("run's settlement watch", () => {
   });
 
   it("waits for a late listing as long as the worker can still mint, and says so once", async () => {
-    // The report's service listed a payment 10.5 minutes after it landed; the worker once gave up after 15.
+    // The service once listed a payment 10.5 minutes after it landed, and the worker used to give up after 15.
     const t = setup({ fetcher: listing({ tasks: [] }) });
     t.watch.track(7n);
     t.settle(PAID);
@@ -418,7 +419,7 @@ describe("run's settlement watch", () => {
     expect(stuck.fetcher).not.toHaveBeenCalled();
   });
 
-  it("still logs each outcome under --no-mint, and mints nothing", async () => {
+  it("still logs each outcome without --mint, and mints nothing", async () => {
     const t = setup({ mints: false });
     t.watch.track(7n);
     t.watch.track(8n);

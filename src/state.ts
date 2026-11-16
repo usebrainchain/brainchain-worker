@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { copyFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, copyFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -56,22 +56,67 @@ export interface Store {
 
 export const stateDir = () => join(homedir(), ".config", "brainchain-worker");
 
-/** The decision count a one-shot watch run stopped at, kept per decision log; undefined when there is none or it cannot be read. */
-export function readWatched(log: string, dir = stateDir()): bigint | undefined {
+/**
+ * Makes the worker's folder, which holds its saved work and its locks, for its
+ * owner alone, and narrows one an earlier tool or umask left open to others.
+ * A folder this user cannot make or write to is one error that says which and
+ * what to do, not the system's EACCES.
+ */
+export function privateDir(dir: string, log: (line: string) => void): void {
   try {
-    const { seen } = JSON.parse(readFileSync(join(dir, `watch.${log.toLowerCase()}.json`), "utf8")) as { seen?: unknown };
-    return typeof seen === "string" && /^\d+$/.test(seen) ? BigInt(seen) : undefined;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    accessSync(dir, constants.W_OK);
+  } catch (error) {
+    // The nearest folder that exists is the one this user could not make the rest in.
+    let blocked = dir;
+    while (!existsSync(blocked) && dirname(blocked) !== blocked) blocked = dirname(blocked);
+    throw new Error(
+      `${dir} could not be ${blocked === dir ? "written to" : "made"} (${(error as NodeJS.ErrnoException).code ?? "unknown error"}), and it holds the worker's saved work and its lock. ` +
+        `Let this user write to ${blocked}, or set HOME to a folder this user can write to.`,
+    );
+  }
+  // Windows has no owner-only mode: access there follows the folder's permissions.
+  if (process.platform === "win32" || (statSync(dir).mode & 0o077) === 0) return;
+  try {
+    chmodSync(dir, 0o700);
+    log(`${dir} was open to other users, so it is now yours alone (mode 700)`);
+  } catch {
+    log(`warning: other users can open ${dir}; run chmod 700 on it`);
+  }
+}
+
+/** Where a watch run got to: the decision count it checked up to, and the block of the latest queued change it listed. */
+export interface WatchPlace {
+  seen: bigint;
+  block?: bigint;
+}
+
+const isDigits = (value: unknown): value is string => typeof value === "string" && /^\d+$/.test(value);
+
+/** Where a watch run got to, kept per decision log; undefined when there is no place or it cannot be read. */
+export function readWatched(log: string, dir = stateDir()): WatchPlace | undefined {
+  try {
+    const { seen, block } = JSON.parse(readFileSync(join(dir, `watch.${log.toLowerCase()}.json`), "utf8")) as { seen?: unknown; block?: unknown };
+    if (!isDigits(seen)) return undefined;
+    return { seen: BigInt(seen), ...(isDigits(block) ? { block: BigInt(block) } : {}) };
   } catch {
     return undefined;
   }
 }
 
-export function writeWatched(log: string, seen: bigint, dir = stateDir()): void {
+export function writeWatched(log: string, { seen, block }: WatchPlace, dir = stateDir()): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, `watch.${log.toLowerCase()}.json`);
   // Each write its own temp file: runs from cron overlap, and nothing else keeps them apart.
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  writeFileSync(temp, JSON.stringify({ seen: seen.toString() }), { mode: 0o600 });
+  const fd = openSync(temp, "w", 0o600);
+  try {
+    writeFileSync(fd, JSON.stringify({ seen: seen.toString(), ...(block === undefined ? {} : { block: block.toString() }) }));
+    // On disk before the rename, so a power loss leaves the old place or the new one, never an empty file.
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(temp, file);
 }
 
@@ -230,7 +275,7 @@ function holderOf(text: string): { pid: number; space?: string } {
     if (typeof value === "number") return { pid: value };
     if (isObject(value) && typeof value.pid === "number" && typeof value.space === "string") return { pid: value.pid, space: value.space };
   } catch {
-    // Handled below.
+    // A lock still being written is not JSON yet.
   }
   return { pid: 0, space: "" };
 }
@@ -368,6 +413,7 @@ function migrate(old: string, file: string, board: string): boolean {
  * run on testnet and mainnet at once without sharing cursors or tasks.
  */
 export function openStore(address: string, network: Network, log: (line: string) => void = console.log, dir = stateDir()): Store {
+  privateDir(dir, log);
   const old = join(dir, address);
   const file = `${old}.${network.id}`;
   lock(`${file}.lock`, () => {

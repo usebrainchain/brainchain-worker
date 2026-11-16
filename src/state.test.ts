@@ -1,12 +1,17 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MAINNET, TESTNET } from "./network.js";
-import { fileStore, lock, openStore, readWatched, writeWatched } from "./state.js";
+import { fileStore, lock, openStore, privateDir, readWatched, writeWatched } from "./state.js";
+
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, fsyncSync: vi.fn(fs.fsyncSync), renameSync: vi.fn(fs.renameSync) };
+});
 
 const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
 // Several tests overwrite a lock this process holds, which a run answers by exiting at its next touch.
@@ -250,10 +255,59 @@ describe("writeWatched", () => {
     const log = "0xABC";
     // A fixed temp name is what two runs would fight over.
     mkdirSync(join(folder, "watch.0xabc.json.tmp"));
-    writeWatched(log, 7n, folder);
-    writeWatched(log, 9n, folder);
-    expect(readWatched(log, folder)).toBe(9n);
+    writeWatched(log, { seen: 7n }, folder);
+    writeWatched(log, { seen: 9n, block: 40n }, folder);
+    expect(readWatched(log, folder)).toEqual({ seen: 9n, block: 40n });
     expect(readdirSync(folder).filter((name) => name.endsWith(".tmp"))).toEqual(["watch.0xabc.json.tmp"]);
+  });
+
+  it("flushes the place to disk before it replaces the last one", () => {
+    vi.mocked(fsyncSync).mockClear();
+    vi.mocked(renameSync).mockClear();
+    writeWatched("0xABC", { seen: 7n }, dir());
+    expect(fsyncSync).toHaveBeenCalledOnce();
+    expect(vi.mocked(fsyncSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(renameSync).mock.invocationCallOrder[0]!);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("privateDir", () => {
+  it("makes the folder its owner's alone, and narrows one that others can open", () => {
+    const fresh = join(dir(), "config", "brainchain-worker");
+    const log = vi.fn();
+    privateDir(fresh, log);
+    expect(statSync(fresh).mode & 0o777).toBe(0o700);
+    expect(log).not.toHaveBeenCalled();
+    chmodSync(fresh, 0o755);
+    privateDir(fresh, log);
+    expect(statSync(fresh).mode & 0o777).toBe(0o700);
+    expect(log).toHaveBeenCalledWith(`${fresh} was open to other users, so it is now yours alone (mode 700)`);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("says which folder this user cannot write to and how to fix it, as one error", () => {
+    const home = dir();
+    chmodSync(home, 0o555);
+    const target = join(home, ".config", "brainchain-worker");
+    try {
+      expect(() => privateDir(target, vi.fn())).toThrow(
+        new Error(`${target} could not be made (EACCES), and it holds the worker's saved work and its lock. Let this user write to ${home}, or set HOME to a folder this user can write to.`),
+      );
+      chmodSync(home, 0o755);
+      mkdirSync(join(home, ".config"));
+      mkdirSync(target, { mode: 0o500 });
+      expect(() => privateDir(target, vi.fn())).toThrow(`${target} could not be written to (EACCES), and it holds the worker's saved work and its lock. Let this user write to ${target}, or`);
+    } finally {
+      chmodSync(home, 0o755);
+      if (existsSync(target)) chmodSync(target, 0o700);
+    }
+  });
+
+  it("is where a run's state goes, so a run narrows it at start", () => {
+    const folder = dir();
+    chmodSync(folder, 0o775);
+    const log = vi.fn();
+    openStore("0x5B38Da6a701c568545dCfcB03FcB875f56beddC4", TESTNET, log, folder);
+    expect(statSync(folder).mode & 0o777).toBe(0o700);
+    expect(log).toHaveBeenCalledWith(`${folder} was open to other users, so it is now yours alone (mode 700)`);
   });
 });
 

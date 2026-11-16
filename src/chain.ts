@@ -7,7 +7,6 @@ import {
   createWalletClient,
   encodeAbiParameters,
   encodeFunctionData,
-  http,
   HttpRequestError,
   InsufficientFundsError,
   keccak256,
@@ -25,7 +24,8 @@ import {
 } from "viem";
 
 import { erc20Errors, taskBoardAbi, transferErrors, workerStakingAbi } from "./abi.js";
-import { chainOf, parentChainOf, type Network } from "./network.js";
+import { cli } from "./invoked.js";
+import { chainOf, parentChainOf, rpcTransport, type Network } from "./network.js";
 import { memoryStore, type Store } from "./state.js";
 
 export const erc20Abi = parseAbi([
@@ -109,6 +109,9 @@ export interface HiredTask {
 /** A failure that trying again cannot fix. */
 export class PermanentError extends Error {}
 
+/** A submit refused because the task had left Hired, which an earlier submit of the same result may have done. */
+export class NotWaiting extends PermanentError {}
+
 /** What the work loop needs from the chain and the service. */
 export interface WorkerChain {
   now(): Promise<bigint>;
@@ -121,6 +124,8 @@ export interface WorkerChain {
   submit(id: bigint, resultHash: Hex, resultURI: string, sent: (tx: Hex) => void): Promise<Hex>;
   /** Whether a transaction already sent succeeded, waiting up to `waitMs` for it; undefined when it did not land in that time. */
   landed(tx: Hex, waitMs: number): Promise<boolean | undefined>;
+  /** The result hash the board holds for a task, zero until one is submitted. */
+  resultHash(id: bigint): Promise<Hex>;
 }
 
 /** What the worker signs to upload a result: the chain, the board, the task and the hash of exactly the bytes it uploads. */
@@ -168,7 +173,7 @@ function revertOf(error: unknown) {
 export function submitFailure(error: unknown): unknown {
   const name = revertOf(error)?.errorName;
   if (name === "TooLate") return new PermanentError("The deadline passed before the result could be submitted");
-  if (name === "BadStatus") return new PermanentError("The task no longer waits for a result");
+  if (name === "BadStatus") return new NotWaiting("The task no longer waits for a result");
   return error;
 }
 
@@ -285,7 +290,7 @@ function rpcRefusal(answer: RpcRequestError): string {
   return `${host} refused the request: ${excerpt(answer.details, answer.url)}`;
 }
 
-const SHORT_OF_GAS = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
+const SHORT_OF_GAS = `The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. ${cli("status")} shows what it holds`;
 
 
 /** Whether a send failed because the wallet cannot cover its gas: the RPC's gas estimate says so as a revert, and the send itself as insufficient funds. */
@@ -356,16 +361,23 @@ export async function unhealthy(service: string, fetcher: typeof fetch = fetch):
 /**
  * Refuses a BRAINCHAIN_RPC_URL that serves another chain, which otherwise shows
  * as a read that returns no data or a scan through someone else's blocks. An RPC
- * that does not answer is left to the commands, which say so or outlast it.
+ * that does not answer fails the command here, so it does not wait out the same
+ * RPC twice, unless the command runs on and can outlast it.
  */
-export async function requireChainId(network: Network, read: () => Promise<number>): Promise<void> {
-  const id = await read().catch(() => undefined);
-  if (id !== undefined && id !== network.chainId) throw new Error(`BRAINCHAIN_RPC_URL serves chain ${id}; ${network.name} is chain ${network.chainId}.`);
+export async function requireChainId(network: Network, read: () => Promise<number>, outlasts = false): Promise<void> {
+  let id: number;
+  try {
+    id = await read();
+  } catch (error) {
+    if (outlasts) return;
+    throw new Error(reason(error));
+  }
+  if (id !== network.chainId) throw new Error(`BRAINCHAIN_RPC_URL serves chain ${id}; ${network.name} is chain ${network.chainId}.`);
 }
 
 /** BrainChain's RPC, with answers that are not JSON-RPC refused before viem reads them. */
 export const brainchainTransport = (network: Network) =>
-  http(network.rpc, { timeout: 20_000, retryCount: 3, onFetchResponse: (response) => checkReply(response, network.rpc) });
+  rpcTransport(network.rpc, { onFetchResponse: (response) => checkReply(response, network.rpc) });
 
 const identityAbi = parseAbi([
   "function ownerOf(uint256 tokenId) view returns (address)",
@@ -484,6 +496,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       });
       return receipt && receipt.status === "success";
     },
+    resultHash: async (task) => (await client.readContract({ ...board, functionName: "get", args: [task] })).resultHash,
   };
 
   return {
@@ -501,10 +514,11 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     bond: () => client.readContract({ address: bonds, abi: bondsAbi, functionName: "bond" }),
     /** Seconds between Jev allowing a worker and the worker being hireable. */
     timelock: () => client.readContract({ address: executor, abi: executorAbi, functionName: "timelock" }),
-    async approve(token: Address, spender: Address, amount: bigint) {
+    /** Approves `spender` for `amount` unless it already may take that much; the approval's hash, or undefined when none was needed. */
+    async approve(token: Address, spender: Address, amount: bigint): Promise<Hex | undefined> {
       const current = await client.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] });
-      if (current >= amount) return;
-      await send({ address: token, abi: erc20Abi, functionName: "approve", args: [spender, amount] });
+      if (current >= amount) return undefined;
+      return send({ address: token, abi: erc20Abi, functionName: "approve", args: [spender, amount] });
     },
     claimStakeToken: () => send({ address: stakeToken, abi: erc20Abi, functionName: "faucet" }),
     /** What the stake token's faucet gives, and from when this wallet can claim it. */
@@ -533,7 +547,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
      */
     async holdsAgent(agentId: bigint): Promise<boolean | undefined> {
       if (!network.identity || !network.bridge) return undefined;
-      const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: http(network.bridge.rpc, { timeout: 20_000 }) });
+      const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
       const mine = (holder: Address) => holder.toLowerCase() === account.address.toLowerCase();
       const read = (functionName: "ownerOf" | "getAgentWallet") =>
         parent.readContract({ address: network.identity!, abi: identityAbi, functionName, args: [agentId] });
@@ -550,8 +564,8 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     /** An open proposal to allow this worker, from any wallet, or 0n. */
     openApplication: () => openProposalOf(client, network, taskBoard, applicationData(account.address)),
     /**
-     * This worker's applications, newest last, with their state and the
-     * decision that settled each, and the last change any of them queued.
+     * This worker's applications, newest last, with their state, when each was
+     * filed and the decision that settled it, and the last change any of them queued.
      * Everything is read at one block, so a bond settled just after its change
      * was queued is never seen without the change.
      */
@@ -588,11 +602,10 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       };
       const decided = new Map(settled.map((log) => [log.args.id!, log.args.decisionId!]));
       const applications = await Promise.all(
-        proposed.map(async (log) => ({
-          id: log.args.id!,
-          state: (await client.readContract({ address: bonds, abi: bondsAbi, functionName: "get", args: [log.args.id!], blockNumber })).state,
-          decisionId: decided.get(log.args.id!),
-        })),
+        proposed.map(async (log) => {
+          const { state, createdAt } = await client.readContract({ address: bonds, abi: bondsAbi, functionName: "get", args: [log.args.id!], blockNumber });
+          return { id: log.args.id!, state, createdAt, decisionId: decided.get(log.args.id!) };
+        }),
       );
       return { applications, change };
     },

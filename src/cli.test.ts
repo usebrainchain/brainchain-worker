@@ -8,7 +8,8 @@ import { parseEther, type Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { asksHelp, bondArgs, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
+import { asksHelp, bondArgs, fetchRecord, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace, watchResume } from "./cli.js";
+import { CLI, cli, commandName } from "./invoked.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
@@ -33,6 +34,8 @@ describe("parse", () => {
     const { values, switches } = parse("mint", ["--count=3", "--dry"]);
     expect(values.get("count")).toBe("3");
     expect([...switches]).toEqual(["dry"]);
+    // Accepted from before minting became opt-in, and changes nothing.
+    expect(parse("run", ["--exec", "wc -w", "--no-mint"]).switches).toEqual(new Set(["no-mint"]));
   });
 });
 
@@ -44,13 +47,13 @@ describe("bondArgs", () => {
     expect(bondArgs(["claim", "12"])).toEqual({ action: "claim", task: 12n });
     expect(parse("bond", ["12", "5", "--yes"])).toEqual({ positional: ["12", "5"], values: new Map(), switches: new Set(["yes"]) });
     for (const [args, error] of [
-      [[], "Usage: brainchain-worker bond <task> <USDG>"],
-      [["0", "5"], "Usage: brainchain-worker bond <task> <USDG>"],
+      [[], `Usage: ${CLI} bond <task> <USDG>`],
+      [["0", "5"], `Usage: ${CLI} bond <task> <USDG>`],
       [["12"], "The amount is in USDG"],
       [["12", "0"], "The amount is in USDG"],
       [["12", "1.2345678"], "The amount is in USDG"],
-      [["status"], "Usage: brainchain-worker bond status <task>"],
-      [["claim", "x"], "Usage: brainchain-worker bond claim <task>"],
+      [["status"], `Usage: ${CLI} bond status <task>`],
+      [["claim", "x"], `Usage: ${CLI} bond claim <task>`],
     ] as const) {
       expect(() => bondArgs([...args])).toThrow(error);
     }
@@ -111,6 +114,24 @@ describe("help", () => {
     }
   });
 
+  it("names a mistake in the command line before a missing key", async () => {
+    for (const name of ["BRAINCHAIN_WORKER_KEY", "BRAINCHAIN_WORKER_KEY_FILE", "BRAINCHAIN_NETWORK", "BRAINCHAIN_RPC_URL"]) vi.stubEnv(name, "");
+    try {
+      const refusals: [string[], string][] = [
+        [["run", "--exec", "cat", "--timeout", "0"], "--timeout is the most minutes"],
+        [["run", "--exec", "cat", "--format", "xml"], "--format is prompt or json"],
+        [["exit", "--to-solana", "nope"], '"nope" is not the address of a Solana wallet'],
+        [["dispute", "x"], `Usage: ${CLI} dispute <task>`],
+        [["price"], `Usage: ${CLI} price <USDG>`],
+        [["price", "lots"], "The price must be a number"],
+      ];
+      for (const [argv, said] of refusals) await expect(main(argv), argv.join(" ")).rejects.toThrow(said);
+      await expect(main(["run", "--exec", "cat"])).rejects.toThrow("Set BRAINCHAIN_WORKER_KEY");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("prints only the command's own lines for each command", async () => {
     for (const command of COMMANDS) {
       for (const argv of [[command, "--help"], [command, "-h"], ["help", command], ["--help", command]]) {
@@ -121,6 +142,24 @@ describe("help", () => {
       }
     }
     expect(await printed(["new-key", "--help"])).not.toContain("BRAINCHAIN_WORKER_KEY=");
+  });
+
+  it("ends each command's own lines with an example of it", () => {
+    for (const command of [...COMMANDS, "exit", "fund"]) {
+      const example = usage(command).split("\n").at(-1)!;
+      expect(example).toMatch(new RegExp(`^Example: (BRAINCHAIN_NETWORK=mainnet )?brainchain-worker ${command}( |$)`));
+      // The words as the shell would pass them, so a flag the command does not take shows here.
+      const words = [...example.matchAll(/'([^']*)'|"((?:\\.|[^"\\])*)"|(\S+)/g)].map(([, single, double, bare]) => single ?? (double === undefined ? bare! : double.replace(/\\(.)/g, "$1")));
+      const args = words.slice(words.indexOf(command) + 1);
+      expect(() => parse(command, args), example).not.toThrow();
+    }
+    expect(usage(undefined)).not.toContain("Example:");
+  });
+
+  it("says what run --once and watch --once exit with, and that a pipe can hold the key", () => {
+    expect(usage("run").replace(/\s+/g, " ")).toContain("--once does one pass and exits 0, or 1 when a task failed or was left too close to its deadline, or the chain could not be read");
+    expect(usage("watch").replace(/\s+/g, " ")).toContain("It exits 0 when all is well, and 1 on a finding or when a decision could not be checked or reported");
+    expect(usage(undefined).replace(/\s+/g, " ")).toContain("BRAINCHAIN_WORKER_KEY_FILE A file or a pipe that holds only the key");
   });
 
   it("prints everything with no command, or a name that is not a command", async () => {
@@ -242,7 +281,7 @@ describe("join", () => {
     expect(error).toBe(
       `${ACCOUNT} holds 0.00002 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ` +
         "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
-        "so a person claims it, and move it here with `npx brainchain-worker bridge --eth 0.001`. The gas drip serves each address once.",
+        `so a person claims it, and move it here with ${cli("bridge --eth 0.001")}. The gas drip serves each address once.`,
     );
   });
 
@@ -261,6 +300,31 @@ describe("join", () => {
       log.mockRestore();
     }
     expect(chain.apply).toHaveBeenCalledOnce();
+  });
+
+  it("prints the hash of each transaction it sends, under its step, and none for an approval it did not need", async () => {
+    const chain = fakeChain(88_000_000_000_000n, 0n);
+    const hash = (n: number) => `0x${String(n).repeat(64)}` as const;
+    chain.claimStakeToken.mockResolvedValue(hash(1) as never);
+    chain.approve.mockResolvedValueOnce(hash(2) as never).mockResolvedValueOnce(undefined);
+    chain.stakeTokens.mockResolvedValue(hash(3) as never);
+    chain.apply.mockResolvedValue(hash(4) as never);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, TESTNET, new Map([["name", "Atlas"], ["about", "Summaries"]]));
+      const lines = log.mock.calls.map((call) => String(call[0]));
+      expect(lines.slice(0, 6)).toEqual([
+        "Claiming tBRAIN from the testnet faucet...",
+        `  claimed: ${hash(1)}`,
+        "Staking 1,000,000 tBRAIN at 0.2 tUSDG per task...",
+        `  approved: ${hash(2)}`,
+        `  staked: ${hash(3)}`,
+        "Applying with a 250,000 tBRAIN bond, returned if Jev allows the worker...",
+      ]);
+      expect(lines[6]).toBe(`  applied: ${hash(4)}`);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("refuses a name or description with characters that hide or turn text around, before reading the chain", async () => {
@@ -383,6 +447,20 @@ describe("join for a worker past its application", () => {
     expect(chain.stakeTokens).toHaveBeenCalledOnce();
   });
 
+  it("says an application that is waiting is waiting, rather than past", async () => {
+    const waiting = () => {
+      const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+      chain.stake.mockResolvedValue({ registered: true, staked: 1_000_000n * BRAIN, unstaking: 0n, unlocksAt: 0n, price: 200_000n });
+      chain.applications.mockResolvedValue({ applications: [{ id: 70n, state: 1, createdAt: 0n, decisionId: undefined }], change: undefined } as never);
+      return chain;
+    };
+    const told = `Application 70 is already waiting for BrainChain's decision`;
+    expect(await quietly(() => join(waiting() as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "Summaries"]])))).toEqual([
+      `${told}, so --name and --about are not used. ${cli("status")} says how long it has waited.`,
+    ]);
+    expect(await quietly(() => join(waiting() as unknown as Chain, MAINNET, new Map()))).toEqual([`${told}. ${cli("status")} says how long it has waited.`]);
+  });
+
   it("says how it counts a name's length", async () => {
     const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
     await expect(join(chain as unknown as Chain, MAINNET, new Map([["name", "\u{1F600}".repeat(31)], ["about", "Summaries"]]))).rejects.toThrow("--name is at most 60 characters, counted as UTF-16 units: one for nearly all text, two or more for an emoji");
@@ -427,12 +505,72 @@ describe("watchPlace", () => {
 
   it("keeps a place for each key apart from the place of runs without one", () => {
     const folder = mkdtempSync(path.join(tmpdir(), "brainchain-watch-"));
-    writeWatched(watchPlace(LOG, undefined), 100n, folder);
+    writeWatched(watchPlace(LOG, undefined), { seen: 100n }, folder);
     expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBeUndefined();
-    writeWatched(watchPlace(LOG, ACCOUNT), 94n, folder);
-    expect(readWatched(watchPlace(LOG, undefined), folder)).toBe(100n);
-    expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBe(94n);
+    writeWatched(watchPlace(LOG, ACCOUNT), { seen: 94n, block: 5_000n }, folder);
+    expect(readWatched(watchPlace(LOG, undefined), folder)).toEqual({ seen: 100n });
+    expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toEqual({ seen: 94n, block: 5_000n });
     expect(readWatched(watchPlace(LOG, "0x00000000000000000000000000000000000000c2"), folder)).toBeUndefined();
+  });
+});
+
+describe("fetchRecord", () => {
+  it("stops reading a record past a megabyte", async () => {
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+    });
+    await expect(fetchRecord("https://brain.example/records/1.json", async () => new Response(endless))).rejects.toThrow("the record at https://brain.example/records/1.json is larger than 1000000 bytes");
+    expect(pulled).toBeLessThan(20);
+  });
+
+  it("follows no redirect", async () => {
+    const asked: string[] = [];
+    const server = createServer((req, res) => {
+      asked.push(req.url!);
+      if (req.url === "/records/1.json") res.writeHead(302, { location: "/elsewhere/1.json" });
+      res.end("a record");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      await expect(fetchRecord(`http://127.0.0.1:${(server.address() as AddressInfo).port}/records/1.json`)).rejects.toThrow("fetch failed");
+      expect(asked).toEqual(["/records/1.json"]);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe("watchResume", () => {
+  it("picks a long watch up where the last run stopped, and checks the latest few only on a first --once", () => {
+    const folder = mkdtempSync(path.join(tmpdir(), "brainchain-watch-"));
+    const place = watchPlace("0x4E4cB48f3802bD519E0Eed896dF82197B0ecBc09", ACCOUNT);
+    const first = watchResume(place, false, folder);
+    expect(first.seenDecision).toBeUndefined();
+    expect(first).not.toHaveProperty("recent");
+    expect(watchResume(place, true, folder)).toMatchObject({ seenDecision: undefined, recent: 10n, once: true });
+    first.saw(40n, undefined);
+    const restarted = watchResume(place, false, folder);
+    expect(restarted.seenDecision).toBe(40n);
+    expect(restarted).not.toHaveProperty("recent");
+    expect(restarted).not.toHaveProperty("seenBlock");
+    expect(watchResume(place, true, folder).seenDecision).toBe(40n);
+  });
+
+  it("keeps the block of the latest change listed, so a later run lists only closed changes queued after it", () => {
+    const folder = mkdtempSync(path.join(tmpdir(), "brainchain-watch-"));
+    const place = watchPlace("0x4E4cB48f3802bD519E0Eed896dF82197B0ecBc09", undefined);
+    watchResume(place, true, folder).saw(357n, 9_120n);
+    expect(watchResume(place, true, folder)).toMatchObject({ seenDecision: 357n, seenBlock: 9_120n });
+    // A place from before blocks were kept still reads, and gains one at the next save.
+    writeWatched(place, { seen: 357n }, folder);
+    const old = watchResume(place, true, folder);
+    expect(old).not.toHaveProperty("seenBlock");
+    old.saw(357n, 9_120n);
+    expect(readWatched(place, folder)).toEqual({ seen: 357n, block: 9_120n });
   });
 });
 
@@ -487,6 +625,54 @@ describe("names every object inherits", () => {
     for (const name of inherited) {
       expect(() => parse("status", [`--${name}`])).toThrow(`The status command has no --${name} flag`);
       expect(() => parse("watch", [`--${name}`, "--once"])).toThrow(`The watch command has no --${name} flag`);
+    }
+  });
+});
+
+describe("commandName", () => {
+  it("is the npx form when npx started the CLI, and the binary's name otherwise", () => {
+    expect(commandName({ npm_command: "exec" })).toBe("npx brainchain-worker");
+    expect(commandName({ npm_command: "test" })).toBe("brainchain-worker");
+    expect(commandName({})).toBe("brainchain-worker");
+  });
+});
+
+describe("new-key --file", () => {
+  it("prints the file's full path, with ~ expanded, so it can be set from any folder", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "brainchain-worker-home-"));
+    vi.stubEnv("HOME", home);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await main(["new-key", "--file", "~/k.key"]);
+      expect(String(log.mock.calls[0]![0]).split("\n")[0]).toBe(`BRAINCHAIN_WORKER_KEY_FILE=${path.join(home, "k.key")}`);
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("run --try", () => {
+  it("needs no key, no stake and no chain, and says which check it could not run without a key", async () => {
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY", "");
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY_FILE", "");
+    // An RPC that does not answer: --try never reads it.
+    vi.stubEnv("BRAINCHAIN_RPC_URL", "http://127.0.0.1:9");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await main(["run", "--exec", "wc -l | tr -d ' '", "--try"]);
+      const lines = log.mock.calls.map((call) => String(call[0]));
+      expect(lines[1]).toMatch(/^Would deliver these \d+ bytes, which pass every check a result must:\n\d+$/);
+      expect(lines.at(-1)).toBe("No key is set, so the check that a result never holds the worker's key did not run.");
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("takes neither --once nor --mint, since it delivers nothing", async () => {
+    for (const flag of ["--once", "--mint"]) {
+      await expect(main(["run", "--exec", "cat", "--try", flag])).rejects.toThrow(new UsageError("--try runs the command once on a sample task and delivers nothing, so it takes neither --once nor --mint"));
     }
   });
 });

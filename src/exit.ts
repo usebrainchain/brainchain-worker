@@ -5,10 +5,11 @@
 
 import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
-import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, formatUnits, http, isAddress, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, formatUnits, isAddress, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { RECEIPT_MS, reason } from "./chain.js";
-import { chainOf, type Network } from "./network.js";
+import { chainOf, rpcTransport, type Network } from "./network.js";
+import { printable } from "./work.js";
 
 export interface ExitTerms {
   desk: Address;
@@ -124,8 +125,8 @@ export interface ExitChain {
 }
 
 export function createExitChain(network: Network, account: PrivateKeyAccount, receiptMs = RECEIPT_MS): ExitChain {
-  const read = createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }), pollingInterval: 1_000 });
-  const wallet = createWalletClient({ account, chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }) });
+  const read = createPublicClient({ chain: chainOf(network), transport: rpcTransport(network.rpc), pollingInterval: 1_000 });
+  const wallet = createWalletClient({ account, chain: chainOf(network), transport: rpcTransport(network.rpc) });
   return {
     account: account.address,
     bountyBalance: (token) => read.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
@@ -145,6 +146,12 @@ export function createExitChain(network: Network, account: PrivateKeyAccount, re
   };
 }
 
+/** Refuses a Solana payout that cannot be made, before anything is read or signed. */
+export function checkToSolana(network: Network, toSolana: string): void {
+  if (!isSolanaAddress(toSolana)) throw new Error(`"${toSolana}" is not the address of a Solana wallet, so USDC sent there could not be spent`);
+  if (network.id !== "mainnet") throw new Error("--to-solana is mainnet only: Relay connects Solana with Robinhood Chain mainnet, not the testnets");
+}
+
 export async function exit(
   network: Network,
   chain: ExitChain,
@@ -162,10 +169,9 @@ export async function exit(
   const { log, dry } = options;
   const fetchImpl = options.fetchImpl ?? fetch;
   const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  if (options.toSolana !== undefined) {
-    if (!isSolanaAddress(options.toSolana)) throw new Error(`"${options.toSolana}" is not the address of a Solana wallet, so USDC sent there could not be spent`);
-    if (network.id !== "mainnet") throw new Error("--to-solana is mainnet only: Relay connects Solana with Robinhood Chain mainnet, not the testnets");
-  }
+  // The exit's record is the service's text, printed as one plain line.
+  const plain = (text: unknown) => printable(String(text));
+  if (options.toSolana !== undefined) checkToSolana(network, options.toSolana);
   const terms = await exitTerms(network.service, fetchImpl);
   const refused = termsProblem(network, terms);
   if (refused) throw new Error(refused);
@@ -201,7 +207,7 @@ export async function exit(
   for (;;) {
     record = await exitRecord(network.service, tx, fetchImpl).catch(() => undefined);
     if (record?.state === "paid" || record?.state === "returned" || record?.state === "held") break;
-    if (record?.reason && record.reason !== last) log(`Waiting: ${record.reason}.`);
+    if (record?.reason && record.reason !== last) log(`Waiting: ${plain(record.reason)}.`);
     last = record?.reason ?? last;
     if (Date.now() > end) {
       const within = options.toSolana === undefined ? "The desk pays it or sends it back within a day" : "Within a day the desk pays it or sends it back, or holds it for a person if Relay has not settled the move";
@@ -211,18 +217,22 @@ export async function exit(
     await sleep(options.pollMs ?? 10_000);
   }
   if (record.state === "held") {
-    log(`The desk holds this exit for a person: ${record.reason ?? "no reason given"}. Nothing more is sent for it until it is settled; follow it at ${follow}.`);
+    log(`The desk holds this exit for a person: ${plain(record.reason ?? "no reason given")}. Nothing more is sent for it until it is settled; follow it at ${follow}.`);
     process.exitCode = 1;
     return;
   }
   if (record.state === "returned") {
-    log(`The desk sent it back on ${network.name}: ${record.reason ?? "no reason given"} (${record.returnTx}).`);
+    log(`The desk sent it back on ${network.name}: ${plain(record.reason ?? "no reason given")} (${plain(record.returnTx)}).`);
     process.exitCode = 1;
     return;
   }
-  if (record.solana && record.relayRequest) {
-    log(`Paid on Solana: ${show(BigInt(record.net))} as USDC to ${record.solana} (Relay request ${record.relayRequest}).`);
+  if (!/^\d+$/.test(String(record.net))) {
+    log(`The desk reports this exit paid, with an amount exit cannot read; follow it at ${follow}.`);
     return;
   }
-  log(`Paid on the parent chain: ${show(BigInt(record.net))} (${record.payoutTx})${record.reason ? `. ${record.reason}` : ""}.`);
+  if (record.solana && record.relayRequest) {
+    log(`Paid on Solana: ${show(BigInt(record.net))} as USDC to ${plain(record.solana)} (Relay request ${plain(record.relayRequest)}).`);
+    return;
+  }
+  log(`Paid on the parent chain: ${show(BigInt(record.net))} (${plain(record.payoutTx)})${record.reason ? `. ${plain(record.reason)}` : ""}.`);
 }

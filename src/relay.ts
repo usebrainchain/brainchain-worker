@@ -4,9 +4,10 @@
 
 import type { Address, Hex } from "viem";
 
+import { printable } from "./work.js";
+
 export const RELAY_API = "https://api.relay.link";
 export const SOLANA_CHAIN_ID = 792703809;
-/** USDC on Solana. */
 export const SOLANA_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const NATIVE = "0x0000000000000000000000000000000000000000";
 /** The most a move may cost, as a share of its dollar value; small moves may cost up to FIXED_LOSS_USD instead. */
@@ -62,7 +63,7 @@ export async function relayQuote(request: QuoteRequest, fetchImpl: typeof fetch 
   });
   const body = (await response.json().catch(() => ({}))) as Record<string, any>;
   if (!response.ok || !body.details || !Array.isArray(body.steps)) {
-    throw new RelayError(`Relay has no route for this move right now${body.message ? `: ${body.message}` : ""}`);
+    throw new RelayError(`Relay has no route for this move right now${body.message ? `: ${printable(String(body.message))}` : ""}`);
   }
   const requestId = body.steps.find((s: { requestId?: string }) => s.requestId)?.requestId;
   if (!requestId) throw new RelayError("Relay's quote carries no request id to follow");

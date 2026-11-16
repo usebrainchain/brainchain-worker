@@ -2,8 +2,9 @@ import { decodeAbiParameters, decodeFunctionData, parseUnits, type Address, type
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
-import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, createBondChain, deedPage, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, MISSED_TO, proofIndexAbi, Ruling, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts, type BondTerms } from "./bond.js";
+import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, createBondChain, deedPage, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, MISSED_TO, proofIndexAbi, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts, type BondTerms } from "./bond.js";
 import { Status } from "./chain.js";
+import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
@@ -11,6 +12,8 @@ const POSTER: Address = "0x00000000000000000000000000000000000000D1";
 const INDEX: Address = "0x00000000000000000000000000000000000000f1";
 const TX: Hex = `0x${"fe".repeat(32)}`;
 const USDG = (n: string) => parseUnits(n, 6);
+/** ShippedDeeds.Ruling, as the contract declares it: Conceded is 5 and CheckMet 7. */
+const Ruling = { None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 4, Conceded: 5, Default: 6, CheckMet: 7 } as const;
 const NOW = 1_800_000_000n;
 const config: BondConfig & { proofIndex: Address } = { ...MAINNET.proofs.bonds!, proofIndex: INDEX };
 const offline = (async () => {
@@ -48,8 +51,7 @@ async function run(chain: BondChain, amount: string, options: { yes?: boolean; a
 }
 
 describe("ShippedDeeds' enums", () => {
-  it("pins Ruling as the contract declares it: Conceded is 5 and CheckMet 7, and a line reads the settled split, never the ruling number", () => {
-    expect(Ruling).toEqual({ None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 4, Conceded: 5, Default: 6, CheckMet: 7 });
+  it("pins DeedStatus as the contract declares it, and a line reads the settled split, never the ruling number", () => {
     expect(DeedStatus).toEqual({ None: 0, Open: 1, Ruled: 2, Appealed: 3, Settled: 4 });
     const delivered = view({ status: DeedStatus.Settled, ruling: Ruling.CheckMet, remainderBps: 10_000, settledAt: NOW });
     expect(delivered.ruling).toBe(7);
@@ -110,7 +112,7 @@ describe("bond", () => {
     expect(lines[0]).toBe(
       [
         "Bond 5 USDG on task 12 (bounty 1 USDG, deadline 2027-01-16T08:00:00Z).",
-        "  Released by the task's Proof: 4.95 USDG back after Shipped's 1% fee (0.05 USDG), collected with `bond claim 12`.",
+        `  Released by the task's Proof: 4.95 USDG back after Shipped's 1% fee (0.05 USDG), collected with ${cli("bond claim 12")}.`,
         "  Missed: if no Proof is recorded by 2027-01-19T08:00:00Z, the 5 USDG goes to 0x00000000000000000000000000000000000000D1, the poster.",
         `  Gas now: about ${(Number(GAS.create + GAS.approve) * 0.02) / 1e9} ETH on Robinhood Chain for the approval and the bond at 0.02 gwei; the claim later costs about ${(Number(GAS.withdraw) * 0.02) / 1e9} ETH.`,
       ].join("\n"),
@@ -121,7 +123,7 @@ describe("bond", () => {
     expect(amount).toBe(USDG("5"));
     expect(terms.refundTo).toBe(POSTER);
     expect(terms.deadline).toBe(NOW + 86_400n + BOND_LEAD_SEC);
-    expect(lines.at(-1)).toBe(`A bond with registry id 7 is open on Shipped (${TX}). \`bond status 12\` follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+    expect(lines.at(-1)).toBe(`A bond with registry id 7 is open on Shipped (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
     expect(bondGas(20_000_000n, true)).toBe((GAS.create + GAS.approve) * 20_000_000n);
   });
 
@@ -181,7 +183,7 @@ describe("bond", () => {
 
   it("says when bonds are closed: no registry on testnet, no index yet on mainnet", async () => {
     const chain = fakeChain({ task: task() });
-    await expect(run(chain, "5", { yes: true, network: TESTNET, config: TESTNET.proofs.bonds })).rejects.toThrow("Bonds run on Robinhood Chain against Shipped's registry, which BrainChain testnet has no counterpart of.");
+    await expect(run(chain, "5", { yes: true, network: TESTNET, config: TESTNET.proofs.bonds })).rejects.toThrow("Bonds run against Shipped's registry on Robinhood Chain, and BrainChain testnet has no such registry.");
     await expect(run(chain, "5", { yes: true, config: { ...MAINNET.proofs.bonds!, proofIndex: undefined } })).rejects.toThrow("Bonds are not open yet: BrainChain's ProofIndex on Robinhood Chain, which a bond's check reads, is not deployed.");
     expect(chain.task).not.toHaveBeenCalled();
   });
@@ -237,7 +239,7 @@ describe("bond status", () => {
       return lines[0];
     };
     expect(await say(0n)).toBe(`${head}, delivered at 2027-01-15T08:00:00Z: the bond less Shipped's 1% fee, 4.95 USDG, was collected: the registry owes this wallet nothing`);
-    expect(await say(USDG("6.93"))).toBe(`${head}, delivered at 2027-01-15T08:00:00Z: the bond less Shipped's 1% fee, 4.95 USDG, was credited to this wallet on the registry, which owes it 6.93 USDG in all; \`bond claim 12\` collects that`);
+    expect(await say(USDG("6.93"))).toBe(`${head}, delivered at 2027-01-15T08:00:00Z: the bond less Shipped's 1% fee, 4.95 USDG, was credited to this wallet on the registry, which owes it 6.93 USDG in all; ${cli("bond claim 12")} collects that`);
   });
 });
 
@@ -310,7 +312,7 @@ describe("deed page", () => {
   it("names the bond by Shipped's number and page after creating it", async () => {
     const chain = fakeChain({ task: task() });
     const { lines } = await run(chain, "5", { yes: true, fetch: answering(page) });
-    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). \`bond status 12\` follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
   });
 
   it("names an open bond by Shipped's number in the refusal of a second", async () => {

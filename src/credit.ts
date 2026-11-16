@@ -1,7 +1,8 @@
-import { BaseError, ContractFunctionRevertedError, createPublicClient, http, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { BaseError, ContractFunctionRevertedError, createPublicClient, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { reason } from "./chain.js";
-import { parentChainOf, type Network } from "./network.js";
+import { parentChainOf, rpcTransport, type Network } from "./network.js";
+import { printable } from "./work.js";
 
 /** Priors' credit pool on Robinhood Chain, where BrainChain's identity is a root sponsor. */
 export interface PriorsConfig {
@@ -38,7 +39,7 @@ export interface CreditChain {
 export function createCreditChain(network: Network, account: PrivateKeyAccount): CreditChain {
   const priors = network.priors;
   if (!priors || !network.identity || !network.bridge) throw new Error(`${network.name} has no Priors credit pool`);
-  const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: http(network.bridge.rpc, { timeout: 20_000 }) });
+  const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
   return {
     account: account.address,
     ownerOf: (agentId) => parent.readContract({ address: network.identity!, abi: identityAbi, functionName: "ownerOf", args: [agentId] }),
@@ -88,8 +89,8 @@ export async function credit(
     body,
     signal: AbortSignal.timeout(20_000),
   });
-  const answer = (await response.json().catch(() => ({}))) as { error?: string };
-  if (!response.ok) throw new Error(answer.error ?? `${response.status} from ${network.service}`);
+  const answer = (await response.json().catch(() => ({}))) as { error?: unknown };
+  if (!response.ok) throw new Error(typeof answer.error === "string" ? printable(answer.error) : `${response.status} from ${network.service}`);
   log(`Consent sent for agent ${agentId}, valid for ${CONSENT_DAYS} days.`);
   log("BrainChain backs a 25 USDG line on Priors once this worker has 3 accepted tasks, more accepted than refunded,");
   log("and has not let two hires in a row expire, as long as BrainChain has 25 USDG of stake free. Borrow and repay it");

@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { Status, type Flight } from "./chain.js";
+import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { aboutEth, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
+import { aboutEth, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, shortOfStake, stake, unapplied, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
   "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
-  "brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is 0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37.";
+  `${cli("bridge --stake <amount>")} (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is 0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37.`;
 
 function standing(overrides: { staked?: bigint; unstaking?: bigint; unlocksAt?: bigint } = {}): Snapshot {
   const w = { registered: true, staked: 0n, unstaking: 0n, unlocksAt: 0n, price: 200_000n, ...overrides };
@@ -100,12 +101,12 @@ describe("gasLine", () => {
 
   const FAUCET =
     "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
-    "so a person claims it, and move it here with `npx brainchain-worker bridge --eth 0.001`";
+    `so a person claims it, and move it here with ${cli("bridge --eth 0.001")}`;
 
   it("says what join needs when the wallet lacks it and join has something to do", () => {
     expect(gasLine(TESTNET, WORKER, applying, 0n, GWEI_TENTH, true, 0)).toBe(`0 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ${gasHelp(TESTNET, WORKER, 0n, 0)}.`);
     expect(gasLine(MAINNET, WORKER, applying, 20_000_000_000_000n, GWEI_TENTH, false, 0)).toBe(
-      `0.00002 ETH on BrainChain; join needs about 0.00008 ETH for gas. Send this address ETH on Robinhood Chain, then move it here with \`npx brainchain-worker bridge --eth 0.001\`.`,
+      `0.00002 ETH on BrainChain; join needs about 0.00008 ETH for gas. Send this address ETH on Robinhood Chain, then move it here with ${cli("bridge --eth 0.001")}.`,
     );
     expect(gasLine(TESTNET, WORKER, standing({ staked: 100n * BRAIN }), 0n, GWEI_TENTH, false, 3)).toContain("join needs about 0.000034 ETH");
   });
@@ -134,9 +135,12 @@ describe("gasLine", () => {
   });
 
   it("gives the balance when the wallet has enough, and how many results it delivers once joined", () => {
-    expect(gasLine(TESTNET, WORKER, applying, 10n ** 15n, GWEI_TENTH, true, 0)).toBe("0.001 ETH");
+    // Joining comes out of the same ETH: the faucet claim, the stake and the application, 536,000 gas.
+    expect(gasLine(TESTNET, WORKER, applying, 10n ** 15n, GWEI_TENTH, true, 0)).toBe("0.001 ETH, enough to join and then for about 89 deliveries at the current gas price");
+    expect(deliveriesAfterJoin(applying, 10n ** 15n, GWEI_TENTH, true)).toBe(deliveriesLeft(10n ** 15n - 536_000n * GWEI_TENTH, GWEI_TENTH));
+    expect(deliveriesAfterJoin(staked, 10n ** 15n, GWEI_TENTH)).toBe(deliveriesLeft(10n ** 15n, GWEI_TENTH));
     expect(gasLine(TESTNET, WORKER, staked, 10n ** 15n, GWEI_TENTH, false, 6)).toBe("0.001 ETH, enough for about 94 deliveries at the current gas price");
-    // What a drip leaves after join, as the newcomer audit measured it.
+    // What a drip leaves after join, as measured on testnet.
     expect(gasLine(TESTNET, WORKER, staked, 51_081_600_000_000n, GWEI_TENTH, false, 6)).toBe("0.0000510816 ETH, enough for about 3 deliveries at the current gas price");
   });
 });
@@ -147,8 +151,8 @@ describe("hireable", () => {
 
   it("points to status from run only", () => {
     const low = standing({ staked: 100n * BRAIN });
-    expect(hireable(low, TESTNET, "run")).toBe("no: your stake is below the minimum of 500 tBRAIN. Run join to stake again; status shows what it needs.");
-    expect(hireable(low, TESTNET, "status")).toBe("no: your stake is below the minimum of 500 tBRAIN. Run join to stake again.");
+    expect(hireable(low, TESTNET, "run")).toBe(`no: your stake is below the minimum of 500 tBRAIN. Run ${cli("join")} to stake again; ${cli("status")} shows what it needs.`);
+    expect(hireable(low, TESTNET, "status")).toBe(`no: your stake is below the minimum of 500 tBRAIN. Run ${cli("join")} to stake again.`);
   });
 
   it("says when an allowed worker can be hired, and that its stake must come back first if it left", () => {
@@ -157,11 +161,49 @@ describe("hireable", () => {
       const eta = BigInt(Date.parse("2026-11-04T10:58:18Z") / 1000);
       expect(hireable(allowedSoon(eta, 500n * BRAIN), TESTNET, "status")).toBe("no: Jev allowed this worker; it can be hired after 2026-11-04T10:58:18Z");
       expect(hireable(allowedSoon(eta, 0n), TESTNET, "status")).toBe(
-        "no: Jev allowed this worker; it can be hired after 2026-11-04T10:58:18Z. Its stake is below the minimum of 500 tBRAIN, so run join to stake again first.",
+        `no: Jev allowed this worker; it can be hired after 2026-11-04T10:58:18Z. Its stake is below the minimum of 500 tBRAIN, so run ${cli("join")} to stake again first.`,
       );
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("with an application waiting", () => {
+    const filed = BigInt(Date.parse("2026-11-16T14:00:00Z") / 1000);
+    const open = { ...standing(), allowed: false, applying: false, applications: [{ id: 70n, state: 1, createdAt: filed, decisionId: undefined }] } as unknown as Snapshot;
+    const at = (time: string) => {
+      vi.setSystemTime(new Date(time));
+      try {
+        return hireable(open, TESTNET, "status");
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+
+    it("says how long it has waited for BrainChain and where to look if it runs long", () => {
+      expect(at("2026-11-16T14:25:30Z")).toBe(
+        "no: application 70 has waited 25 minutes for BrainChain's decision (since 2026-11-16T14:00:00Z). It usually takes a few minutes; " +
+          "if it takes more than an hour, check https://brain.testnet.usebrainchain.com/health or write to hello@usebrainchain.com.",
+      );
+      expect(at("2026-11-16T17:10:00Z")).toBe(
+        "no: application 70 has waited 3 hours 10 minutes for BrainChain's decision (since 2026-11-16T14:00:00Z), longer than the few minutes it usually takes. " +
+          "Check https://brain.testnet.usebrainchain.com/health, and if the service answers, write to hello@usebrainchain.com with the application's number.",
+      );
+    });
+
+    it("gives run a line that stays the same while nothing changes, since run logs each new one", () => {
+      const line = hireable(open, TESTNET, "run");
+      expect(line).toBe(
+        "no: application 70 has waited for BrainChain's decision since 2026-11-16T14:00:00Z. It usually takes a few minutes; " +
+          "if it takes more than an hour, check https://brain.testnet.usebrainchain.com/health or write to hello@usebrainchain.com.",
+      );
+      vi.setSystemTime(Date.now() + 600_000);
+      try {
+        expect(hireable(open, TESTNET, "run")).toBe(line);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("does not promise a time already past while the change waits to run", () => {
@@ -175,6 +217,34 @@ describe("hireable", () => {
   });
 });
 
+describe("unapplied", () => {
+  const fresh = { ...standing(), allowed: false, applying: true } as unknown as Snapshot;
+
+  it("is a worker that never applied, staked or not, with nothing of its own in flight", () => {
+    expect(unapplied(fresh, 0)).toBe(true);
+    expect(unapplied({ ...fresh, w: { ...fresh.w, staked: 500n * BRAIN }, toStake: 0n } as Snapshot, 0)).toBe(true);
+  });
+
+  it("is not a worker that is allowed, about to be, has applied, or still has a task to finish", () => {
+    expect(unapplied(standing(), 0)).toBe(false);
+    expect(unapplied({ ...fresh, pending: true } as Snapshot, 0)).toBe(false);
+    expect(unapplied({ ...fresh, applications: [{ id: 3n, state: 3, createdAt: 0n, decisionId: 9n }] } as unknown as Snapshot, 0)).toBe(false);
+    expect(unapplied(fresh, 1)).toBe(false);
+  });
+});
+
+describe("lasted", () => {
+  it("gives a length of time in its largest two units", () => {
+    expect(lasted(0n)).toBe("less than a minute");
+    expect(lasted(59n)).toBe("less than a minute");
+    expect(lasted(60n)).toBe("1 minute");
+    expect(lasted(25n * 60n + 30n)).toBe("25 minutes");
+    expect(lasted(3_900n)).toBe("1 hour 5 minutes");
+    expect(lasted(2n * 86_400n + 3n * 3_600n + 120n)).toBe("2 days 3 hours");
+    expect(lasted(2n * 86_400n + 120n)).toBe("2 days");
+  });
+});
+
 describe("shortOfStake", () => {
   it("tells a mainnet worker short of BRAIN where to buy it and how to bridge it", () => {
     expect(shortOfStake(MAINNET, standing().w, 100n * BRAIN, 1_250_000n * BRAIN, 1_000n)).toBe(`The wallet holds 100 BRAIN of the 1,250,000 BRAIN join needs. ${buy}`);
@@ -183,14 +253,14 @@ describe("shortOfStake", () => {
   it("points to the stake that is unstaking", () => {
     const w = standing({ unstaking: 1_000_000n * BRAIN, unlocksAt: 2_000n }).w;
     expect(shortOfStake(MAINNET, w, 0n, 1_250_000n * BRAIN, 1_000n)).toBe(
-      `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${buy} Or run withdraw after 1970-01-01T00:33:20Z and join with the 1,000,000 BRAIN it returns.`,
+      `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${buy} Or run ${cli("withdraw")} after 1970-01-01T00:33:20Z and join with the 1,000,000 BRAIN it returns.`,
     );
-    expect(shortOfStake(MAINNET, w, 0n, 1_250_000n * BRAIN, 2_000n)).toContain("Or run withdraw now and join");
+    expect(shortOfStake(MAINNET, w, 0n, 1_250_000n * BRAIN, 2_000n)).toContain(`Or run ${cli("withdraw")} now and join`);
   });
 });
 
 describe("flightLine", () => {
-  // Task 45 and 46 of the report, read at each step.
+  // Two real tasks, 45 and 46, read at each step.
   const GRADED = 1_793_806_740n;
   const flight = (overrides: Partial<Flight>): Flight => ({
     id: 45n,
@@ -211,7 +281,7 @@ describe("flightLine", () => {
 
   it("says a rejected task can still be disputed, and an open dispute when Jev rules", () => {
     expect(flightLine(flight({ id: 46n, accepted: false }))).toBe(
-      "task 46: not accepted, refunded to the poster after 2026-11-04T16:39:00Z unless the grade is disputed with `dispute 46`",
+      `task 46: not accepted, refunded to the poster after 2026-11-04T16:39:00Z unless the grade is disputed with ${cli("dispute 46")}`,
     );
     expect(flightLine(flight({ id: 46n, status: Status.Disputed, accepted: false, disputedByModel: true, disputedAt: GRADED + 600n }))).toBe(
       "task 46: grade disputed by this worker, Jev rules by 2026-11-04T21:49:00Z",
@@ -221,7 +291,7 @@ describe("flightLine", () => {
 
   it("says what a ruling does and until when it can be appealed", () => {
     const appeal = { window: 3_600n, ruledAt: GRADED + 700n, pays: false, appealedAt: 0n };
-    expect(flightLine(flight({ id: 46n, status: Status.Ruled, appeal }))).toBe("task 46: the ruling refunds the poster after 2026-11-04T16:50:40Z unless appealed with `appeal 46`");
+    expect(flightLine(flight({ id: 46n, status: Status.Ruled, appeal }))).toBe(`task 46: the ruling refunds the poster after 2026-11-04T16:50:40Z unless appealed with ${cli("appeal 46")}`);
     expect(flightLine(flight({ id: 46n, status: Status.Ruled, appeal: { ...appeal, pays: true } }))).toBe(
       "task 46: the ruling pays this worker after 2026-11-04T16:50:40Z unless the poster appeals",
     );
