@@ -342,10 +342,10 @@ export function createWatch(options: {
     if (seenDecision === undefined && options.recent !== undefined) seenDecision = count > options.recent ? count - options.recent : 0n;
     // A log restarted under a new set of contracts has fewer decisions than the count kept from the old one.
     if (seenDecision !== undefined && seenDecision > count) seenDecision = options.recent === undefined ? undefined : count > options.recent ? count - options.recent : 0n;
+    // Saved below like any round's place, so a run that restarts picks up from here.
     if (seenDecision === undefined) {
       seenDecision = count;
       log(`${count} decisions recorded so far; new ones are checked from here`);
-      return;
     }
     const checked: { id: bigint; proof: Hex }[] = [];
     const found: { id: bigint; checks: string[] }[] = [];

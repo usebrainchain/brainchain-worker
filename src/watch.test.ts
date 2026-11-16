@@ -216,6 +216,13 @@ describe("watch", () => {
     expect(verify.mock.calls.map((c) => c[0])).toEqual([4n, 5n]);
     expect(lines.slice(1)).toEqual(["decision 4 verified", "decision 5 does not verify: record hash: does not match payloadHash"]);
   });
+
+  it("keeps its place from the first round, where it only notes where the log stands", async () => {
+    const { chain } = fakeChain({ decisions: [3n] });
+    const seen: bigint[] = [];
+    await createWatch({ network: TESTNET, chain, verify: async () => ({ findings: [] }), veto: false, log: () => {}, saw: (n) => seen.push(n) }).round();
+    expect(seen).toEqual([3n]);
+  });
 });
 
 describe("a veto sent through the gate", () => {

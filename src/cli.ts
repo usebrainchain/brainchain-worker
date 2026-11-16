@@ -128,9 +128,10 @@ const COMMAND_USAGE: Record<string, string> = {
                                             once, and the place moves on. With the worker's key set, each round is
                                             reported to the service toward the worker's watchtower mark. --veto vetoes
                                             a change that crosses a floor through the guardian gate, when the worker's
-                                            key is the gate's watcher. --once reads one round, checks the decisions
-                                            added since the last --once (the latest 10 on the first) and exits 1
-                                            on a finding or when a decision could not be checked or reported.`,
+                                            key is the gate's watcher. Each run picks up where the last one stopped.
+                                            --once reads one round, checks the decisions added since the last run
+                                            (the latest 10 on the first) and exits 1 on a finding or when a
+                                            decision could not be checked or reported.`,
   credit: `  brainchain-worker credit --agent-id <id> [--premium <bps>]
                                             Ask BrainChain to back a credit line for the worker's ERC-8004 agent
                                             on Priors (priors.trade): signs Priors' consent with the agent owner's
@@ -612,8 +613,27 @@ async function bondCommand(network: Network, positional: string[], yes: boolean)
   return bond(network, config, chain, args.task, { amount: args.amount, yes, ...(ask ? { ask } : {}), log: console.log });
 }
 
-/** Where watch --once keeps its place: a key's place counts toward its watchtower mark, so each key has its own, apart from runs without one. */
+/** Where watch keeps its place: a key's place counts toward its watchtower mark, so each key has its own, apart from runs without one. */
 export const watchPlace = (log: Address, key: Address | undefined) => (key === undefined ? log : `${log}.${key}`);
+
+/**
+ * Where a watch picks up. Every run keeps its place on disk, so a long watch
+ * that restarts checks the decisions made while it was down; only a first
+ * --once checks the latest few.
+ */
+export function watchResume(place: string, once: boolean, dir?: string) {
+  let kept = readWatched(place, dir);
+  return {
+    seenDecision: kept,
+    ...(once ? { recent: FIRST_RUN_DECISIONS } : {}),
+    saw(count: bigint) {
+      // A long watch ends a round every 30 seconds, mostly with nothing new.
+      if (count === kept) return;
+      writeWatched(place, count, dir);
+      kept = count;
+    },
+  };
+}
 
 /** What watch says at start. Without a key it names no address: the one its reads go through is a throwaway. */
 export function watching(network: Network, address: Address | undefined, veto: boolean): string {
@@ -745,8 +765,7 @@ export async function main(argv: string[]): Promise<void> {
       ...(keyed ? { report: createReporter(network, account) } : {}),
       veto,
       log: console.log,
-      // Each run of --once is a new process, so it keeps its place on disk; a first run checks the latest few.
-      ...(once ? { seenDecision: readWatched(place), recent: FIRST_RUN_DECISIONS, saw: (count: bigint) => writeWatched(place, count) } : {}),
+      ...watchResume(place, once),
     });
     if (veto && !network.contracts.gate) throw new UsageError(`${network.name} has no guardian gate yet, so there is nothing to veto through`);
     if (veto) await requireWatcher(chain, console.log);

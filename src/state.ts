@@ -56,7 +56,7 @@ export interface Store {
 
 export const stateDir = () => join(homedir(), ".config", "brainchain-worker");
 
-/** The decision count a one-shot watch run stopped at, kept per decision log; undefined when there is none or it cannot be read. */
+/** The decision count a watch run got to, kept per decision log; undefined when there is none or it cannot be read. */
 export function readWatched(log: string, dir = stateDir()): bigint | undefined {
   try {
     const { seen } = JSON.parse(readFileSync(join(dir, `watch.${log.toLowerCase()}.json`), "utf8")) as { seen?: unknown };

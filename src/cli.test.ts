@@ -8,7 +8,7 @@ import { parseEther, type Address } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
-import { asksHelp, bondArgs, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace } from "./cli.js";
+import { asksHelp, bondArgs, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace, watchResume } from "./cli.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
@@ -433,6 +433,22 @@ describe("watchPlace", () => {
     expect(readWatched(watchPlace(LOG, undefined), folder)).toBe(100n);
     expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBe(94n);
     expect(readWatched(watchPlace(LOG, "0x00000000000000000000000000000000000000c2"), folder)).toBeUndefined();
+  });
+});
+
+describe("watchResume", () => {
+  it("picks a long watch up where the last run stopped, and checks the latest few only on a first --once", () => {
+    const folder = mkdtempSync(path.join(tmpdir(), "brainchain-watch-"));
+    const place = watchPlace("0x4E4cB48f3802bD519E0Eed896dF82197B0ecBc09", ACCOUNT);
+    const first = watchResume(place, false, folder);
+    expect(first.seenDecision).toBeUndefined();
+    expect(first).not.toHaveProperty("recent");
+    expect(watchResume(place, true, folder)).toMatchObject({ seenDecision: undefined, recent: 10n });
+    first.saw(40n);
+    const restarted = watchResume(place, false, folder);
+    expect(restarted.seenDecision).toBe(40n);
+    expect(restarted).not.toHaveProperty("recent");
+    expect(watchResume(place, true, folder).seenDecision).toBe(40n);
   });
 });
 
