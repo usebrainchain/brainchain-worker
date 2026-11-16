@@ -9,6 +9,7 @@ import bs58 from "bs58";
 import { AddressLookupTableAccount, Connection, Keypair, PublicKey, SendTransactionError, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { formatEther, formatUnits, parseUnits, type Address } from "viem";
 
+import { DepositSent } from "./bridge.js";
 import { reason } from "./chain.js";
 import { expandHome } from "./key.js";
 import { checkReturn, MAX_LOSS, MAX_STAKE_LOSS, NATIVE, RELAY_API, RelayError, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, waitForRelay, type RelayQuote, type RelayStatus, type SvmItem } from "./relay.js";
@@ -254,6 +255,16 @@ export async function fundFromSolana(
   });
 
   const onParent = new Map<"eth" | "stake", string>();
+  const bridgeOn = async (asset: "eth" | "stake", amount: bigint) => {
+    try {
+      await options.bridgeOn(asset, amount);
+    } catch (error) {
+      // A deposit that was sent can still land, so what it carries is not left on the parent chain to bridge again.
+      if (error instanceof DepositSent) onParent.delete(asset);
+      throw error;
+    }
+    onParent.delete(asset);
+  };
   try {
     const gas = await funding.send(gasQuote);
     onParent.set("eth", `${gasQuote.outFormatted} ETH`);
@@ -271,17 +282,14 @@ export async function fundFromSolana(
       throw new Error(`Relay reports the move settled, but the wallet on Robinhood Chain shows no increase, so what this run brought cannot be told from what it held. It holds ${holds}, and held ${had} before. Nothing was bridged.`);
     }
     // The stake goes first: its deposit pays for its arrival in ETH on the parent chain, out of what the ETH bridge would take.
-    if (stake) {
-      await options.bridgeOn("stake", stake.brought);
-      onParent.delete("stake");
-    }
+    if (stake) await bridgeOn("stake", stake.brought);
     const left = await options.parentEth();
     const spent = eth.held > left ? eth.held - left : 0n;
     const ours = eth.brought > spent ? eth.brought - spent : 0n;
     const room = left > PARENT_ETH_KEEP ? left - PARENT_ETH_KEEP : 0n;
     const onward = ours < room ? ours : room;
     if (onward === 0n) log("Not enough ETH to send on to BrainChain beyond what stays for gas on Robinhood Chain.");
-    else await options.bridgeOn("eth", onward);
+    else await bridgeOn("eth", onward);
   } catch (error) {
     const moved = [...onParent.values()].join(" and ");
     if (!moved) throw new Error(reason(error));

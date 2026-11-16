@@ -5,7 +5,7 @@ import { decodeAbiParameters, decodeFunctionData, encodeAbiParameters, parseAbi,
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
-import { bridge, createBridgeChain, type Asset, type BridgeChain } from "./bridge.js";
+import { bridge, createBridgeChain, DepositSent, type Asset, type BridgeChain } from "./bridge.js";
 import { MAINNET, TESTNET } from "./network.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
@@ -15,6 +15,7 @@ function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cos
   const sent: string[] = [];
   const chain: BridgeChain = {
     account: ACCOUNT,
+    unmined: vi.fn(async () => 0),
     parentEth: vi.fn(async () => options.eth ?? parseEther("0.01")),
     tokenBalance: vi.fn(async (asset: Exclude<Asset, "eth">) => (asset === "stake" ? (options.stake ?? parseEther("2000000")) : (options.bounty ?? parseUnits("50", 6)))),
     arrivalCost: vi.fn(async () => options.cost ?? parseEther("0.0003")),
@@ -72,6 +73,17 @@ describe("bridge", () => {
     expect(noGas.sent).toEqual([]);
   });
 
+  it("will not send while an earlier transaction of the wallet is unmined, since it may be a deposit", async () => {
+    for (const asset of ["eth", "stake"] as const) {
+      const { chain, sent } = fakeChain();
+      vi.mocked(chain.unmined).mockResolvedValue(1);
+      await expect(run(chain, asset, "0.001")).rejects.toThrow(
+        "This wallet has a transaction on Robinhood Chain that is not mined yet, which may be an earlier deposit, and another run would send another. Nothing was sent; run bridge again once it is mined.",
+      );
+      expect(sent).toEqual([]);
+    }
+  });
+
   it("refuses a token the network mints on BrainChain only", async () => {
     const { chain } = fakeChain();
     await expect(run(chain, "eth", "0.001", true, TESTNET)).resolves.toBeDefined();
@@ -90,7 +102,7 @@ describe("depositToken", () => {
   const word = (value: bigint) => encodeAbiParameters([{ type: "uint256" }], [value]);
 
   /** A deposit against one fake RPC standing in for both chains, with no allowance set; returns what it sent. */
-  async function deposit(value: bigint) {
+  async function deposit(value: bigint, options: { unconfirmed?: boolean } = {}) {
     const raw: Hex[] = [];
     const answer = (method: string, params: unknown[]): unknown => {
       switch (method) {
@@ -114,7 +126,11 @@ describe("depositToken", () => {
         case "eth_sendRawTransaction":
           raw.push((params as Hex[])[0]!);
           return `0x${raw.length.toString(16).padStart(64, "0")}`;
+        case "eth_getTransactionByHash":
+          return null;
         case "eth_getTransactionReceipt":
+          // The approval is the first transaction and the deposit the second.
+          if (options.unconfirmed && params[0] === `0x${"2".padStart(64, "0")}`) return null;
           return { status: "0x1", blockNumber: "0x10", blockHash: TX, transactionHash: params[0], transactionIndex: "0x0", from: account.address, to: GATEWAY, cumulativeGasUsed: "0x1", gasUsed: "0x1", effectiveGasPrice: "0x1", logs: [], logsBloom: `0x${"00".repeat(256)}`, type: "0x2", contractAddress: null };
         default:
           return undefined;
@@ -134,7 +150,7 @@ describe("depositToken", () => {
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     try {
       const network = { ...MAINNET, rpc: url, bridge: { ...MAINNET.bridge!, rpc: url } };
-      const outcome = await createBridgeChain(network, account).depositToken("stake", 5n, value).catch((error: Error) => error);
+      const outcome = await createBridgeChain(network, account, 50).depositToken("stake", 5n, value).catch((error: Error) => error);
       return { outcome, raw };
     } finally {
       server.close();
@@ -162,5 +178,14 @@ describe("depositToken", () => {
     const { args } = decodeFunctionData({ abi: routerAbi, data: sent.data! });
     expect(args[5]).toBe(GAS_PRICE * 2n);
     expect(decodeAbiParameters([{ type: "uint256" }, { type: "bytes" }], args[6])[0]).toBe(submission);
+  });
+
+  it("names a deposit that was sent and not confirmed, and that it can still land", async () => {
+    const { outcome, raw } = await deposit(ARRIVAL + 777n, { unconfirmed: true });
+    expect(raw).toHaveLength(2);
+    expect(outcome).toBeInstanceOf(DepositSent);
+    expect((outcome as Error).message).toMatch(
+      new RegExp(`^The deposit was sent on Robinhood Chain \\(0x0{63}2\\) and could not be confirmed \\(.+\\)\\. It can still land, so check it before running bridge again: another run sends another deposit\\.$`),
+    );
   });
 });

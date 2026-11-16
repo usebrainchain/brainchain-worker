@@ -7,6 +7,7 @@ import bs58 from "bs58";
 import { parseEther, type Address } from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { DepositSent } from "./bridge.js";
 import { NATIVE, SOLANA_USDC, type RelayQuote, type SvmItem } from "./relay.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM,
@@ -322,6 +323,18 @@ describe("fund", () => {
     const first = rig();
     vi.mocked(first.funding.send).mockRejectedValueOnce(new Error("Relay reports a refund"));
     await expect(first.run()).rejects.toThrow(/^Relay reports a refund$/);
+  });
+
+  it("leaves a deposit that was sent out of what it says to bridge, since it can still land", async () => {
+    const sent = (asset: string) => new DepositSent(`The deposit was sent on Robinhood Chain (0x${asset}) and could not be confirmed (timed out). It can still land, so check it before running bridge again: another run sends another deposit.`);
+    const stake = rig();
+    const failure = await stake.run({ bridgeOn: async (asset) => Promise.reject(sent(asset)) }).catch((error: Error) => error.message);
+    expect(failure).toBe(
+      `The deposit was sent on Robinhood Chain (0xstake) and could not be confirmed (timed out). It can still land, so check it before running bridge again: another run sends another deposit. This run already brought 0.0006 ETH to ${WORKER} on Robinhood Chain; \`brainchain-worker bridge\` moves that on to BrainChain, and running fund again moves more USDC.`,
+    );
+
+    const eth = rig();
+    await expect(eth.run({ stake: false, bridgeOn: async (asset) => Promise.reject(sent(asset)) })).rejects.toThrow(/^The deposit was sent on Robinhood Chain \(0xeth\).* another run sends another deposit\.$/);
   });
 
   it("keeps the stake's bridge out of what it names once it has gone", async () => {

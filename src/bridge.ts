@@ -36,9 +36,14 @@ const erc20Abi = parseAbi([
 /** Gas for the token's arrival on BrainChain; what it does not use comes back to the worker there. */
 const DEPOSIT_GAS = 300_000n;
 
+/** A deposit that was sent and not confirmed: it can still land, so what it carries may be on its way to BrainChain. */
+export class DepositSent extends Error {}
+
 /** What a deposit needs from the parent chain. */
 export interface BridgeChain {
   account: Address;
+  /** How many of the wallet's transactions on the parent chain are sent and not yet mined. */
+  unmined(): Promise<number>;
   /** The worker's ETH on the parent chain, which pays the deposit and its gas. */
   parentEth(): Promise<bigint>;
   tokenBalance(asset: Exclude<Asset, "eth">): Promise<bigint>;
@@ -49,7 +54,7 @@ export interface BridgeChain {
   depositToken(asset: Exclude<Asset, "eth">, amount: bigint, value: bigint): Promise<Hex>;
 }
 
-export function createBridgeChain(network: Network, account: PrivateKeyAccount): BridgeChain {
+export function createBridgeChain(network: Network, account: PrivateKeyAccount, receiptMs = RECEIPT_MS): BridgeChain {
   const bridge = network.bridge;
   if (!bridge) throw new Error(`${network.name} has no bridge from a parent chain`);
   const parent = parentChainOf(bridge);
@@ -61,8 +66,14 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount):
     if (!address) throw new Error(`${network.name}'s ${asset} token is not bridged from ${bridge.name}`);
     return address;
   };
-  const wait = async (hash: Hex) => {
-    const receipt = await read.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
+  const wait = async (hash: Hex, deposit = false) => {
+    const receipt = await read.waitForTransactionReceipt({ hash, timeout: receiptMs }).catch((error: unknown) => {
+      if (!deposit) throw error;
+      // Sent is not lost: the deposit can still land, and what reaches BrainChain comes back only through the seven-day withdrawal.
+      throw new DepositSent(
+        `The deposit was sent on ${bridge.name} (${hash}) and could not be confirmed (${reason(error).replace(/\.$/, "")}). It can still land, so check it before running bridge again: another run sends another deposit.`,
+      );
+    });
     if (receipt.status !== "success") throw new Error(`transaction ${hash} reverted on ${bridge.name}`);
     return hash;
   };
@@ -70,6 +81,10 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount):
 
   return {
     account: account.address,
+    async unmined() {
+      const [pending, latest] = await Promise.all([read.getTransactionCount({ address: account.address, blockTag: "pending" }), read.getTransactionCount({ address: account.address })]);
+      return pending - latest;
+    },
     parentEth: () => read.getBalance({ address: account.address }),
     tokenBalance: (asset) => read.readContract({ address: token(asset), abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     async arrivalCost(asset, amount) {
@@ -91,7 +106,7 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount):
       // Three times the quoted submission fee rides out a base fee that moves before the deposit lands; the rest is refunded on BrainChain.
       return submission * 3n + DEPOSIT_GAS * ((await child.getGasPrice()) * 2n);
     },
-    depositEth: async (amount) => wait(await wallet.writeContract({ address: bridge.inbox, abi: inboxAbi, functionName: "depositEth", value: amount })),
+    depositEth: async (amount) => wait(await wallet.writeContract({ address: bridge.inbox, abi: inboxAbi, functionName: "depositEth", value: amount }), true),
     async depositToken(asset, amount, value) {
       const address = token(asset);
       const spender = await gateway(address);
@@ -110,6 +125,7 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount):
           args: [address, account.address, account.address, amount, DEPOSIT_GAS, gasPriceBid, data],
           value,
         }),
+        true,
       );
     },
   };
@@ -138,6 +154,11 @@ export async function bridge(
   if (amount <= 0n) throw new Error("the amount must be above zero");
   // Token amounts are grouped as status shows them; ETH amounts are small.
   const shown = asset === "eth" ? `${formatUnits(amount, decimals)} ${symbol}` : `${grouped(amount, decimals)} ${symbol}`;
+  const settled = async () => {
+    if ((await chain.unmined()) > 0) {
+      throw new Error(`This wallet has a transaction on ${parent.name} that is not mined yet, which may be an earlier deposit, and another run would send another. Nothing was sent; run bridge again once it is mined.`);
+    }
+  };
 
   let eth: bigint;
   try {
@@ -150,6 +171,7 @@ export async function bridge(
     if (eth < amount + gas) throw new Error(`${chain.account} holds ${formatEther(eth)} ETH on ${parent.name}; ${shown} plus gas is needed. ${parent.gas}`);
     log(`bridging ${shown} from ${parent.name} to ${chain.account} on ${network.name}`);
     if (dry) return log("dry run: nothing sent");
+    await settled();
     const tx = await chain.depositEth(amount);
     return log(`sent, arrives on ${network.name} in about a minute: ${tx}`);
   }
@@ -164,6 +186,7 @@ export async function bridge(
   }
   log(`bridging ${shown} from ${parent.name} to ${chain.account} on ${network.name} (sending ${formatEther(value)} ETH for its arrival, the unused part refunded there)`);
   if (dry) return log("dry run: nothing sent");
+  await settled();
   const tx = await chain.depositToken(asset, amount, value);
   log(`sent, arrives on ${network.name} in about a minute: ${tx}`);
 }
