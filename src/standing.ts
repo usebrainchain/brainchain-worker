@@ -1,6 +1,7 @@
 import { formatEther, formatUnits } from "viem";
 
 import { ApplicationState, Status, type Chain, type Flight } from "./chain.js";
+import { cli } from "./invoked.js";
 import type { Network } from "./network.js";
 
 /** A token amount with thousands separators, such as 1,250,000; a fraction is kept as it is. */
@@ -74,24 +75,24 @@ export function aboutEth(wei: bigint): string {
 export function hireable({ allowed, w, min, applications, change, pending }: Snapshot, network: Network, from: "run" | "status"): string {
   if (allowed) {
     if (w.staked >= min) return "yes";
-    return `no: your stake is below the minimum of ${stake(network, min)}. Run join to stake again${from === "run" ? "; status shows what it needs" : ""}.`;
+    return `no: your stake is below the minimum of ${stake(network, min)}. Run ${cli("join")} to stake again${from === "run" ? `; ${cli("status")} shows what it needs` : ""}.`;
   }
   // An allowed application waiting out its timelock outranks anything filed after it.
   if (change && pending) {
     const due = BigInt(Math.floor(Date.now() / 1000)) >= change.eta;
     const allowed = `no: Jev allowed this worker; ${due ? `the change that allows it was due at ${when(change.eta)} and has not run yet` : `it can be hired after ${when(change.eta)}`}`;
-    return w.staked >= min ? allowed : `${allowed}. Its stake is below the minimum of ${stake(network, min)}, so run join to stake again first.`;
+    return w.staked >= min ? allowed : `${allowed}. Its stake is below the minimum of ${stake(network, min)}, so run ${cli("join")} to stake again first.`;
   }
   const last = applications.at(-1);
-  if (last === undefined) return "no: run `npx brainchain-worker join` to apply";
+  if (last === undefined) return `no: run ${cli("join")} to apply`;
   if (last.state === ApplicationState.Open) return `no: application ${last.id} is waiting for Jev`;
-  if (last.state === ApplicationState.Burned) return `no: Jev did not allow application ${last.id}, and its bond was burned. Run join to apply again.`;
+  if (last.state === ApplicationState.Burned) return `no: Jev did not allow application ${last.id}, and its bond was burned. Run ${cli("join")} to apply again.`;
   if (change?.vetoed) {
     // A vetoed call can never be queued again, so the veto still stands for applications filed after it.
     const vetoed = applications.find((a) => a.decisionId === change.decisionId);
     return `no: the guardian vetoed ${vetoed ? `application ${vetoed.id}` : "allowing this worker"}`;
   }
-  return `no: application ${last.id} closed without a decision; its bond was returned. Run join to apply again.`;
+  return `no: application ${last.id} closed without a decision; its bond was returned. Run ${cli("join")} to apply again.`;
 }
 
 /**
@@ -162,7 +163,7 @@ export function gasLine(network: Network, address: string, s: Snapshot, gas: big
 /** What join says when the wallet holds too little of a stake token that has no faucet. */
 export function shortOfStake(network: Network, w: Snapshot["w"], balance: bigint, need: bigint, now: bigint): string {
   const withdraw = now >= w.unlocksAt ? "now" : `after ${when(w.unlocksAt)}`;
-  const unstaking = w.unstaking > 0n ? ` Or run withdraw ${withdraw} and join with the ${stake(network, w.unstaking)} it returns.` : "";
+  const unstaking = w.unstaking > 0n ? ` Or run ${cli("withdraw")} ${withdraw} and join with the ${stake(network, w.unstaking)} it returns.` : "";
   return `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs. ${network.buyStake}${unstaking}`;
 }
 
@@ -178,7 +179,7 @@ export function flightLine(f: Flight): string {
       const closes = when(f.gradedAt + f.disputeWindow);
       return f.accepted
         ? `${task}: accepted, paid after ${closes} unless the grade is disputed`
-        : `${task}: not accepted, refunded to the poster after ${closes} unless the grade is disputed with \`dispute ${f.id}\``;
+        : `${task}: not accepted, refunded to the poster after ${closes} unless the grade is disputed with ${cli(`dispute ${f.id}`)}`;
     }
     case Status.Disputed:
       return `${task}: grade disputed by ${f.disputedByModel ? "this worker" : "the poster"}, Jev rules by ${when(f.disputedAt + f.ruleWindow)}`;
@@ -187,7 +188,7 @@ export function flightLine(f: Flight): string {
       const closes = when(a.ruledAt + a.window);
       return a.pays
         ? `${task}: the ruling pays this worker after ${closes} unless the poster appeals`
-        : `${task}: the ruling refunds the poster after ${closes} unless appealed with \`appeal ${f.id}\``;
+        : `${task}: the ruling refunds the poster after ${closes} unless appealed with ${cli(`appeal ${f.id}`)}`;
     }
     default:
       return `${task}: ruling appealed, Jev rules again by ${when(f.appeal!.appealedAt + f.ruleWindow)}`;

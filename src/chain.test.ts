@@ -21,6 +21,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi, workerStakingAbi } from "./abi.js";
 import { appealAbi, createChain, erc20Abi, faucetReopens, fetchBrief, NotWaiting, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
+import { cli } from "./invoked.js";
 import { resolveNetwork, TESTNET } from "./network.js";
 import { flightLine } from "./standing.js";
 
@@ -144,7 +145,7 @@ describe("chain helpers", () => {
 });
 
 describe("a wallet short of gas", () => {
-  const plain = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
+  const plain = `The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. ${cli("status")} shows what it holds`;
 
   it("is said plainly, in the words of either failure", () => {
     const estimate = new BaseError("Execution reverted with reason: gas required exceeds allowance (38928).");
@@ -264,7 +265,7 @@ describe("record", () => {
         lines.push(flightLine(inFlight[0]!));
       }
       expect(lines).toEqual([
-        "task 1: the ruling refunds the poster after 1970-01-01T01:01:40Z unless appealed with `appeal 1`",
+        `task 1: the ruling refunds the poster after 1970-01-01T01:01:40Z unless appealed with ${cli("appeal 1")}`,
         "task 1: ruling appealed, Jev rules again by 1970-01-01T06:03:20Z",
         "task 1: hired, due by 2033-05-18T03:33:20Z",
         "task 1: grade disputed by this worker, Jev rules by 1970-01-01T06:00:03Z",
@@ -357,7 +358,7 @@ describe("a send the gas cap made revert", () => {
     try {
       const chain = createChain({ ...TESTNET, rpc: rpc.url }, account);
       expect(reason(await chain.withdraw().catch((error: unknown) => error))).toBe(
-        "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds",
+        `The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. ${cli("status")} shows what it holds`,
       );
       callPasses = false;
       expect(reason(await chain.withdraw().catch((error: unknown) => error))).toBe(

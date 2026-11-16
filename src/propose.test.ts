@@ -5,6 +5,7 @@ import { decodeFunctionData, encodeErrorResult, parseAbi, parseEther, toFunction
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
+import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
 import { buildCall, CASE_BYTES, caseURI, createProposals, GOVERNED, proposal, propose, ProposalError, type Call, type ProposalChain } from "./propose.js";
 
@@ -68,7 +69,7 @@ describe("buildCall", () => {
   it("refuses what the executor never queues, and sends a self-application to join", () => {
     expect(() => buildCall(MAINNET, ME, { target: "board", call: "setGuardian", args: `["${ROUTER}"]` })).toThrow(/never queued/);
     expect(() => buildCall(MAINNET, ME, { target: "treasury", call: "transfer" })).toThrow(/board, executor or registry/);
-    expect(() => buildCall(MAINNET, ME, { target: "board", call: "setWorkerAllowed", args: `["${ME}", true]` })).toThrow(/run join/);
+    expect(() => buildCall(MAINNET, ME, { target: "board", call: "setWorkerAllowed", args: `["${ME}", true]` })).toThrow(`run ${cli("join")}`);
     expect(buildCall(MAINNET, ME, { target: "board", call: "setWorkerAllowed", args: `["${ROUTER}", false]` }).text).toBe(`setWorkerAllowed(${ROUTER}, false)`);
   });
 
@@ -144,7 +145,7 @@ describe("propose", () => {
     expect(chain.propose).toHaveBeenCalledWith(call, "data:application/json;base64,e30=", parseEther("250000"));
     expect(lines[0]).toContain("Bond      250,000 BRAIN, returned if Jev adopts the change with at least 60% confidence, burned otherwise");
     expect(lines[0]).toContain("Decision  within 7 days; an adopted change runs 48 hours later");
-    expect(lines.at(-1)).toBe(`Proposal 2 is waiting for Jev (${TX}). Follow it with \`npx brainchain-worker proposal 2\`.`);
+    expect(lines.at(-1)).toBe(`Proposal 2 is waiting for Jev (${TX}). Follow it with ${cli("proposal 2")}.`);
   });
 
   it("sends nothing on a dry run, even without the bond", async () => {
@@ -165,7 +166,7 @@ describe("propose", () => {
   it("refuses a call that already has an open proposal, dry too, before any approval", async () => {
     for (const dry of [false, true]) {
       const chain = fakeChain({ openProposal: vi.fn(async () => 9n) });
-      await expect(run(chain, dry)).rejects.toThrow(`Proposal 9 already asks for ${call.text} on the board and is still open, and the contract takes one at a time. Follow it with \`npx brainchain-worker proposal 9\`.`);
+      await expect(run(chain, dry)).rejects.toThrow(`Proposal 9 already asks for ${call.text} on the board and is still open, and the contract takes one at a time. Follow it with ${cli("proposal 9")}.`);
       expect(chain.propose).not.toHaveBeenCalled();
     }
   });

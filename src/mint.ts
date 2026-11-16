@@ -13,6 +13,7 @@ import {
 } from "viem";
 
 import { reason, RECEIPT_MS, REFUND_REASONS, type Settlement } from "./chain.js";
+import { cli } from "./invoked.js";
 import { proofsChainOf, proofsTransport, type Network } from "./network.js";
 import type { ProofTask, Store } from "./state.js";
 import { stake, usdg, when } from "./standing.js";
@@ -225,7 +226,7 @@ export async function mint(
   }
   if (rest) log(rest.trim());
   // The service scans in rounds and caches the list, so it still shows these tasks for a while.
-  log("`mint --dry` lists these tasks until the service has seen these mints, which can take minutes. A mint before then, here or by `run --mint`, pays for another piece.");
+  log(`${cli("mint --dry")} lists these tasks until the service has seen these mints, which can take minutes. A mint before then, here or by \`run --mint\`, pays for another piece.`);
 }
 
 /**

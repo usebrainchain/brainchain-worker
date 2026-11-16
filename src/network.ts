@@ -1,5 +1,7 @@
 import { defineChain, fallback, http, zeroAddress, type Address } from "viem";
 
+import { cli } from "./invoked.js";
+
 export interface Network {
   /** As BRAINCHAIN_NETWORK names it, and the worker's files on this network. */
   id: "testnet" | "mainnet";
@@ -104,7 +106,7 @@ export const TESTNET: Network = {
   bountyFaucet: true,
   gas:
     "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
-    "so a person claims it, and move it here with `npx brainchain-worker bridge --eth 0.001`",
+    `so a person claims it, and move it here with ${cli("bridge --eth 0.001")}`,
   drip: {
     wei: 100_000_000_000_000n,
     request: (address) => `\`curl -X POST https://brain.testnet.usebrainchain.com/testnet/gas -H 'content-type: application/json' -d '{"address":"${address}"}'\``,
@@ -163,10 +165,10 @@ export const MAINNET: Network = {
   explorer: "https://usebrainchain.com",
   stakeSymbol: "BRAIN",
   bountySymbol: "USDG",
-  gas: "Send this address ETH on Robinhood Chain, then move it here with `npx brainchain-worker bridge --eth 0.001`",
+  gas: `Send this address ETH on Robinhood Chain, then move it here with ${cli("bridge --eth 0.001")}`,
   buyStake:
     "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
-    `brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
+    `${cli("bridge --stake <amount>")} (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
   proofs: {
     chainId: 4663,
     name: "Robinhood Chain",

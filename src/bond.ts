@@ -22,6 +22,7 @@ import {
 
 import { taskBoardAbi } from "./abi.js";
 import { erc20Abi, RECEIPT_MS, Status } from "./chain.js";
+import { cli } from "./invoked.js";
 import { chainOf, proofsChainOf, proofsTransport, type Network } from "./network.js";
 import { usdg, when } from "./standing.js";
 
@@ -300,7 +301,7 @@ export function bondLine(network: Network, b: BondView, facts: { indexed: boolea
     if (b.remainderBps !== Number(BPS)) return `${head}, missed at ${when(b.settledAt)}: ${indexed ? "the Proof is in the index, but the bond settled without it" : "no Proof was recorded"}, so the bond went to ${MISSED_TO}: ${b.refundTo}`;
     const delivered = `${head}, delivered at ${when(b.settledAt)}: the bond less Shipped's 1% fee, ${usdg(network, b.amount - fee(b.amount))},`;
     // The registry keeps one sum per wallet, so only an empty one says which bonds were collected.
-    return owed === 0n ? `${delivered} was collected: the registry owes this wallet nothing` : `${delivered} was credited to this wallet on the registry, which owes it ${usdg(network, owed)} in all; \`bond claim ${b.task}\` collects that`;
+    return owed === 0n ? `${delivered} was collected: the registry owes this wallet nothing` : `${delivered} was credited to this wallet on the registry, which owes it ${usdg(network, owed)} in all; ${cli(`bond claim ${b.task}`)} collects that`;
   }
   if (b.checkMetAt > 0n) {
     const confirmAt = b.checkMetAt + CHECK_HOLD_SEC;
@@ -371,7 +372,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   const existing = (await chain.bondsOn(task)).find((b) => b.status !== DeedStatus.Settled && b.board.toLowerCase() === network.contracts.taskBoard.toLowerCase());
   if (existing) {
     const page = await deedPage(existing.deed, options.fetch);
-    throw new Error(`This worker already has ${page ? `bond No. ${page.number}` : "a bond"} open on task ${task} (registry id ${existing.deed}${page ? `, ${page.url}` : ""}). \`bond status ${task}\` shows where it stands.`);
+    throw new Error(`This worker already has ${page ? `bond No. ${page.number}` : "a bond"} open on task ${task} (registry id ${existing.deed}${page ? `, ${page.url}` : ""}). ${cli(`bond status ${task}`)} shows where it stands.`);
   }
   // A task paid through the desk has the desk as its poster on the board; the bond pays the agent that paid.
   const payer = await chain.payerOf(task);
@@ -386,7 +387,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   log(
     [
       `Bond ${usdg(network, options.amount)} on task ${task} (bounty ${usdg(network, t.bounty)}, deadline ${when(t.deadline)}).`,
-      `  Released by the task's Proof: ${usdg(network, back)} back after Shipped's 1% fee (${usdg(network, fee(options.amount))}), collected with \`bond claim ${task}\`.`,
+      `  Released by the task's Proof: ${usdg(network, back)} back after Shipped's 1% fee (${usdg(network, fee(options.amount))}), collected with ${cli(`bond claim ${task}`)}.`,
       `  Missed: if no Proof is recorded by ${when(terms.deadline)}, the ${usdg(network, options.amount)} goes to ${refundTo}, ${payer ? "the agent that paid for the task" : "the poster"}.`,
       `  Gas now: about ${formatEther(gas)} ETH on ${network.proofs.name} for ${approves ? "the approval and the bond" : "the bond"} at ${formatEther(gasPrice * 1_000_000_000n)} gwei; the claim later costs about ${formatEther(GAS.withdraw * gasPrice)} ETH.`,
     ].join("\n"),
@@ -406,7 +407,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   const { deed, tx } = await chain.create(terms, options.amount);
   const page = await deedPage(deed, options.fetch);
   const opened = page ? `Bond No. ${page.number} is open on Shipped: ${page.url} (${tx}).` : `A bond with registry id ${deed} is open on Shipped (${tx}).`;
-  log(`${opened} \`bond status ${task}\` follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+  log(`${opened} ${cli(`bond status ${task}`)} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
 }
 
 /** Prints where the worker's bonds on a task stand. */

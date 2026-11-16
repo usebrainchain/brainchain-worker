@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
 import { asksHelp, bondArgs, fetchRecord, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace, watchResume } from "./cli.js";
+import { CLI, cli, commandName } from "./invoked.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
@@ -46,13 +47,13 @@ describe("bondArgs", () => {
     expect(bondArgs(["claim", "12"])).toEqual({ action: "claim", task: 12n });
     expect(parse("bond", ["12", "5", "--yes"])).toEqual({ positional: ["12", "5"], values: new Map(), switches: new Set(["yes"]) });
     for (const [args, error] of [
-      [[], "Usage: brainchain-worker bond <task> <USDG>"],
-      [["0", "5"], "Usage: brainchain-worker bond <task> <USDG>"],
+      [[], `Usage: ${CLI} bond <task> <USDG>`],
+      [["0", "5"], `Usage: ${CLI} bond <task> <USDG>`],
       [["12"], "The amount is in USDG"],
       [["12", "0"], "The amount is in USDG"],
       [["12", "1.2345678"], "The amount is in USDG"],
-      [["status"], "Usage: brainchain-worker bond status <task>"],
-      [["claim", "x"], "Usage: brainchain-worker bond claim <task>"],
+      [["status"], `Usage: ${CLI} bond status <task>`],
+      [["claim", "x"], `Usage: ${CLI} bond claim <task>`],
     ] as const) {
       expect(() => bondArgs([...args])).toThrow(error);
     }
@@ -120,8 +121,8 @@ describe("help", () => {
         [["run", "--exec", "cat", "--timeout", "0"], "--timeout is the most minutes"],
         [["run", "--exec", "cat", "--format", "xml"], "--format is prompt or json"],
         [["exit", "--to-solana", "nope"], '"nope" is not the address of a Solana wallet'],
-        [["dispute", "x"], "Usage: brainchain-worker dispute <task>"],
-        [["price"], "Usage: brainchain-worker price <USDG>"],
+        [["dispute", "x"], `Usage: ${CLI} dispute <task>`],
+        [["price"], `Usage: ${CLI} price <USDG>`],
         [["price", "lots"], "The price must be a number"],
       ];
       for (const [argv, said] of refusals) await expect(main(argv), argv.join(" ")).rejects.toThrow(said);
@@ -262,7 +263,7 @@ describe("join", () => {
     expect(error).toBe(
       `${ACCOUNT} holds 0.00002 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ` +
         "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
-        "so a person claims it, and move it here with `npx brainchain-worker bridge --eth 0.001`. The gas drip serves each address once.",
+        `so a person claims it, and move it here with ${cli("bridge --eth 0.001")}. The gas drip serves each address once.`,
     );
   });
 
@@ -554,5 +555,13 @@ describe("names every object inherits", () => {
       expect(() => parse("status", [`--${name}`])).toThrow(`The status command has no --${name} flag`);
       expect(() => parse("watch", [`--${name}`, "--once"])).toThrow(`The watch command has no --${name} flag`);
     }
+  });
+});
+
+describe("commandName", () => {
+  it("is the npx form when npx started the CLI, and the binary's name otherwise", () => {
+    expect(commandName({ npm_command: "exec" })).toBe("npx brainchain-worker");
+    expect(commandName({ npm_command: "test" })).toBe("brainchain-worker");
+    expect(commandName({})).toBe("brainchain-worker");
   });
 });

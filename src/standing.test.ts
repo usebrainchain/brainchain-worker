@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { Status, type Flight } from "./chain.js";
+import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
 import { aboutEth, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
   "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
-  "brainchain-worker bridge --stake <amount> (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is 0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37.";
+  `${cli("bridge --stake <amount>")} (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is 0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37.`;
 
 function standing(overrides: { staked?: bigint; unstaking?: bigint; unlocksAt?: bigint } = {}): Snapshot {
   const w = { registered: true, staked: 0n, unstaking: 0n, unlocksAt: 0n, price: 200_000n, ...overrides };
@@ -100,12 +101,12 @@ describe("gasLine", () => {
 
   const FAUCET =
     "Get Robinhood Chain testnet ETH from https://faucet.testnet.chain.robinhood.com, which asks for a browser check and a Google account, " +
-    "so a person claims it, and move it here with `npx brainchain-worker bridge --eth 0.001`";
+    `so a person claims it, and move it here with ${cli("bridge --eth 0.001")}`;
 
   it("says what join needs when the wallet lacks it and join has something to do", () => {
     expect(gasLine(TESTNET, WORKER, applying, 0n, GWEI_TENTH, true, 0)).toBe(`0 ETH on BrainChain testnet; join needs about 0.000088 ETH for gas. ${gasHelp(TESTNET, WORKER, 0n, 0)}.`);
     expect(gasLine(MAINNET, WORKER, applying, 20_000_000_000_000n, GWEI_TENTH, false, 0)).toBe(
-      `0.00002 ETH on BrainChain; join needs about 0.00008 ETH for gas. Send this address ETH on Robinhood Chain, then move it here with \`npx brainchain-worker bridge --eth 0.001\`.`,
+      `0.00002 ETH on BrainChain; join needs about 0.00008 ETH for gas. Send this address ETH on Robinhood Chain, then move it here with ${cli("bridge --eth 0.001")}.`,
     );
     expect(gasLine(TESTNET, WORKER, standing({ staked: 100n * BRAIN }), 0n, GWEI_TENTH, false, 3)).toContain("join needs about 0.000034 ETH");
   });
@@ -147,8 +148,8 @@ describe("hireable", () => {
 
   it("points to status from run only", () => {
     const low = standing({ staked: 100n * BRAIN });
-    expect(hireable(low, TESTNET, "run")).toBe("no: your stake is below the minimum of 500 tBRAIN. Run join to stake again; status shows what it needs.");
-    expect(hireable(low, TESTNET, "status")).toBe("no: your stake is below the minimum of 500 tBRAIN. Run join to stake again.");
+    expect(hireable(low, TESTNET, "run")).toBe(`no: your stake is below the minimum of 500 tBRAIN. Run ${cli("join")} to stake again; ${cli("status")} shows what it needs.`);
+    expect(hireable(low, TESTNET, "status")).toBe(`no: your stake is below the minimum of 500 tBRAIN. Run ${cli("join")} to stake again.`);
   });
 
   it("says when an allowed worker can be hired, and that its stake must come back first if it left", () => {
@@ -157,7 +158,7 @@ describe("hireable", () => {
       const eta = BigInt(Date.parse("2026-11-04T10:58:18Z") / 1000);
       expect(hireable(allowedSoon(eta, 500n * BRAIN), TESTNET, "status")).toBe("no: Jev allowed this worker; it can be hired after 2026-11-04T10:58:18Z");
       expect(hireable(allowedSoon(eta, 0n), TESTNET, "status")).toBe(
-        "no: Jev allowed this worker; it can be hired after 2026-11-04T10:58:18Z. Its stake is below the minimum of 500 tBRAIN, so run join to stake again first.",
+        `no: Jev allowed this worker; it can be hired after 2026-11-04T10:58:18Z. Its stake is below the minimum of 500 tBRAIN, so run ${cli("join")} to stake again first.`,
       );
     } finally {
       vi.useRealTimers();
@@ -183,9 +184,9 @@ describe("shortOfStake", () => {
   it("points to the stake that is unstaking", () => {
     const w = standing({ unstaking: 1_000_000n * BRAIN, unlocksAt: 2_000n }).w;
     expect(shortOfStake(MAINNET, w, 0n, 1_250_000n * BRAIN, 1_000n)).toBe(
-      `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${buy} Or run withdraw after 1970-01-01T00:33:20Z and join with the 1,000,000 BRAIN it returns.`,
+      `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${buy} Or run ${cli("withdraw")} after 1970-01-01T00:33:20Z and join with the 1,000,000 BRAIN it returns.`,
     );
-    expect(shortOfStake(MAINNET, w, 0n, 1_250_000n * BRAIN, 2_000n)).toContain("Or run withdraw now and join");
+    expect(shortOfStake(MAINNET, w, 0n, 1_250_000n * BRAIN, 2_000n)).toContain(`Or run ${cli("withdraw")} now and join`);
   });
 });
 
@@ -211,7 +212,7 @@ describe("flightLine", () => {
 
   it("says a rejected task can still be disputed, and an open dispute when Jev rules", () => {
     expect(flightLine(flight({ id: 46n, accepted: false }))).toBe(
-      "task 46: not accepted, refunded to the poster after 2026-11-04T16:39:00Z unless the grade is disputed with `dispute 46`",
+      `task 46: not accepted, refunded to the poster after 2026-11-04T16:39:00Z unless the grade is disputed with ${cli("dispute 46")}`,
     );
     expect(flightLine(flight({ id: 46n, status: Status.Disputed, accepted: false, disputedByModel: true, disputedAt: GRADED + 600n }))).toBe(
       "task 46: grade disputed by this worker, Jev rules by 2026-11-04T21:49:00Z",
@@ -221,7 +222,7 @@ describe("flightLine", () => {
 
   it("says what a ruling does and until when it can be appealed", () => {
     const appeal = { window: 3_600n, ruledAt: GRADED + 700n, pays: false, appealedAt: 0n };
-    expect(flightLine(flight({ id: 46n, status: Status.Ruled, appeal }))).toBe("task 46: the ruling refunds the poster after 2026-11-04T16:50:40Z unless appealed with `appeal 46`");
+    expect(flightLine(flight({ id: 46n, status: Status.Ruled, appeal }))).toBe(`task 46: the ruling refunds the poster after 2026-11-04T16:50:40Z unless appealed with ${cli("appeal 46")}`);
     expect(flightLine(flight({ id: 46n, status: Status.Ruled, appeal: { ...appeal, pays: true } }))).toBe(
       "task 46: the ruling pays this worker after 2026-11-04T16:50:40Z unless the poster appeals",
     );

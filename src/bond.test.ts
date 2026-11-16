@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, createBondChain, deedPage, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, MISSED_TO, proofIndexAbi, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts, type BondTerms } from "./bond.js";
 import { Status } from "./chain.js";
+import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
@@ -111,7 +112,7 @@ describe("bond", () => {
     expect(lines[0]).toBe(
       [
         "Bond 5 USDG on task 12 (bounty 1 USDG, deadline 2027-01-16T08:00:00Z).",
-        "  Released by the task's Proof: 4.95 USDG back after Shipped's 1% fee (0.05 USDG), collected with `bond claim 12`.",
+        `  Released by the task's Proof: 4.95 USDG back after Shipped's 1% fee (0.05 USDG), collected with ${cli("bond claim 12")}.`,
         "  Missed: if no Proof is recorded by 2027-01-19T08:00:00Z, the 5 USDG goes to 0x00000000000000000000000000000000000000D1, the poster.",
         `  Gas now: about ${(Number(GAS.create + GAS.approve) * 0.02) / 1e9} ETH on Robinhood Chain for the approval and the bond at 0.02 gwei; the claim later costs about ${(Number(GAS.withdraw) * 0.02) / 1e9} ETH.`,
       ].join("\n"),
@@ -122,7 +123,7 @@ describe("bond", () => {
     expect(amount).toBe(USDG("5"));
     expect(terms.refundTo).toBe(POSTER);
     expect(terms.deadline).toBe(NOW + 86_400n + BOND_LEAD_SEC);
-    expect(lines.at(-1)).toBe(`A bond with registry id 7 is open on Shipped (${TX}). \`bond status 12\` follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+    expect(lines.at(-1)).toBe(`A bond with registry id 7 is open on Shipped (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
     expect(bondGas(20_000_000n, true)).toBe((GAS.create + GAS.approve) * 20_000_000n);
   });
 
@@ -238,7 +239,7 @@ describe("bond status", () => {
       return lines[0];
     };
     expect(await say(0n)).toBe(`${head}, delivered at 2027-01-15T08:00:00Z: the bond less Shipped's 1% fee, 4.95 USDG, was collected: the registry owes this wallet nothing`);
-    expect(await say(USDG("6.93"))).toBe(`${head}, delivered at 2027-01-15T08:00:00Z: the bond less Shipped's 1% fee, 4.95 USDG, was credited to this wallet on the registry, which owes it 6.93 USDG in all; \`bond claim 12\` collects that`);
+    expect(await say(USDG("6.93"))).toBe(`${head}, delivered at 2027-01-15T08:00:00Z: the bond less Shipped's 1% fee, 4.95 USDG, was credited to this wallet on the registry, which owes it 6.93 USDG in all; ${cli("bond claim 12")} collects that`);
   });
 });
 
@@ -311,7 +312,7 @@ describe("deed page", () => {
   it("names the bond by Shipped's number and page after creating it", async () => {
     const chain = fakeChain({ task: task() });
     const { lines } = await run(chain, "5", { yes: true, fetch: answering(page) });
-    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). \`bond status 12\` follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
   });
 
   it("names an open bond by Shipped's number in the refusal of a second", async () => {

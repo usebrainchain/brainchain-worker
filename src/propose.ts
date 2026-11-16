@@ -21,6 +21,7 @@ import {
 
 import { erc20Errors, transferErrors } from "./abi.js";
 import { bondsAbi, brainchainTransport, callVetoed, erc20Abi, executorAbi, openProposalOf, RECEIPT_MS } from "./chain.js";
+import { cli } from "./invoked.js";
 import { chainOf, type Network } from "./network.js";
 import { gasHelp, stake, when } from "./standing.js";
 
@@ -177,7 +178,7 @@ export function buildCall(network: Network, proposer: Address, input: { target: 
   }
   const args = decoded.args ?? [];
   if (target === "board" && decoded.functionName === "setWorkerAllowed" && args[1] === true && String(args[0]).toLowerCase() === proposer.toLowerCase()) {
-    throw new ProposalError("Allowing your own wallet to work is an application: run join, which stakes and applies in one go");
+    throw new ProposalError(`Allowing your own wallet to work is an application: run ${cli("join")}, which stakes and applies in one go`);
   }
   return { target, address, data, text: `${decoded.functionName}(${args.map(show).join(", ")})` };
 }
@@ -353,7 +354,7 @@ export async function propose(
     chain.rehearse(call),
   ]);
   if (vetoed) throw new ProposalError(`The guardian vetoed ${call.text} on the ${call.target}, so the executor does not queue it until the admin reopens that function`);
-  if (open > 0n) throw new ProposalError(`Proposal ${open} already asks for ${call.text} on the ${call.target} and is still open, and the contract takes one at a time. Follow it with \`npx brainchain-worker proposal ${open}\`.`);
+  if (open > 0n) throw new ProposalError(`Proposal ${open} already asks for ${call.text} on the ${call.target} and is still open, and the contract takes one at a time. Follow it with ${cli(`proposal ${open}`)}.`);
   if (revert) throw new ProposalError(`${call.text} would fail if the executor made it now (${revert}), so the bond would be burned for nothing`);
   log(`Proposal on ${network.name}
   Call      ${call.text} on the ${call.target} (${call.address})
@@ -371,7 +372,7 @@ export async function propose(
   if (gas === 0n) throw new Error(`${chain.account} has no ETH on ${network.name} for gas. ${gasHelp(network, chain.account, 0n, await chain.sent())}.`);
   log(`Bonding ${stake(network, bond)} and proposing...`);
   const { id, tx } = await chain.propose(call, uri, bond);
-  log(`Proposal ${id} is waiting for Jev (${tx}). Follow it with \`npx brainchain-worker proposal ${id}\`.`);
+  log(`Proposal ${id} is waiting for Jev (${tx}). Follow it with ${cli(`proposal ${id}`)}.`);
 }
 
 export async function proposal(network: Network, chain: ProposalChain, id: bigint, log: (line: string) => void): Promise<void> {

@@ -11,6 +11,7 @@ import { formatEther, formatUnits, parseUnits, type Address } from "viem";
 
 import { DepositSent } from "./bridge.js";
 import { reason } from "./chain.js";
+import { cli } from "./invoked.js";
 import { expandHome, warnIfOthersCanRead } from "./key.js";
 import { checkReturn, MAX_LOSS, MAX_STAKE_LOSS, NATIVE, RELAY_API, RelayError, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, waitForRelay, type RelayQuote, type RelayStatus, type SvmItem } from "./relay.js";
 
@@ -295,7 +296,7 @@ export async function fundFromSolana(
   } catch (error) {
     const moved = [...onParent.values()].join(" and ");
     if (!moved) throw new Error(reason(error));
-    throw new Error(`${reason(error).replace(/\.?$/, ".")} This run already brought ${moved} to ${options.worker} on Robinhood Chain; \`brainchain-worker bridge\` moves that on to BrainChain, and running fund again moves more USDC.`);
+    throw new Error(`${reason(error).replace(/\.?$/, ".")} This run already brought ${moved} to ${options.worker} on Robinhood Chain; ${cli("bridge")} moves that on to BrainChain, and running fund again moves more USDC.`);
   }
-  log("Done. `brainchain-worker status` shows the balances on BrainChain once the deposits arrive, in about a minute.");
+  log(`Done. ${cli("status")} shows the balances on BrainChain once the deposits arrive, in about a minute.`);
 }

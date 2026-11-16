@@ -25,6 +25,7 @@ import {
 } from "viem";
 
 import { erc20Errors, taskBoardAbi, transferErrors, workerStakingAbi } from "./abi.js";
+import { cli } from "./invoked.js";
 import { chainOf, parentChainOf, type Network } from "./network.js";
 import { memoryStore, type Store } from "./state.js";
 
@@ -290,7 +291,7 @@ function rpcRefusal(answer: RpcRequestError): string {
   return `${host} refused the request: ${excerpt(answer.details, answer.url)}`;
 }
 
-const SHORT_OF_GAS = "The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. `brainchain-worker status` shows what it holds";
+const SHORT_OF_GAS = `The wallet holds too little ETH to pay for this transaction's gas, so it was not sent. ${cli("status")} shows what it holds`;
 
 
 /** Whether a send failed because the wallet cannot cover its gas: the RPC's gas estimate says so as a revert, and the send itself as insufficient funds. */

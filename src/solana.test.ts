@@ -8,6 +8,7 @@ import { parseEther, type Address } from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DepositSent } from "./bridge.js";
+import { cli } from "./invoked.js";
 import { NATIVE, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, type RelayQuote, type SvmItem } from "./relay.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM,
@@ -282,7 +283,7 @@ describe("fund", () => {
   it("stops and says what the wallet holds when the increase cannot be established", async () => {
     const r = rig({ eth: parseEther("1"), stake: parseEther("500000"), landsEth: 0n, landsStake: 0n });
     await expect(r.run()).rejects.toThrow(
-      `Relay reports the move settled, but the wallet on Robinhood Chain shows no increase, so what this run brought cannot be told from what it held. It holds 1 ETH and 500000 of the stake token, and held 1 ETH and 500000 before. Nothing was bridged. This run already brought 0.0006 ETH and 55000 of the stake token to ${WORKER} on Robinhood Chain; \`brainchain-worker bridge\` moves that on to BrainChain, and running fund again moves more USDC.`,
+      `Relay reports the move settled, but the wallet on Robinhood Chain shows no increase, so what this run brought cannot be told from what it held. It holds 1 ETH and 500000 of the stake token, and held 1 ETH and 500000 before. Nothing was bridged. This run already brought 0.0006 ETH and 55000 of the stake token to ${WORKER} on Robinhood Chain; ${cli("bridge")} moves that on to BrainChain, and running fund again moves more USDC.`,
     );
     expect(r.bridged).toEqual([]);
   });
@@ -325,7 +326,7 @@ describe("fund", () => {
     const second = rig();
     vi.mocked(second.funding.send).mockImplementationOnce(async () => "sig-gas").mockRejectedValueOnce(new Error("Solana refused the deposit, so its USDC did not move: blockhash"));
     const failure = await second.run().catch((error: Error) => error.message);
-    expect(failure).toBe(`Solana refused the deposit, so its USDC did not move: blockhash. This run already brought 0.0006 ETH to ${WORKER} on Robinhood Chain; \`brainchain-worker bridge\` moves that on to BrainChain, and running fund again moves more USDC.`);
+    expect(failure).toBe(`Solana refused the deposit, so its USDC did not move: blockhash. This run already brought 0.0006 ETH to ${WORKER} on Robinhood Chain; ${cli("bridge")} moves that on to BrainChain, and running fund again moves more USDC.`);
     expect(second.bridged).toEqual([]);
 
     const bridge = rig();
@@ -341,7 +342,7 @@ describe("fund", () => {
     const stake = rig();
     const failure = await stake.run({ bridgeOn: async (asset) => Promise.reject(sent(asset)) }).catch((error: Error) => error.message);
     expect(failure).toBe(
-      `The deposit was sent on Robinhood Chain (0xstake) and could not be confirmed (timed out). It can still land, so check it before running bridge again: another run sends another deposit. This run already brought 0.0006 ETH to ${WORKER} on Robinhood Chain; \`brainchain-worker bridge\` moves that on to BrainChain, and running fund again moves more USDC.`,
+      `The deposit was sent on Robinhood Chain (0xstake) and could not be confirmed (timed out). It can still land, so check it before running bridge again: another run sends another deposit. This run already brought 0.0006 ETH to ${WORKER} on Robinhood Chain; ${cli("bridge")} moves that on to BrainChain, and running fund again moves more USDC.`,
     );
 
     const eth = rig();

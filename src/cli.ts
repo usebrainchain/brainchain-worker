@@ -21,6 +21,7 @@ import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from ".
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
+import { CLI, cli } from "./invoked.js";
 import { createWork, firstProgram, npxUnderSupervisor, programFound, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
 
 /** How many of the latest decisions a first watch --once checks. */
@@ -226,7 +227,7 @@ const flagsOf = (command: string) => (Object.hasOwn(FLAGS, command) ? FLAGS[comm
 
 export function parse(command: string, args: string[]): { positional: string[]; values: Map<string, string>; switches: Set<string> } {
   const known = flagsOf(command);
-  if (known === undefined) throw new UsageError(`Unknown command "${command}" (see brainchain-worker --help)`);
+  if (known === undefined) throw new UsageError(`Unknown command "${command}" (see ${CLI} --help)`);
   const positional: string[] = [];
   const values = new Map<string, string>();
   const switches = new Set<string>();
@@ -238,7 +239,7 @@ export function parse(command: string, args: string[]): { positional: string[]; 
     }
     const [name, inline] = arg.slice(2).split(/=(.*)/s, 2) as [string, string | undefined];
     const isSwitch = Object.hasOwn(known, name) ? known[name] : undefined;
-    if (isSwitch === undefined) throw new UsageError(`The ${command} command has no --${name} flag (see brainchain-worker --help)`);
+    if (isSwitch === undefined) throw new UsageError(`The ${command} command has no --${name} flag (see ${CLI} --help)`);
     if (isSwitch) {
       if (inline !== undefined) throw new UsageError(`--${name} takes no value`);
       switches.add(name);
@@ -248,7 +249,7 @@ export function parse(command: string, args: string[]): { positional: string[]; 
     if (value === undefined || (inline === undefined && value.startsWith("--"))) throw new UsageError(`--${name} needs a value`);
     values.set(name, value);
   }
-  if (positional.length > (POSITIONAL[command] ?? 0)) throw new UsageError(`Unexpected "${positional.at(-1)}" (see brainchain-worker --help)`);
+  if (positional.length > (POSITIONAL[command] ?? 0)) throw new UsageError(`Unexpected "${positional.at(-1)}" (see ${CLI} --help)`);
   return { positional, values, switches };
 }
 
@@ -279,14 +280,14 @@ interface Signer {
 
 function signer(): Signer {
   const raw = keyText()?.trim();
-  if (!raw) throw new Error("Set BRAINCHAIN_WORKER_KEY to the worker's private key, or BRAINCHAIN_WORKER_KEY_FILE to a file that holds it. `npx brainchain-worker new-key` makes one.");
+  if (!raw) throw new Error(`Set BRAINCHAIN_WORKER_KEY to the worker's private key, or BRAINCHAIN_WORKER_KEY_FILE to a file that holds it. ${cli("new-key")} makes one.`);
   const hex = raw.replace(/^0x/i, "");
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("The worker's key must be 64 hex characters, with or without 0x");
   const key: Hex = `0x${hex.toLowerCase()}`;
   try {
     return { key, account: privateKeyToAccount(key) };
   } catch {
-    throw new Error("The worker's key is not a valid private key. `npx brainchain-worker new-key` makes one.");
+    throw new Error(`The worker's key is not a valid private key. ${cli("new-key")} makes one.`);
   }
 }
 
@@ -300,7 +301,7 @@ function price(value: string): bigint {
   return parseUnits(value, 6);
 }
 
-const RUN = '`npx brainchain-worker run --exec "<command>"`';
+const RUN = cli('run --exec "<command>"');
 const KEEP_RUNNING = "https://github.com/usebrainchain/brainchain-worker#keep-it-running";
 
 async function noGas(chain: Chain, network: Network): Promise<Error> {
@@ -338,14 +339,14 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it to decide and refuses an empty application");
     if (await chain.applicationVetoed()) throw new Error("The guardian vetoed setWorkerAllowed on the task board, so the executor does not queue an application until the admin reopens that function. Nothing was sent.");
     const taken = await chain.openApplication();
-    if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with \`npx brainchain-worker proposal ${taken}\`.`);
+    if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with ${cli(`proposal ${taken}`)}.`);
   } else if (name || about) {
     console.log("This worker is past its application, so --name and --about are not used.");
   }
   // The agent id travels in the application, and Jev keeps the profile it decided on.
   if (agentId !== undefined) {
     if (allowed || (change && pending) || open) {
-      throw new UsageError("--agent-id goes in the application, and this worker is already allowed or has one waiting. Run join without it.");
+      throw new UsageError(`--agent-id goes in the application, and this worker is already allowed or has one waiting. Run ${cli("join")} without it.`);
     }
     const holds = await chain.holdsAgent(BigInt(agentId));
     if (holds === undefined) throw new Error("The ERC-8004 identity registry on Robinhood Chain could not be read, so --agent-id was not checked. Try again.");
@@ -378,11 +379,11 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   if (balance < need) {
     const [faucet, now] = await Promise.all([chain.faucet(), chain.now()]);
     const closed = (opensAt: bigint) => {
-      const withdraw = now >= w.unlocksAt ? "run withdraw now" : `run withdraw after ${when(w.unlocksAt)}`;
+      const withdraw = `run ${cli("withdraw")} ${now >= w.unlocksAt ? "now" : `after ${when(w.unlocksAt)}`}`;
       const unstaking = w.unstaking > 0n ? `, or ${withdraw} and join with the ${stake(network, w.unstaking)} it returns` : "";
       return new Error(
         `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs, and the faucet allows one claim a day: ` +
-          `this wallet can claim again at ${when(opensAt)}. Run join again then${unstaking}.`,
+          `this wallet can claim again at ${when(opensAt)}. Run ${cli("join")} again then${unstaking}.`,
       );
     };
     if (now < faucet.opensAt) throw closed(faucet.opensAt);
@@ -419,7 +420,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   console.log(
     `\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
       `Start ${RUN} now so it takes its first task as soon as it is hired, and follow\n` +
-      "the application with `npx brainchain-worker status`. New workers are offered house tasks first, which BrainChain pays for.",
+      `the application with ${cli("status")}. New workers are offered house tasks first, which BrainChain pays for.`,
   );
 }
 
@@ -605,8 +606,8 @@ export function bondArgs(positional: string[]): { action: "bond"; task: bigint; 
     if (value === undefined || !/^[1-9]\d{0,17}$/.test(value)) throw new UsageError(usage);
     return BigInt(value);
   };
-  if (first === "status" || first === "claim") return { action: first, task: taskId(second, `Usage: brainchain-worker bond ${first} <task>, such as bond ${first} 12`) };
-  const task = taskId(first, "Usage: brainchain-worker bond <task> <USDG>, such as bond 12 5, or bond status <task>, or bond claim <task>");
+  if (first === "status" || first === "claim") return { action: first, task: taskId(second, `Usage: ${CLI} bond ${first} <task>, such as bond ${first} 12`) };
+  const task = taskId(first, `Usage: ${CLI} bond <task> <USDG>, such as bond 12 5, or bond status <task>, or bond claim <task>`);
   if (second === undefined || !/^\d{1,9}(\.\d{1,6})?$/.test(second) || Number(second) <= 0) {
     throw new UsageError("The amount is in USDG, above zero with at most 6 decimals, such as bond 12 5");
   }
@@ -801,13 +802,13 @@ export async function main(argv: string[]): Promise<void> {
   }
   if (command === "proposal") {
     const id = positional[0];
-    if (id === undefined || !/^\d{1,18}$/.test(id) || id === "0") throw new UsageError("Usage: brainchain-worker proposal <id>, such as proposal 2");
+    if (id === undefined || !/^\d{1,18}$/.test(id) || id === "0") throw new UsageError(`Usage: ${CLI} proposal <id>, such as proposal 2`);
     // Reading a proposal needs no key, so any address stands in for the signer, and a key that is set is never read.
     return proposal(network, createProposals(network, privateKeyToAccount(generatePrivateKey())), BigInt(id), console.log);
   }
   if (command === "dispute" || command === "appeal") {
     const id = positional[0];
-    if (id === undefined || !/^[1-9]\d{0,17}$/.test(id)) throw new UsageError(`Usage: brainchain-worker ${command} <task>, such as ${command} 12`);
+    if (id === undefined || !/^[1-9]\d{0,17}$/.test(id)) throw new UsageError(`Usage: ${CLI} ${command} <task>, such as ${command} 12`);
     return (command === "dispute" ? dispute : appeal)(network, createDisputeChain(network, signer().account), BigInt(id), console.log);
   }
   if (command === "propose") {
@@ -827,11 +828,11 @@ export async function main(argv: string[]): Promise<void> {
     return run(network, signer(), flags, switches.has("once"), switches.has("mint"));
   }
   if (command === "price") {
-    if (positional[0] === undefined) throw new UsageError("Usage: brainchain-worker price <USDG>, such as price 0.25");
+    if (positional[0] === undefined) throw new UsageError(`Usage: ${CLI} price <USDG>, such as price 0.25`);
     const asking = price(positional[0]);
     const chain = createChain(network, signer().account);
     const w = await chain.stake();
-    if (!w.registered) throw new Error("This worker has not staked yet. Run join, which sets the price too.");
+    if (!w.registered) throw new Error(`This worker has not staked yet. Run ${cli("join")}, which sets the price too.`);
     if (w.price === asking) return console.log(`The price is already ${usdg(network, asking)} per task.`);
     await needGas(chain, network);
     await chain.setPrice(asking);
@@ -851,7 +852,7 @@ export async function main(argv: string[]): Promise<void> {
         if (old) {
           await needGas(chain, network);
           await chain.requestUnstake(old.w.staked, old.staking);
-          return console.log(`Unstaking ${stake(network, old.w.staked)} from set ${old.release}. Run \`npx brainchain-worker withdraw\` once its cooldown has passed and no task of the worker's on that set is in flight.`);
+          return console.log(`Unstaking ${stake(network, old.w.staked)} from set ${old.release}. Run ${cli("withdraw")} once its cooldown has passed and no task of the worker's on that set is in flight.`);
         }
         throw new Error(
           w.unstaking > 0n ? `Nothing left to unstake: ${stake(network, w.unstaking)} is already unstaking until ${when(w.unlocksAt)}.` : "Nothing is staked.",
@@ -860,14 +861,14 @@ export async function main(argv: string[]): Promise<void> {
       await needGas(chain, network);
       await chain.requestUnstake(w.staked);
       const after = await chain.stake();
-      console.log(`Unstaking ${stake(network, w.staked)}. Withdraw with \`npx brainchain-worker withdraw\` after ${when(after.unlocksAt)}, once no task of the worker's is in flight.`);
+      console.log(`Unstaking ${stake(network, w.staked)}. Withdraw with ${cli("withdraw")} after ${when(after.unlocksAt)}, once no task of the worker's is in flight.`);
       return;
     }
     case "withdraw": {
       const [w, held, now] = await Promise.all([chain.stake(), chain.held(), chain.now()]);
       if (w.unstaking === 0n) {
         const old = (await chain.retiredStakes()).find((o) => o.w.unstaking > 0n);
-        if (!old) throw new Error("Nothing is unstaking. Run leave first.");
+        if (!old) throw new Error(`Nothing is unstaking. Run ${cli("leave")} first.`);
         if (now < old.w.unlocksAt) throw new Error(`${stake(network, old.w.unstaking)} on set ${old.release} unlocks at ${when(old.w.unlocksAt)}. Withdraw after that.`);
         await needGas(chain, network);
         await chain.withdraw(old.staking);
