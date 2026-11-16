@@ -22,7 +22,7 @@ import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { CLI, cli } from "./invoked.js";
-import { createWork, firstProgram, npxUnderSupervisor, programFound, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
+import { createWork, execProblems, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
 
 /** How many of the latest decisions a first watch --once checks. */
 const FIRST_RUN_DECISIONS = 10n;
@@ -73,12 +73,15 @@ const COMMAND_USAGE: Record<string, string> = {
                                             --agent-id (mainnet) names the worker's ERC-8004 agent on
                                             Robinhood Chain, so its BrainChain record is written to that
                                             identity.`,
-  run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--mint]
+  run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--mint] [--try]
                                             Do every task Jev hires the worker for: the command reads the
                                             task on stdin and prints the deliverable on stdout, within
                                             --timeout minutes (20 by default, at most 1440). It logs how
                                             each task settles. --mint also mints the Proof of each task it is
-                                            paid for.`,
+                                            paid for. --try rehearses before the first hire: it runs the
+                                            command once on a sample task, through the same steps as a hired
+                                            task, prints what it would deliver or the check that failed, and
+                                            delivers nothing. It needs no stake and no join.`,
   status: `  brainchain-worker status                  Stake, wallet, application, record, earnings and gas, with where each
                                             task in flight stands.`,
   price: `  brainchain-worker price <USDG>            Change your asking price per task.`,
@@ -202,7 +205,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   "new-key": { file: false },
   join: { name: false, about: false, price: false, "agent-id": false },
   // --no-mint is still accepted from before minting became opt-in; it changes nothing.
-  run: { exec: false, format: false, timeout: false, once: true, mint: true, "no-mint": true },
+  run: { exec: false, format: false, timeout: false, once: true, mint: true, "no-mint": true, try: true },
   status: {},
   price: {},
   leave: {},
@@ -467,8 +470,7 @@ function runFlags(values: Map<string, string>): { exec: string; format: "prompt"
 async function run(network: Network, { key, account }: Signer, { exec, format, minutes }: ReturnType<typeof runFlags>, once: boolean, mints: boolean): Promise<void> {
   const { log, quietFor } = timedLog((line) => console.log(line));
   clearKeyFromEnvironment(key, log);
-  const program = firstProgram(exec);
-  if (program && !programFound(program)) log(`warning: the shell cannot find ${program}, so --exec will fail when the worker is hired`);
+  for (const problem of execProblems(exec)) log(`warning: ${problem}, so --exec will fail when the worker is hired`);
   const store = openStore(account.address, network, log);
   // The lock rules out a live run, so a command still in the state was left by one that died.
   await stopLeftover(store, log);
@@ -568,6 +570,26 @@ async function run(network: Network, { key, account }: Signer, { exec, format, m
   }
   await minting;
   log("stopped");
+}
+
+/**
+ * `run --try`: the command does a sample task as it would a hired one, with the
+ * key cleared from the environment the same way, and nothing is delivered. It
+ * needs no stake, no application and no RPC, and a key only to check that the
+ * result does not leak it.
+ */
+async function rehearsal({ exec, format, minutes }: ReturnType<typeof runFlags>): Promise<void> {
+  const log = (line: string) => console.log(line);
+  let secrets: string[] = [];
+  if (keyConfigured()) {
+    const { key } = signer();
+    clearKeyFromEnvironment(key, log);
+    secrets = [key, key.slice(2)];
+  }
+  for (const problem of execProblems(exec)) log(`warning: ${problem}, so --exec will fail when the worker is hired`);
+  const delivered = await rehearse(shellCommand(exec), { format, timeoutMs: minutes * 60_000, secrets, log });
+  if (secrets.length === 0) log("No key is set, so the check that a result never holds the worker's key did not run.");
+  if (!delivered) process.exitCode = 1;
 }
 
 /**
@@ -689,7 +711,8 @@ export async function main(argv: string[]): Promise<void> {
   }
   const { positional, values, switches } = parse(command, rest);
   const network = resolveNetwork(process.env);
-  if (process.env.BRAINCHAIN_RPC_URL?.trim()) {
+  // run --try reads no chain.
+  if (process.env.BRAINCHAIN_RPC_URL?.trim() && !(command === "run" && switches.has("try"))) {
     // A long run or watch outlasts an RPC that is down for a while.
     const outlasts = (command === "run" && !switches.has("once")) || (command === "watch" && !switches.has("once"));
     await requireChainId(network, () => createPublicClient({ transport: rpcTransport(network.rpc) }).getChainId(), outlasts);
@@ -828,6 +851,10 @@ export async function main(argv: string[]): Promise<void> {
   }
   if (command === "run") {
     const flags = runFlags(values);
+    if (switches.has("try")) {
+      if (switches.has("once") || switches.has("mint")) throw new UsageError("--try runs the command once on a sample task and delivers nothing, so it takes neither --once nor --mint");
+      return rehearsal(flags);
+    }
     return run(network, signer(), flags, switches.has("once"), switches.has("mint"));
   }
   if (command === "price") {

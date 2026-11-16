@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,7 +12,7 @@ import { TESTNET } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { processGroup, startTime } from "./proc.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
-import { childEnv, createWork, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
+import { childEnv, createWork, execProblems, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, rehearse, SAMPLE_BRIEF, scriptOf, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
 
 vi.mock("./proc.js", async (original) => {
   const proc = await original<typeof import("./proc.js")>();
@@ -556,15 +556,85 @@ describe("checking --exec at start", () => {
   it("names a plain program and leaves anything the shell must interpret", () => {
     expect(firstProgram(`claude -p --tools ""`)).toBe("claude");
     expect(firstProgram("./engine.sh")).toBe("./engine.sh");
-    expect(firstProgram("FOO=1 claude -p")).toBeUndefined();
     expect(firstProgram("$HOME/bin/engine")).toBeUndefined();
     expect(firstProgram("   ")).toBeUndefined();
+  });
+
+  it("looks past the variables a command sets in front of it", () => {
+    expect(firstProgram("FOO=1 claude -p")).toBe("claude");
+    expect(firstProgram("OPENROUTER_MODEL=deepseek/v4 LOG= ./engine.sh")).toBe("./engine.sh");
+    expect(firstProgram('FOO="a b" claude')).toBeUndefined();
+    expect(firstProgram("FOO=1")).toBeUndefined();
+  });
+
+  it("names the script an interpreter is plainly given, and nothing a flag or a subcommand could be", () => {
+    expect(scriptOf("python agent.py")).toBe("agent.py");
+    expect(scriptOf("node examples/openrouter.mjs")).toBe("examples/openrouter.mjs");
+    expect(scriptOf("FOO=1 /usr/bin/python3 ~/agent.py --fast")).toBe("~/agent.py");
+    expect(scriptOf("sh examples/openclaw/brainchain-worker/scripts/engine.sh")).toBe("examples/openclaw/brainchain-worker/scripts/engine.sh");
+    for (const command of ["python -m http.server", "node --env-file=.env app.js", "deno run main.ts", "ollama run llama3.3", `claude -p --tools ""`, "node", "python $SCRIPT"]) {
+      expect(scriptOf(command), command).toBeUndefined();
+    }
+  });
+
+  it("says when a program or a script it names is not there, or the program cannot run", () => {
+    const folder = mkdtempSync(join(tmpdir(), "brainchain-worker-exec-"));
+    writeFileSync(join(folder, "agent.py"), "print(1)\n");
+    writeFileSync(join(folder, "engine.sh"), "echo hi\n", { mode: 0o644 });
+    expect(execProblems("python3 agent.py", folder)).toEqual([]);
+    expect(execProblems("FOO=1 node examples/openrouter.mjs", folder)).toEqual([`examples/openrouter.mjs does not exist (looked for ${join(folder, "examples/openrouter.mjs")})`]);
+    expect(execProblems("FOO=1 definitely-not-a-command-xyz --flag", folder)).toEqual(["the shell cannot find definitely-not-a-command-xyz"]);
+    expect(execProblems("./missing.sh", folder)).toEqual([`./missing.sh does not exist (looked for ${join(folder, "missing.sh")})`]);
+    if (process.platform !== "win32") expect(execProblems("./engine.sh", folder)).toEqual(["./engine.sh is not executable; run chmod +x on it, or start it with its interpreter"]);
+    expect(execProblems("cat", folder)).toEqual([]);
+    expect(execProblems("$TOOL --x", folder)).toEqual([]);
   });
 
   it("finds what the shell finds, builtins included", () => {
     expect(programFound("sh")).toBe(true);
     expect(programFound("cat")).toBe(true);
     expect(programFound("definitely-not-a-command-xyz")).toBe(false);
+  });
+});
+
+describe("rehearse", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const tried = async (exec: string, options: { format?: "prompt" | "json"; timeoutMs?: number; secrets?: string[] } = {}) => {
+    const lines: string[] = [];
+    const ok = await rehearse(shellCommand(exec, 200), { format: options.format ?? "prompt", timeoutMs: options.timeoutMs ?? 10_000, secrets: options.secrets ?? [KEY, KEY.slice(2)], log: (line) => lines.push(line) });
+    return { ok, lines };
+  };
+
+  it("gives the command the sample task on stdin, as a hired one gets its prompt, and prints what would be delivered", async () => {
+    const { ok, lines } = await tried("grep -c 'Summarise a paragraph' && printf '\\033[1mbold\\033[0m\\n\\n'");
+    expect(ok).toBe(true);
+    expect(lines[0]).toBe(`Trying the command on a sample task, ${loggedTitle(SAMPLE_BRIEF.title)}, with the prompt on stdin and 10 seconds to finish. Nothing is delivered or sent.`);
+    expect(lines[1]).toBe("Would deliver these 6 bytes, which pass every check a result must:\n1\nbold");
+  });
+
+  it("gives the task as JSON with --format json, with the id the command sees in BRAINCHAIN_TASK_ID", async () => {
+    const { ok, lines } = await tried(`node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{const t=JSON.parse(s);console.log(t.task,process.env.BRAINCHAIN_TASK_ID,t.passLevel)})'`, { format: "json", timeoutMs: 120_000 });
+    expect(ok).toBe(true);
+    expect(lines[0]).toContain("with the task as JSON on stdin and 2 minutes to finish");
+    expect(lines[1]!.split("\n")[1]).toBe(`0 0 ${SAMPLE_BRIEF.levels[SAMPLE_BRIEF.passIndex]}`);
+  });
+
+  it("names the check that failed, and delivers nothing", async () => {
+    expect((await tried("cat >/dev/null; exit 3")).lines[1]).toBe("Would not deliver: The command exited with code 3. A hired task would be tried again a minute later.");
+    expect((await tried("cat >/dev/null")).lines[1]).toBe("Would not deliver: The command printed nothing. A hired task would be tried again a minute later.");
+    expect((await tried("definitely-not-a-command-xyz")).lines[1]).toContain("Would not deliver: The command exited with code 127: the shell could not find it.");
+    expect((await tried("sleep 5", { timeoutMs: 300 })).lines[1]).toContain("Would not deliver: The command ran past 0 seconds and was stopped.");
+    const leak = await tried(`echo ${KEY.slice(2).toUpperCase()}`);
+    expect(leak.ok).toBe(false);
+    expect(leak.lines[1]).toBe("Would not deliver: The result contains the worker's private key, so it was not uploaded. Check what the command can read. A hired task would be left there, since no retry can fix that.");
+    expect(leak.lines.join("\n")).not.toContain(KEY.slice(2).toUpperCase());
+  });
+
+  it("runs the command without the worker's variables, as a hired task does", async () => {
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY", KEY);
+    vi.stubEnv("BRAINCHAIN_NETWORK", "testnet");
+    const { lines } = await tried("env | grep ^BRAINCHAIN_ | sort");
+    expect(lines[1]).toBe("Would deliver these 20 bytes, which pass every check a result must:\nBRAINCHAIN_TASK_ID=0");
   });
 });
 

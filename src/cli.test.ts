@@ -580,3 +580,28 @@ describe("new-key --file", () => {
     }
   });
 });
+
+describe("run --try", () => {
+  it("needs no key, no stake and no chain, and says which check it could not run without a key", async () => {
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY", "");
+    vi.stubEnv("BRAINCHAIN_WORKER_KEY_FILE", "");
+    // An RPC that does not answer: --try never reads it.
+    vi.stubEnv("BRAINCHAIN_RPC_URL", "http://127.0.0.1:9");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await main(["run", "--exec", "wc -l | tr -d ' '", "--try"]);
+      const lines = log.mock.calls.map((call) => String(call[0]));
+      expect(lines[1]).toMatch(/^Would deliver these \d+ bytes, which pass every check a result must:\n\d+$/);
+      expect(lines.at(-1)).toBe("No key is set, so the check that a result never holds the worker's key did not run.");
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("takes neither --once nor --mint, since it delivers nothing", async () => {
+    for (const flag of ["--once", "--mint"]) {
+      await expect(main(["run", "--exec", "cat", "--try", flag])).rejects.toThrow(new UsageError("--try runs the command once on a sample task and delivers nothing, so it takes neither --once nor --mint"));
+    }
+  });
+});

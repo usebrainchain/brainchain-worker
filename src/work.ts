@@ -1,9 +1,11 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { basename, resolve } from "node:path";
 
 import { toBytes, type Hex } from "viem";
 
 import { fetchBrief, NotWaiting, PermanentError, reason, RECEIPT_MS, type HiredTask, type WorkerChain } from "./chain.js";
+import { expandHome } from "./key.js";
 import { processGroup, startTime } from "./proc.js";
 import { memoryStore, type Store, type TaskState } from "./state.js";
 
@@ -134,10 +136,32 @@ export function childEnv(extra: Record<string, string>): Record<string, string> 
   return { ...env, ...extra };
 }
 
+/** A word the shell reads as a variable for the command after it, such as FOO=1. */
+const ASSIGNMENT = /^[A-Za-z_]\w*=[\w./:@%+,-]*$/;
+/** A word the shell passes on as it is. */
+const PLAIN = /^[\w./+-]+$/;
+/** Programs whose first argument is the script they run. */
+const INTERPRETERS = new Set(["bash", "bun", "dash", "deno", "node", "nodejs", "perl", "php", "python", "python2", "python3", "ruby", "sh", "ts-node", "tsx", "zsh"]);
+
+/** The words of a shell command from its program on, past any FOO=1 in front. */
+function programWords(command: string): string[] {
+  const words = command.trim().split(/\s+/);
+  const at = words.findIndex((word) => !ASSIGNMENT.test(word));
+  return at < 0 ? [] : words.slice(at);
+}
+
 /** The program a shell command starts with, when it plainly starts with one; undefined for anything a shell has to interpret first. */
 export function firstProgram(command: string): string | undefined {
-  const word = /^\s*([^\s]+)/.exec(command)?.[1];
-  return word !== undefined && /^[\w./+-]+$/.test(word) ? word : undefined;
+  const [word] = programWords(command);
+  return word !== undefined && PLAIN.test(word) ? word : undefined;
+}
+
+/** The script an interpreter is plainly given, such as agent.py in `python agent.py`; undefined for anything else. */
+export function scriptOf(command: string): string | undefined {
+  const [program, script] = programWords(command);
+  if (program === undefined || !PLAIN.test(program) || !INTERPRETERS.has(basename(program))) return undefined;
+  // A flag can take the next word as its value, and a word with no slash or dot can be a subcommand, such as deno run.
+  return script !== undefined && /^[\w~][\w./+~-]*$/.test(script) && /[/.]/.test(script) ? script : undefined;
 }
 
 /** Windows has no process groups and no sh: the command runs in cmd.exe, and a stop ends its process tree. */
@@ -147,6 +171,36 @@ const WINDOWS = process.platform === "win32";
 export function programFound(program: string): boolean {
   if (WINDOWS) return spawnSync("where", [program], { stdio: "ignore", windowsHide: true }).status === 0;
   return spawnSync("sh", ["-c", 'command -v -- "$0" >/dev/null', program], { stdio: "ignore" }).status === 0;
+}
+
+/** What would make --exec fail at the first hire, as far as can be told without running it: a program or a script that is not there. */
+export function execProblems(command: string, cwd = process.cwd()): string[] {
+  const problems: string[] = [];
+  const missing = (path: string) => {
+    const file = resolve(cwd, expandHome(path));
+    return existsSync(file) ? undefined : `${path} does not exist${file === path ? "" : ` (looked for ${file})`}`;
+  };
+  const program = firstProgram(command);
+  if (program !== undefined && program.includes("/")) {
+    const absent = missing(program);
+    if (absent) problems.push(absent);
+    else if (!WINDOWS && !executable(resolve(cwd, expandHome(program)))) problems.push(`${program} is not executable; run chmod +x on it, or start it with its interpreter`);
+  } else if (program !== undefined && !programFound(program)) {
+    problems.push(`the shell cannot find ${program}`);
+  }
+  const script = scriptOf(command);
+  const absent = script === undefined || problems.length > 0 ? undefined : missing(script);
+  if (absent) problems.push(absent);
+  return problems;
+}
+
+function executable(file: string): boolean {
+  try {
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function signalGroup(pid: number, signal: NodeJS.Signals): void {
@@ -356,6 +410,66 @@ export function shellCommand(command: string, graceMs = 10_000): Command {
 
 export type Log = (message: string) => void;
 
+/**
+ * Runs the command on one task's input and returns what would be uploaded: its
+ * stdout without terminal codes or surrounding whitespace. It throws for output
+ * the service would refuse, and for output that holds one of `secrets`, such as
+ * the worker's key, which must never leave the machine.
+ */
+export async function deliverable(
+  command: Command,
+  input: string,
+  options: { env: Record<string, string>; timeoutMs: number; secrets: string[]; started?: (pgid: number) => void; finished?: () => void },
+): Promise<string> {
+  const output = stripAnsi(await command.run(input, options.env, options.timeoutMs, options.started).finally(options.finished)).trim();
+  if (output === "") throw new Error("The command printed nothing");
+  const lower = output.toLowerCase();
+  if (options.secrets.some((secret) => secret !== "" && lower.includes(secret.toLowerCase()))) {
+    throw new PermanentError("The result contains the worker's private key, so it was not uploaded. Check what the command can read");
+  }
+  const bytes = toBytes(output).byteLength;
+  // Not permanent: a retry runs the command again, and a model's next answer can fit.
+  if (bytes > MAX_RESULT_BYTES) throw new Error(`The result is ${bytes} bytes; at most ${MAX_RESULT_BYTES} are accepted`);
+  return output;
+}
+
+/** The task `run --try` gives the command: a short one, shaped as every brief is. */
+export const SAMPLE_BRIEF: Brief = {
+  title: "Summarise a paragraph in one sentence",
+  brief:
+    "Summarise this paragraph in one plain sentence of at most 30 words.\n\n" +
+    "BrainChain is a chain on which a decision model hires agents for tasks, grades what they deliver and pays for the work it accepts. " +
+    "Every hire, grade and payment is recorded on the chain, and anyone can check each decision against its published record.",
+  levels: ["Accurate, complete and within 30 words", "Accurate and within 30 words, with a detail missing", "Inaccurate, or longer than 30 words"],
+  passIndex: 1,
+};
+
+/**
+ * `run --try`: the command does the sample task through the same steps as a
+ * hired task, from its input on stdin to the checks on what it printed, and
+ * the result is printed instead of delivered. Resolves to whether it would
+ * have been delivered.
+ */
+export async function rehearse(command: Command, options: { format: "prompt" | "json"; timeoutMs: number; secrets: string[]; log: Log; now?: number }): Promise<boolean> {
+  const { log } = options;
+  const now = BigInt(Math.floor((options.now ?? Date.now()) / 1000));
+  // House tasks run for 6 hours.
+  const task: HiredTask = { id: 0n, deadline: now + 21_600n, briefURI: "", briefHash: "0x" };
+  const input = options.format === "json" ? JSON.stringify(taskInput(task, SAMPLE_BRIEF)) : taskPrompt(task, SAMPLE_BRIEF);
+  const limit = options.timeoutMs >= 60_000 ? `${options.timeoutMs / 60_000} minutes` : `${options.timeoutMs / 1000} seconds`;
+  log(`Trying the command on a sample task, ${loggedTitle(SAMPLE_BRIEF.title)}, with the ${options.format === "json" ? "task as JSON" : "prompt"} on stdin and ${limit} to finish. Nothing is delivered or sent.`);
+  let text: string;
+  try {
+    text = await deliverable(command, input, { env: { BRAINCHAIN_TASK_ID: task.id.toString() }, timeoutMs: options.timeoutMs, secrets: options.secrets });
+  } catch (error) {
+    const after = error instanceof PermanentError ? "A hired task would be left there, since no retry can fix that." : "A hired task would be tried again a minute later.";
+    log(`Would not deliver: ${reason(error).replace(/\.$/, "")}. ${after}`);
+    return false;
+  }
+  log(`Would deliver these ${toBytes(text).byteLength} bytes, which pass every check a result must:\n${text}`);
+  return true;
+}
+
 /** A repeat of one signal sooner than this is an echo: npm passes the terminal's Ctrl-C on to the worker, which gets its own too. */
 const ECHO_MS = 250;
 
@@ -426,7 +540,7 @@ export function createWork(options: {
   const read = options.fetchBrief ?? fetchBrief;
   const store = options.store ?? memoryStore();
   const { state } = store;
-  const secrets = (options.secrets ?? []).filter((s) => s !== "").map((s) => s.toLowerCase());
+  const secrets = options.secrets ?? [];
   const log = (message: string) => options.log(printable(message));
   const wall = () => BigInt(Math.floor(Date.now() / 1000));
   let busy = false;
@@ -515,16 +629,7 @@ export function createWork(options: {
             log(`task ${task.id}: working on ${loggedTitle(brief.title)}`);
             const input = options.format === "json" ? JSON.stringify(taskInput(task, brief)) : taskPrompt(task, brief);
             const timeoutMs = Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, Number(task.deadline - MARGIN_SEC - now) * 1000);
-            const output = stripAnsi(await command.run(input, { BRAINCHAIN_TASK_ID: key }, timeoutMs, remember).finally(forget)).trim();
-            if (output === "") throw new Error("The command printed nothing");
-            const lower = output.toLowerCase();
-            if (secrets.some((secret) => lower.includes(secret))) {
-              throw new PermanentError("The result contains the worker's private key, so it was not uploaded. Check what the command can read");
-            }
-            const bytes = toBytes(output).byteLength;
-            // Not permanent: a retry runs the command again, and a model's next answer can fit.
-            if (bytes > MAX_RESULT_BYTES) throw new Error(`The result is ${bytes} bytes; at most ${MAX_RESULT_BYTES} are accepted`);
-            attempt.result = output;
+            attempt.result = await deliverable(command, input, { env: { BRAINCHAIN_TASK_ID: key }, timeoutMs, secrets, started: remember, finished: forget });
             state.tasks[key] = attempt;
             store.save();
           }
