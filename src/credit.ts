@@ -1,7 +1,7 @@
-import { BaseError, ContractFunctionRevertedError, createPublicClient, http, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { BaseError, ContractFunctionRevertedError, createPublicClient, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { reason } from "./chain.js";
-import { parentChainOf, type Network } from "./network.js";
+import { parentChainOf, rpcTransport, type Network } from "./network.js";
 import { printable } from "./work.js";
 
 /** Priors' credit pool on Robinhood Chain, where BrainChain's identity is a root sponsor. */
@@ -39,7 +39,7 @@ export interface CreditChain {
 export function createCreditChain(network: Network, account: PrivateKeyAccount): CreditChain {
   const priors = network.priors;
   if (!priors || !network.identity || !network.bridge) throw new Error(`${network.name} has no Priors credit pool`);
-  const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: http(network.bridge.rpc, { timeout: 20_000 }) });
+  const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
   return {
     account: account.address,
     ownerOf: (agentId) => parent.readContract({ address: network.identity!, abi: identityAbi, functionName: "ownerOf", args: [agentId] }),

@@ -1,7 +1,11 @@
-import { zeroAddress } from "viem";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { createPublicClient, zeroAddress } from "viem";
 import { describe, expect, it } from "vitest";
 
-import { MAINNET, resolveNetwork, TESTNET } from "./network.js";
+import { brainchainTransport, reason } from "./chain.js";
+import { MAINNET, proofsTransport, resolveNetwork, rpcTransport, TESTNET } from "./network.js";
 
 const mainnet = { BRAINCHAIN_NETWORK: "mainnet" };
 
@@ -83,5 +87,34 @@ describe("the desk exit pays", () => {
   it("is pinned on both networks: the testnet service names it, and on mainnet it is the poster of tasks paid through the desk", () => {
     expect(TESTNET.exitDesk).toBe("0xf848984c8A0D9E49Cc9C97380C62b34C6f3b97D1");
     expect(MAINNET.exitDesk).toBe("0x97D558417c3D61f1074422AD843e1Db1E565b952");
+  });
+});
+
+describe("rpcTransport", () => {
+  it("waits 10 seconds for an answer and tries a failed request once more, on every chain the worker reads", () => {
+    for (const transport of [rpcTransport("https://rpc.example"), brainchainTransport(TESTNET)]) {
+      expect(transport({}).config).toMatchObject({ timeout: 10_000, retryCount: 1 });
+    }
+    const proofs = (fallbacks: string[]) => (proofsTransport({ ...TESTNET.proofs, rpcFallbacks: fallbacks })({}).value as { transports: { config: object }[] }).transports;
+    expect(proofs([])[0]!.config).toMatchObject({ timeout: 10_000, retryCount: 1 });
+    // With fallbacks, the next RPC is the retry.
+    expect(proofs(["https://rpc.example"]).map((t) => t.config)).toMatchObject([{ timeout: 10_000, retryCount: 0 }, { timeout: 10_000, retryCount: 0 }]);
+  });
+
+  it("gives up after the one retry and names the host", async () => {
+    let requests = 0;
+    const server = createServer((_, response) => {
+      requests += 1;
+      response.writeHead(503).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const error = await createPublicClient({ transport: rpcTransport(`http://${host}`) }).getChainId().catch((e: unknown) => e);
+      expect(reason(error)).toContain(`${host} answered 503`);
+      expect(requests).toBe(2);
+    } finally {
+      server.close();
+    }
   });
 });

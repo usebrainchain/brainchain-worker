@@ -7,7 +7,6 @@ import {
   createWalletClient,
   encodeAbiParameters,
   encodeFunctionData,
-  http,
   HttpRequestError,
   InsufficientFundsError,
   keccak256,
@@ -26,7 +25,7 @@ import {
 
 import { erc20Errors, taskBoardAbi, transferErrors, workerStakingAbi } from "./abi.js";
 import { cli } from "./invoked.js";
-import { chainOf, parentChainOf, type Network } from "./network.js";
+import { chainOf, parentChainOf, rpcTransport, type Network } from "./network.js";
 import { memoryStore, type Store } from "./state.js";
 
 export const erc20Abi = parseAbi([
@@ -362,16 +361,23 @@ export async function unhealthy(service: string, fetcher: typeof fetch = fetch):
 /**
  * Refuses a BRAINCHAIN_RPC_URL that serves another chain, which otherwise shows
  * as a read that returns no data or a scan through someone else's blocks. An RPC
- * that does not answer is left to the commands, which say so or outlast it.
+ * that does not answer fails the command here, so it does not wait out the same
+ * RPC twice, unless the command runs on and can outlast it.
  */
-export async function requireChainId(network: Network, read: () => Promise<number>): Promise<void> {
-  const id = await read().catch(() => undefined);
-  if (id !== undefined && id !== network.chainId) throw new Error(`BRAINCHAIN_RPC_URL serves chain ${id}; ${network.name} is chain ${network.chainId}.`);
+export async function requireChainId(network: Network, read: () => Promise<number>, outlasts = false): Promise<void> {
+  let id: number;
+  try {
+    id = await read();
+  } catch (error) {
+    if (outlasts) return;
+    throw new Error(reason(error));
+  }
+  if (id !== network.chainId) throw new Error(`BRAINCHAIN_RPC_URL serves chain ${id}; ${network.name} is chain ${network.chainId}.`);
 }
 
 /** BrainChain's RPC, with answers that are not JSON-RPC refused before viem reads them. */
 export const brainchainTransport = (network: Network) =>
-  http(network.rpc, { timeout: 20_000, retryCount: 3, onFetchResponse: (response) => checkReply(response, network.rpc) });
+  rpcTransport(network.rpc, { onFetchResponse: (response) => checkReply(response, network.rpc) });
 
 const identityAbi = parseAbi([
   "function ownerOf(uint256 tokenId) view returns (address)",
@@ -540,7 +546,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
      */
     async holdsAgent(agentId: bigint): Promise<boolean | undefined> {
       if (!network.identity || !network.bridge) return undefined;
-      const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: http(network.bridge.rpc, { timeout: 20_000 }) });
+      const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
       const mine = (holder: Address) => holder.toLowerCase() === account.address.toLowerCase();
       const read = (functionName: "ownerOf" | "getAgentWallet") =>
         parent.readContract({ address: network.identity!, abi: identityAbi, functionName, args: [agentId] });

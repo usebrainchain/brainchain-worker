@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline/promises";
 import { verifyDecision } from "brainchain-verify";
-import { createPublicClient, http } from "viem";
+import { createPublicClient } from "viem";
 
 import { formatEther, formatUnits, parseUnits, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -13,7 +13,7 @@ import { checkToSolana, createExitChain, exit as exitToParent } from "./exit.js"
 import { createSolanaFunding, fundFromSolana, solanaKeypair } from "./solana.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
-import { chainOf, resolveNetwork, type Network } from "./network.js";
+import { chainOf, resolveNetwork, rpcTransport, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
 import { deliveries, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
 import { openStore, readWatched, writeWatched } from "./state.js";
@@ -689,7 +689,9 @@ export async function main(argv: string[]): Promise<void> {
   const { positional, values, switches } = parse(command, rest);
   const network = resolveNetwork(process.env);
   if (process.env.BRAINCHAIN_RPC_URL?.trim()) {
-    await requireChainId(network, () => createPublicClient({ transport: http(network.rpc, { timeout: 10_000, retryCount: 0 }) }).getChainId());
+    // A long run or watch outlasts an RPC that is down for a while.
+    const outlasts = (command === "run" && !switches.has("once")) || (command === "watch" && !switches.has("once"));
+    await requireChainId(network, () => createPublicClient({ transport: rpcTransport(network.rpc) }).getChainId(), outlasts);
   }
   if (command === "claim") {
     return claim(network, (income) => createIncome(network.proofs, income, signer().account), { dry: switches.has("dry"), log: console.log });

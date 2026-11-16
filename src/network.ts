@@ -1,4 +1,4 @@
-import { defineChain, fallback, http, zeroAddress, type Address } from "viem";
+import { defineChain, fallback, http, zeroAddress, type Address, type HttpTransportConfig } from "viem";
 
 import { cli } from "./invoked.js";
 
@@ -276,8 +276,15 @@ export function proofsChainOf(proofs: Network["proofs"]) {
   });
 }
 
+/** How long any RPC request waits for an answer before it is tried again, once, or fails. */
+const RPC_TIMEOUT_MS = 10_000;
+
+/** An RPC that does not answer fails a command in about 20 seconds, naming its host, rather than holding it in silence. */
+export const rpcTransport = (url: string, config: Omit<HttpTransportConfig, "timeout" | "retryCount"> = {}) => http(url, { ...config, timeout: RPC_TIMEOUT_MS, retryCount: 1 });
+
 /** The Proofs chain's RPCs in order; the next answers when one fails to, a revert being an answer. */
 export function proofsTransport(proofs: Network["proofs"]) {
   const urls = [proofs.rpc, ...(proofs.rpcFallbacks ?? [])];
-  return fallback(urls.map((url) => http(url, { timeout: 20_000, retryCount: urls.length > 1 ? 1 : 3 })), { rank: false, retryCount: 0 });
+  // Each fallback is the retry where there are several.
+  return fallback(urls.map((url) => http(url, { timeout: RPC_TIMEOUT_MS, retryCount: urls.length > 1 ? 0 : 1 })), { rank: false, retryCount: 0 });
 }

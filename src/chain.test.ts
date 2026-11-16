@@ -160,14 +160,15 @@ describe("a wallet short of gas", () => {
 });
 
 describe("requireChainId", () => {
-  it("refuses an RPC serving another chain, and leaves one that does not answer to the commands", async () => {
+  it("refuses an RPC serving another chain, and fails on one that does not answer unless the command outlasts it", async () => {
     await expect(requireChainId(TESTNET, async () => 46_630)).rejects.toThrow("BRAINCHAIN_RPC_URL serves chain 46630; BrainChain testnet is chain 274630.");
+    await expect(requireChainId(TESTNET, async () => 46_630, true)).rejects.toThrow("BRAINCHAIN_RPC_URL serves chain 46630");
     await expect(requireChainId(TESTNET, async () => 274_630)).resolves.toBeUndefined();
-    await expect(
-      requireChainId(TESTNET, async () => {
-        throw new Error("no answer");
-      }),
-    ).resolves.toBeUndefined();
+    const silent = async () => {
+      throw new Error("no answer");
+    };
+    await expect(requireChainId(TESTNET, silent)).rejects.toThrow("no answer");
+    await expect(requireChainId(TESTNET, silent, true)).resolves.toBeUndefined();
   });
 });
 

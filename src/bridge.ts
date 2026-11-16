@@ -4,7 +4,6 @@ import {
   encodeAbiParameters,
   formatEther,
   formatUnits,
-  http,
   parseAbi,
   parseUnits,
   type Address,
@@ -13,7 +12,7 @@ import {
 } from "viem";
 
 import { reason, RECEIPT_MS } from "./chain.js";
-import { chainOf, parentChainOf, type Network } from "./network.js";
+import { chainOf, parentChainOf, rpcTransport, type Network } from "./network.js";
 import { grouped } from "./standing.js";
 
 export type Asset = "eth" | "stake" | "bounty";
@@ -58,9 +57,9 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
   const bridge = network.bridge;
   if (!bridge) throw new Error(`${network.name} has no bridge from a parent chain`);
   const parent = parentChainOf(bridge);
-  const read = createPublicClient({ chain: parent, transport: http(bridge.rpc, { timeout: 20_000 }) });
-  const wallet = createWalletClient({ account, chain: parent, transport: http(bridge.rpc, { timeout: 20_000 }) });
-  const child = createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }) });
+  const read = createPublicClient({ chain: parent, transport: rpcTransport(bridge.rpc) });
+  const wallet = createWalletClient({ account, chain: parent, transport: rpcTransport(bridge.rpc) });
+  const child = createPublicClient({ chain: chainOf(network), transport: rpcTransport(network.rpc) });
   const token = (asset: Exclude<Asset, "eth">): Address => {
     const address = bridge.tokens?.[asset];
     if (!address) throw new Error(`${network.name}'s ${asset} token is not bridged from ${bridge.name}`);

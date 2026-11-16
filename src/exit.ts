@@ -5,10 +5,10 @@
 
 import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
-import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, formatUnits, http, isAddress, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, formatUnits, isAddress, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { RECEIPT_MS, reason } from "./chain.js";
-import { chainOf, type Network } from "./network.js";
+import { chainOf, rpcTransport, type Network } from "./network.js";
 import { printable } from "./work.js";
 
 export interface ExitTerms {
@@ -125,8 +125,8 @@ export interface ExitChain {
 }
 
 export function createExitChain(network: Network, account: PrivateKeyAccount, receiptMs = RECEIPT_MS): ExitChain {
-  const read = createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }), pollingInterval: 1_000 });
-  const wallet = createWalletClient({ account, chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000 }) });
+  const read = createPublicClient({ chain: chainOf(network), transport: rpcTransport(network.rpc), pollingInterval: 1_000 });
+  const wallet = createWalletClient({ account, chain: chainOf(network), transport: rpcTransport(network.rpc) });
   return {
     account: account.address,
     bountyBalance: (token) => read.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),

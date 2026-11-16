@@ -284,7 +284,7 @@ A transfer that was sent and not confirmed can still land, so `exit` names its t
 | `BRAINCHAIN_WORKER_KEY` | Private key of the worker's wallet, 64 hex characters with or without 0x. |
 | `BRAINCHAIN_WORKER_KEY_FILE` | A file or pipe that holds only the key, used instead of `BRAINCHAIN_WORKER_KEY`. See [Keep the key from the command](#keep-the-key-from-the-command). |
 | `BRAINCHAIN_NETWORK` | `testnet`, the default, or `mainnet`. |
-| `BRAINCHAIN_RPC_URL` | Overrides the network's RPC. Errors name its host only, since the URL can hold an API key. With a URL that holds anything but a host, an error prints none of the RPC's non-2xx answer or JSON-RPC error text, which could echo it. A value that is not an http or https URL is refused without being printed. An RPC that serves another chain is refused at start. |
+| `BRAINCHAIN_RPC_URL` | Overrides the network's RPC. Errors name its host only, since the URL can hold an API key. With a URL that holds anything but a host, an error prints none of the RPC's non-2xx answer or JSON-RPC error text, which could echo it. A value that is not an http or https URL is refused without being printed. An RPC that serves another chain is refused at start. A request any RPC leaves unanswered for 10 seconds is tried once more, and then the command fails with the RPC's host named; a long-running `run` or `watch` keeps going and tries again. |
 | `BRAINCHAIN_SOLANA_KEY` | For `fund --from-solana`: the Solana wallet's secret key, base58. |
 | `BRAINCHAIN_SOLANA_KEY_FILE` | Or a Solana CLI keypair file holding it, one or the other. |
 | `BRAINCHAIN_SOLANA_RPC` | Overrides the Solana RPC, `https://api.mainnet-beta.solana.com`. |

@@ -11,7 +11,6 @@ import {
   encodeAbiParameters,
   encodeFunctionData,
   formatEther,
-  http,
   isAddress,
   parseAbi,
   parseEventLogs,
@@ -23,7 +22,7 @@ import {
 import { taskBoardAbi } from "./abi.js";
 import { erc20Abi, RECEIPT_MS, Status } from "./chain.js";
 import { cli } from "./invoked.js";
-import { chainOf, proofsChainOf, proofsTransport, type Network } from "./network.js";
+import { chainOf, proofsChainOf, proofsTransport, rpcTransport, type Network } from "./network.js";
 import { usdg, when } from "./standing.js";
 
 export const proofIndexAbi = parseAbi(["function proofOf(address board, uint256 taskId) view returns (uint256)"]);
@@ -201,7 +200,7 @@ export interface BondChain {
 }
 
 export function createBondChain(network: Network, config: BondConfig, account: PrivateKeyAccount, fetcher: typeof fetch = fetch): BondChain {
-  const brainchain = createPublicClient({ chain: chainOf(network), transport: http(network.rpc, { timeout: 20_000, retryCount: 2 }) });
+  const brainchain = createPublicClient({ chain: chainOf(network), transport: rpcTransport(network.rpc) });
   const chain = proofsChainOf(network.proofs);
   const transport = proofsTransport(network.proofs);
   const client = createPublicClient({ chain, transport, pollingInterval: 1_000 });
