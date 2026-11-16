@@ -682,8 +682,7 @@ export async function main(argv: string[]): Promise<void> {
       console.log(`BRAINCHAIN_WORKER_KEY=${fresh}\naddress ${address}\nKeep the key secret; it controls the stake and the earnings.`);
       return;
     }
-    writeKeyFile(file, fresh);
-    console.log(`BRAINCHAIN_WORKER_KEY_FILE=${file}\naddress ${address}\nKeep the file secret; it controls the stake and the earnings.`);
+    console.log(`BRAINCHAIN_WORKER_KEY_FILE=${writeKeyFile(file, fresh)}\naddress ${address}\nKeep the file secret; it controls the stake and the earnings.`);
     return;
   }
   const { positional, values, switches } = parse(command, rest);

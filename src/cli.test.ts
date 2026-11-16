@@ -565,3 +565,18 @@ describe("commandName", () => {
     expect(commandName({})).toBe("brainchain-worker");
   });
 });
+
+describe("new-key --file", () => {
+  it("prints the file's full path, with ~ expanded, so it can be set from any folder", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "brainchain-worker-home-"));
+    vi.stubEnv("HOME", home);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await main(["new-key", "--file", "~/k.key"]);
+      expect(String(log.mock.calls[0]![0]).split("\n")[0]).toBe(`BRAINCHAIN_WORKER_KEY_FILE=${path.join(home, "k.key")}`);
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+});

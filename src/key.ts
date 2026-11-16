@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { stateDir } from "./state.js";
 
@@ -65,9 +65,12 @@ export function keyText(env: NodeJS.ProcessEnv = process.env, warn: (message: st
   return file ? fromFile(file, warn) : inline || undefined;
 }
 
-/** Writes a new key to a file only its owner can read; an existing file is left alone, since it may hold a wallet's only key. */
-export function writeKeyFile(path: string, key: string): void {
-  const file = expandHome(path);
+/**
+ * Writes a new key to a file only its owner can read and returns the file's full
+ * path; an existing file is left alone, since it may hold a wallet's only key.
+ */
+export function writeKeyFile(path: string, key: string): string {
+  const file = resolve(expandHome(path));
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   try {
     writeFileSync(file, `${key}\n`, { flag: "wx", mode: 0o600 });
@@ -75,6 +78,7 @@ export function writeKeyFile(path: string, key: string): void {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`${file} already exists, and new-key never replaces a key`);
     throw error;
   }
+  return file;
 }
 
 /** Memory rather than disk where the system offers it. The file lives for the milliseconds a restart takes. */

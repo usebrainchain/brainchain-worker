@@ -83,6 +83,19 @@ describe("writeKeyFile", () => {
     expect(keyText({ BRAINCHAIN_WORKER_KEY_FILE: file })).toBe(KEY);
   });
 
+  it("returns the full path of a relative or home-relative one, as a later command in another folder needs it", () => {
+    const folder = dir();
+    const cwd = process.cwd();
+    try {
+      process.chdir(folder);
+      expect(writeKeyFile("rel.key", KEY)).toBe(join(process.cwd(), "rel.key"));
+    } finally {
+      process.chdir(cwd);
+    }
+    expect(writeKeyFile("~/home.key", KEY)).toBe(join(process.env.HOME!, "home.key"));
+    expect(readFileSync(join(process.env.HOME!, "home.key"), "utf8")).toBe(`${KEY}\n`);
+  });
+
   it("never replaces an existing key", () => {
     const file = keyFile("the only copy");
     expect(() => writeKeyFile(file, KEY)).toThrow("already exists");
