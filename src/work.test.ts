@@ -26,6 +26,16 @@ const task = hiredTask(7n);
 const KEY = `0x${"4f".repeat(32)}`;
 const TX: Hex = `0x${"fe".repeat(32)}`;
 const BOARD = "0xC74564F100e70F95346A6e399ebf1Ce14309C8B6";
+const NO_RESULT: Hex = `0x${"0".repeat(64)}`;
+
+const badStatus = () =>
+  submitFailure(
+    new ContractFunctionExecutionError(new ContractFunctionRevertedError({ abi: taskBoardAbi, data: encodeErrorResult({ abi: taskBoardAbi, errorName: "BadStatus" }), functionName: "submit" }), {
+      abi: taskBoardAbi,
+      functionName: "submit",
+      args: [7n, task.briefHash, "uri"],
+    }),
+  );
 
 function setup(
   output: (at: (t: bigint) => void) => Promise<string>,
@@ -34,17 +44,20 @@ function setup(
   let now = 1_000n;
   const at = (t: bigint) => void (now = t);
   let hired = options.tasks ?? [task];
+  const results = new Map<bigint, Hex>();
   const chain = {
     now: vi.fn(async () => now),
     hired: vi.fn(async () => hired),
     ethBalance: vi.fn(async () => 10n ** 15n),
     publish: vi.fn(async (id: bigint, text: string) => ({ uri: `https://brain.example/records/${id}.txt`, hash: keccak256(toBytes(text)) })),
-    submit: vi.fn(async (id: bigint, _hash: Hex, _uri: string, sent: (tx: Hex) => void): Promise<Hex> => {
+    submit: vi.fn(async (id: bigint, hash: Hex, _uri: string, sent: (tx: Hex) => void): Promise<Hex> => {
       sent("0xabc");
+      results.set(id, hash);
       hired = hired.filter((t) => t.id !== id);
       return "0xabc";
     }),
     landed: vi.fn(async (_tx: Hex, _waitMs: number): Promise<boolean | undefined> => true),
+    resultHash: vi.fn(async (id: bigint): Promise<Hex> => results.get(id) ?? NO_RESULT),
   } satisfies WorkerChain;
   const command = {
     run: vi.fn(async (_input: string, _env: Record<string, string>, _timeoutMs: number, _started?: (pgid: number) => void) => output(at)),
@@ -342,10 +355,59 @@ describe("work", () => {
 
     // The submit landed, so the task no longer waits on this worker.
     const second = setup(async () => "different work", { store: fileStore(file, BOARD), tasks: [] });
+    second.chain.resultHash.mockResolvedValue(keccak256(toBytes("paid work")));
     expect(await second.work.round()).toEqual({ hired: 0, delivered: 1, failed: 0 });
-    expect(second.chain.landed).toHaveBeenCalledWith(TX, 5_000);
-    expect(lastLog(second.log)).toBe(`task 7: delivered (9 bytes, ${TX}). Jev grades it next.`);
+    expect(second.chain.resultHash).toHaveBeenCalledWith(7n);
+    expect(lastLog(second.log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
     expect(second.command.run).not.toHaveBeenCalled();
+  });
+
+  it("counts a result as delivered once the board holds it, though the send timed out before its hash was saved", async () => {
+    const delivered = vi.fn();
+    const { chain, log, work, at } = setup(async () => "paid work", { delivered });
+    chain.submit.mockRejectedValueOnce(new Error("The request took too long to respond."));
+    expect(await work.round()).toMatchObject({ delivered: 0, failed: 1 });
+    // The node had taken the send, so the task moved on with this worker's result.
+    chain.hired.mockResolvedValue([]);
+    chain.resultHash.mockResolvedValue(keccak256(toBytes("paid work")));
+    at(1_100n);
+    expect(await work.round()).toEqual({ hired: 0, delivered: 1, failed: 0 });
+    expect(lastLog(log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
+    expect(delivered).toHaveBeenCalledWith(7n);
+    expect(chain.submit).toHaveBeenCalledOnce();
+  });
+
+  it("does not count a task that moved on without its result as delivered", async () => {
+    const { chain, work, at } = setup(async () => "paid work");
+    chain.submit.mockRejectedValueOnce(new Error("nonce too low"));
+    await work.round();
+    chain.hired.mockResolvedValue([]);
+    at(1_100n);
+    expect(await work.round()).toEqual({ hired: 0, delivered: 0, failed: 0 });
+    expect(chain.resultHash).toHaveBeenCalledWith(7n);
+  });
+
+  it("counts a resend the board refused as delivered when an earlier submit of the result landed, and as failed when none did", async () => {
+    const { chain, log, work, at } = setup(async () => "paid work");
+    chain.submit.mockImplementationOnce(async (_id, _hash, _uri, sent) => {
+      sent(TX);
+      throw new Error(`Timed out while waiting for transaction with hash ${TX} to be confirmed`);
+    });
+    chain.landed.mockResolvedValueOnce(undefined);
+    await work.round();
+    // The first submit lands while the resend is on its way, so the board refuses the resend.
+    chain.submit.mockImplementationOnce(async () => {
+      chain.resultHash.mockResolvedValue(keccak256(toBytes("paid work")));
+      throw badStatus();
+    });
+    at(1_100n);
+    expect(await work.round()).toEqual({ hired: 1, delivered: 1, failed: 0 });
+    expect(lastLog(log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
+
+    const refused = setup(async () => "paid work");
+    refused.chain.submit.mockRejectedValueOnce(badStatus());
+    expect(await refused.work.round()).toEqual({ hired: 1, delivered: 0, failed: 1 });
+    expect(lastLog(refused.log)).toBe("task 7: failed (The task no longer waits for a result); no retry can fix that, so it is not tried again");
   });
 
   it("reuses an upload saved by an earlier process instead of running the command again", async () => {

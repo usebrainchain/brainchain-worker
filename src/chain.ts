@@ -109,6 +109,9 @@ export interface HiredTask {
 /** A failure that trying again cannot fix. */
 export class PermanentError extends Error {}
 
+/** A submit refused because the task had left Hired, which an earlier submit of the same result may have done. */
+export class NotWaiting extends PermanentError {}
+
 /** What the work loop needs from the chain and the service. */
 export interface WorkerChain {
   now(): Promise<bigint>;
@@ -121,6 +124,8 @@ export interface WorkerChain {
   submit(id: bigint, resultHash: Hex, resultURI: string, sent: (tx: Hex) => void): Promise<Hex>;
   /** Whether a transaction already sent succeeded, waiting up to `waitMs` for it; undefined when it did not land in that time. */
   landed(tx: Hex, waitMs: number): Promise<boolean | undefined>;
+  /** The result hash the board holds for a task, zero until one is submitted. */
+  resultHash(id: bigint): Promise<Hex>;
 }
 
 /** What the worker signs to upload a result: the chain, the board, the task and the hash of exactly the bytes it uploads. */
@@ -168,7 +173,7 @@ function revertOf(error: unknown) {
 export function submitFailure(error: unknown): unknown {
   const name = revertOf(error)?.errorName;
   if (name === "TooLate") return new PermanentError("The deadline passed before the result could be submitted");
-  if (name === "BadStatus") return new PermanentError("The task no longer waits for a result");
+  if (name === "BadStatus") return new NotWaiting("The task no longer waits for a result");
   return error;
 }
 
@@ -484,6 +489,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       });
       return receipt && receipt.status === "success";
     },
+    resultHash: async (task) => (await client.readContract({ ...board, functionName: "get", args: [task] })).resultHash,
   };
 
   return {

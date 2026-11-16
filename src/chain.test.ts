@@ -20,7 +20,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi, workerStakingAbi } from "./abi.js";
-import { appealAbi, createChain, erc20Abi, faucetReopens, fetchBrief, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
+import { appealAbi, createChain, erc20Abi, faucetReopens, fetchBrief, NotWaiting, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
 import { resolveNetwork, TESTNET } from "./network.js";
 import { flightLine } from "./standing.js";
 
@@ -78,7 +78,7 @@ describe("chain helpers", () => {
 
   it("makes a submit that can never succeed permanent", () => {
     expect(submitFailure(reverted(taskBoardAbi, "TooLate", "submit"))).toEqual(new PermanentError("The deadline passed before the result could be submitted"));
-    expect(submitFailure(reverted(taskBoardAbi, "BadStatus", "submit"))).toBeInstanceOf(PermanentError);
+    expect(submitFailure(reverted(taskBoardAbi, "BadStatus", "submit"))).toBeInstanceOf(NotWaiting);
     const other = reverted(taskBoardAbi, "NotWorker", "submit");
     expect(submitFailure(other)).toBe(other);
   });

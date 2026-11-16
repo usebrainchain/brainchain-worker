@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { toBytes, type Hex } from "viem";
 
-import { fetchBrief, PermanentError, reason, RECEIPT_MS, type HiredTask, type WorkerChain } from "./chain.js";
+import { fetchBrief, NotWaiting, PermanentError, reason, RECEIPT_MS, type HiredTask, type WorkerChain } from "./chain.js";
 import { processGroup, startTime } from "./proc.js";
 import { memoryStore, type Store, type TaskState } from "./state.js";
 
@@ -458,19 +458,20 @@ export function createWork(options: {
         result.failed += 1;
         options.failed?.();
       };
-      const delivered = (key: string, text: string, tx: Hex) => {
+      const delivered = (key: string, text: string, tx?: Hex) => {
         result.delivered += 1;
-        log(`task ${key}: delivered (${toBytes(text).byteLength} bytes, ${tx}). Jev grades it next.`);
+        log(`task ${key}: delivered (${toBytes(text).byteLength} bytes${tx ? `, ${tx}` : ""}). Jev grades it next.`);
         options.delivered?.(BigInt(key));
       };
+      // The board is read, not a receipt: the submit that landed may be one whose hash was never saved, or one a later resend replaced.
+      const onBoard = async (key: string, attempt: TaskState) =>
+        attempt.stored !== undefined && (await chain.resultHash(BigInt(key)).catch(() => undefined))?.toLowerCase() === attempt.stored.hash.toLowerCase();
       const current = new Set(hired.map((t) => t.id.toString()));
       for (const [key, attempt] of Object.entries(state.tasks)) {
         if (current.has(key)) continue;
         delete state.tasks[key];
         // A submit that landed after the run that sent it stopped waiting, or stopped.
-        if (attempt.tx !== undefined && attempt.result !== undefined && (await chain.landed(attempt.tx, 5_000).catch(() => false))) {
-          delivered(key, attempt.result, attempt.tx);
-        }
+        if (attempt.result !== undefined && (await onBoard(key, attempt))) delivered(key, attempt.result);
       }
       state.done = state.done.filter((key) => current.has(key));
       store.save();
@@ -535,6 +536,11 @@ export function createWork(options: {
           finish(key);
           delivered(key, attempt.result, tx);
         } catch (error) {
+          if (error instanceof NotWaiting && attempt.result !== undefined && (await onBoard(key, attempt))) {
+            finish(key);
+            delivered(key, attempt.result);
+            continue;
+          }
           fail();
           const why = reason(error);
           if (error instanceof PermanentError) {
