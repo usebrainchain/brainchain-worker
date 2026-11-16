@@ -1,9 +1,12 @@
-import { encodeFunctionData, parseAbi, verifyMessage, type Address, type Hex } from "viem";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { encodeAbiParameters, encodeFunctionData, keccak256, parseAbi, verifyMessage, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
 import { TESTNET } from "./network.js";
-import { argumentsOf, FLOORS, createReporter, createWatch, fetchProof, judge, MAX_CHECKED, MAX_FINDINGS, outcome, REPORT_PREFIX, UNREADABLE_MS, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
+import { argumentsOf, FLOORS, createReporter, createWatch, createWatchChain, fetchProof, judge, MAX_CHECKED, MAX_FINDINGS, outcome, REPORT_PREFIX, UNREADABLE_MS, ReportRefused, requireWatcher, type QueuedChange, type Report, type WatchChain } from "./watch.js";
 
 const TX: Hex = `0x${"ab".repeat(32)}`;
 const BOARD: Address = TESTNET.contracts.taskBoard;
@@ -212,6 +215,39 @@ describe("watch", () => {
     expect(await watch.round()).toEqual({ findings: 1, incomplete: false });
     expect(verify.mock.calls.map((c) => c[0])).toEqual([4n, 5n]);
     expect(lines.slice(1)).toEqual(["decision 4 verified", "decision 5 does not verify: record hash: does not match payloadHash"]);
+  });
+});
+
+describe("a veto sent through the gate", () => {
+  it("fails when its transaction reverted, so the change stays owed", async () => {
+    const watcher = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const { id, method, params } = JSON.parse(body) as { id: number; method: string; params: string[] };
+        const answers: Record<string, unknown> = {
+          eth_chainId: `0x${TESTNET.chainId.toString(16)}`,
+          eth_call: encodeAbiParameters([{ type: "address" }], [watcher.address]),
+          eth_getTransactionCount: "0x1",
+          eth_getBlockByNumber: { number: "0x900", hash: TX, parentHash: TX, timestamp: "0x1", baseFeePerGas: "0x1", transactions: [], logsBloom: null, nonce: null },
+          eth_maxPriorityFeePerGas: "0x0",
+          eth_estimateGas: "0x5208",
+          eth_sendRawTransaction: method === "eth_sendRawTransaction" ? keccak256(params[0] as Hex) : undefined,
+          eth_blockNumber: "0x901",
+          eth_getTransactionReceipt: { transactionHash: TX, blockHash: TX, blockNumber: "0x900", status: "0x0", logs: [], from: watcher.address, to: TESTNET.contracts.gate, gasUsed: "0x1", cumulativeGasUsed: "0x1", effectiveGasPrice: "0x1", transactionIndex: "0x0", type: "0x2", logsBloom: `0x${"0".repeat(512)}`, contractAddress: null },
+        };
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ jsonrpc: "2.0", id, result: answers[method] ?? null }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const chain = createWatchChain({ ...TESTNET, rpc: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }, watcher);
+      await expect(chain.veto!(2n, "Breaks the constitution: a protocol fee above 5%")).rejects.toThrow(/^the veto 0x[0-9a-f]{64} reverted$/);
+    } finally {
+      server.close();
+    }
   });
 });
 

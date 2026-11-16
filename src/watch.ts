@@ -121,7 +121,8 @@ export function createWatchChain(network: Network, account: PrivateKeyAccount): 
             const watcher = await client.readContract({ address: gate, abi: gateAbi, functionName: "watcher" });
             if (watcher.toLowerCase() !== account.address.toLowerCase()) throw new Error(`the gate's watcher is ${watcher}, not this worker`);
             const hash = await wallet.writeContract({ address: gate, abi: gateAbi, functionName: "veto", args: [changeId, why] });
-            await client.waitForTransactionReceipt({ hash });
+            const receipt = await client.waitForTransactionReceipt({ hash });
+            if (receipt.status !== "success") throw new Error(`the veto ${hash} reverted`);
             return hash;
           },
         }
