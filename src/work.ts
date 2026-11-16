@@ -521,7 +521,6 @@ export function createWork(options: {
   command: Command;
   format: "prompt" | "json";
   log: Log;
-  /** The longest a command may run. */
   timeoutMs?: number;
   /** Text a result must never contain, such as the worker's key. */
   secrets?: string[];
@@ -530,7 +529,6 @@ export function createWork(options: {
   stopping?: () => boolean;
   /** Called as each task fails or is given up, before the round ends. */
   failed?: () => void;
-  /** Called as each result is delivered. */
   delivered?: (task: bigint) => void;
   /** Where the wallet gets ETH for gas, said when it has none. */
   gasHelp?: () => Promise<string>;

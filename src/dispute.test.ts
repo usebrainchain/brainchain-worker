@@ -130,7 +130,7 @@ describe("appeal", () => {
   });
 
   it("refuses before sending anything when the wallet cannot pay the gas of both the approval and the appeal", async () => {
-    // What the wallet in the report held: enough for the approval, not for the appeal after it.
+    // A balance a worker really hit: enough for the approval, not for the appeal after it.
     const chain = fake({ status: Ruled }, undefined, undefined, { eth: parseEther("0.0000295") });
     const refusal = appeal(TESTNET, chain, 7n, () => {});
     await expect(refusal).rejects.toThrow(
@@ -146,7 +146,7 @@ describe("appeal", () => {
     await appeal(TESTNET, approved, 7n, () => {});
     expect(approved.appeal).toHaveBeenCalledWith(7n);
 
-    // The report's second attempt: the bond approved, 0.0000208 ETH left, and a raw selector where words belonged.
+    // The same worker's second attempt: the bond approved, 0.0000208 ETH left, and a raw selector where words belonged.
     const second = fake({ status: Ruled }, undefined, undefined, { eth: parseEther("0.0000208345"), allowance: 1_250_000n });
     await expect(appeal(TESTNET, second, 7n, () => {})).rejects.toThrow(`${WORKER} holds 0.0000208345 ETH on BrainChain testnet; the appeal needs about 0.000034 ETH for gas.`);
     expect(second.appeal).not.toHaveBeenCalled();

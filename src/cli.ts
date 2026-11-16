@@ -576,11 +576,10 @@ async function run(network: Network, { key, account }: Signer, { exec, format, m
     log(`could not read the wallet's ETH balance: ${reason(error)}`);
   }
   if (gas === 0n) throw await noGas(chain, network);
-  const held = gas;
   const [standing, sick, gasPrice] = await Promise.all([
     Promise.all([snapshot(chain), chain.held()]).catch((error: unknown) => new Error(reason(error))),
     unhealthy(network.service),
-    held === undefined ? undefined : chain.gasPrice().catch(() => undefined),
+    gas === undefined ? undefined : chain.gasPrice().catch(() => undefined),
   ]);
   // Nothing comes to a worker that never applied, so a run would wait forever, and a --once run would pass every time.
   if (!(standing instanceof Error) && unapplied(...standing)) {
@@ -589,7 +588,7 @@ async function run(network: Network, { key, account }: Signer, { exec, format, m
   const line = standing instanceof Error ? `could not check (${standing.message})` : hireable(standing[0], network, "run");
   // Joining is paid out of the same ETH, so a worker that has still to join has that much less for deliveries.
   const joins = !(standing instanceof Error) && joinLimits(standing[0], false, false).length > 0;
-  const left = held === undefined || gasPrice === undefined ? undefined : standing instanceof Error ? deliveriesLeft(held, gasPrice) : deliveriesAfterJoin(standing[0], held, gasPrice);
+  const left = gas === undefined || gasPrice === undefined ? undefined : standing instanceof Error ? deliveriesLeft(gas, gasPrice) : deliveriesAfterJoin(standing[0], gas, gasPrice);
   log(`worker ${chain.account} on ${network.name}; hireable: ${line}${left === undefined ? "" : `; gas for ${deliveries(left)}${joins ? " after joining" : ""}`}`);
   if (sick) log(`warning: ${sick}`);
   if (once) {
@@ -771,7 +770,7 @@ export async function main(argv: string[]): Promise<void> {
   // run --try reads no chain.
   if (process.env.BRAINCHAIN_RPC_URL?.trim() && !(command === "run" && switches.has("try"))) {
     // A long run or watch outlasts an RPC that is down for a while.
-    const outlasts = (command === "run" && !switches.has("once")) || (command === "watch" && !switches.has("once"));
+    const outlasts = (command === "run" || command === "watch") && !switches.has("once");
     await requireChainId(network, () => createPublicClient({ transport: rpcTransport(network.rpc) }).getChainId(), outlasts);
   }
   if (command === "claim") {

@@ -105,7 +105,7 @@ describe("depositProblem", () => {
     expect(depositProblem(quote(amount, STAKE.toLowerCase(), 1n), want(amount, STAKE))).toBeUndefined();
   });
 
-  it("refuses the auditor's stand-in: a plain token transfer out of the wallet", () => {
+  it("refuses a quote whose instruction is a plain token transfer out of the wallet", () => {
     const le = Buffer.alloc(8);
     le.writeBigUInt64LE(50_000_000n);
     const evil: SvmItem = {

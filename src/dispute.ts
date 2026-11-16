@@ -130,7 +130,6 @@ export function createDisputeChain(network: Network, account: PrivateKeyAccount)
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const at = (seconds: bigint) => new Date(Number(seconds) * 1000).toISOString().replace(/\.000Z$/, "Z");
 
-/** Disputes a grade on a task the worker delivered, within the dispute window. */
 export async function dispute(network: Network, chain: DisputeChain, id: bigint, log: (line: string) => void): Promise<void> {
   const [task, now] = await Promise.all([chain.task(id), chain.now()]);
   if (task.status === 0) throw new Error(`There is no task ${id} on ${network.name}.`);

@@ -409,7 +409,6 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   log(`${opened} ${cli(`bond status ${task}`)} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
 }
 
-/** Prints where the worker's bonds on a task stand. */
 export async function bondStatus(
   network: Network,
   config: BondConfig | undefined,

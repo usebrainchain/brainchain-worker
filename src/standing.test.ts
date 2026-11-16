@@ -140,7 +140,7 @@ describe("gasLine", () => {
     expect(deliveriesAfterJoin(applying, 10n ** 15n, GWEI_TENTH, true)).toBe(deliveriesLeft(10n ** 15n - 536_000n * GWEI_TENTH, GWEI_TENTH));
     expect(deliveriesAfterJoin(staked, 10n ** 15n, GWEI_TENTH)).toBe(deliveriesLeft(10n ** 15n, GWEI_TENTH));
     expect(gasLine(TESTNET, WORKER, staked, 10n ** 15n, GWEI_TENTH, false, 6)).toBe("0.001 ETH, enough for about 94 deliveries at the current gas price");
-    // What a drip leaves after join, as the newcomer audit measured it.
+    // What a drip leaves after join, as measured on testnet.
     expect(gasLine(TESTNET, WORKER, staked, 51_081_600_000_000n, GWEI_TENTH, false, 6)).toBe("0.0000510816 ETH, enough for about 3 deliveries at the current gas price");
   });
 });
@@ -260,7 +260,7 @@ describe("shortOfStake", () => {
 });
 
 describe("flightLine", () => {
-  // Task 45 and 46 of the report, read at each step.
+  // Two real tasks, 45 and 46, read at each step.
   const GRADED = 1_793_806_740n;
   const flight = (overrides: Partial<Flight>): Flight => ({
     id: 45n,

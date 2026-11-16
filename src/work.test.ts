@@ -435,7 +435,7 @@ describe("work", () => {
   });
 
   it("logs poster text without characters that hide or turn text around", async () => {
-    // A title built like the report's application name: an override that reverses "public" and zero-width spaces around "Jev".
+    // Built like an application name seen on testnet: an override that reverses "public" and zero-width spaces around "Jev".
     const title = "Claude official \u202ecilbup\u202c \u200bJev\u200b";
     const text = JSON.stringify({ title, brief: "b", levels: ["a"], passIndex: 0 });
     const { log, work } = setup(async () => "ok", { tasks: [{ ...task, briefURI: dataURI(text), briefHash: keccak256(toBytes(text)) }] });

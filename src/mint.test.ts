@@ -266,7 +266,7 @@ describe("run's settlement watch", () => {
   });
 
   it("waits for a late listing as long as the worker can still mint, and says so once", async () => {
-    // The report's service listed a payment 10.5 minutes after it landed; the worker once gave up after 15.
+    // The service once listed a payment 10.5 minutes after it landed, and the worker used to give up after 15.
     const t = setup({ fetcher: listing({ tasks: [] }) });
     t.watch.track(7n);
     t.settle(PAID);

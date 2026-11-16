@@ -19,7 +19,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 assert.equal(programFound("node"), true);
 assert.equal(programFound("no-such-program-brainchain"), false);
 
-// Report 187: a real program's output reached nobody, while echo's did.
+// A real program's output once reached nobody here, while echo's did.
 const piped = await shellCommand('node -e "process.stdin.pipe(process.stdout)"').run("a result from a task", {}, 30_000);
 assert.equal(piped, "a result from a task");
 const native = await shellCommand('findstr "^"').run("line one\r\nline two\r\n", {}, 30_000);

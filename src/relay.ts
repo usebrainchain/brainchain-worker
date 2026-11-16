@@ -8,7 +8,6 @@ import { printable } from "./work.js";
 
 export const RELAY_API = "https://api.relay.link";
 export const SOLANA_CHAIN_ID = 792703809;
-/** USDC on Solana. */
 export const SOLANA_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const NATIVE = "0x0000000000000000000000000000000000000000";
 /** The most a move may cost, as a share of its dollar value; small moves may cost up to FIXED_LOSS_USD instead. */

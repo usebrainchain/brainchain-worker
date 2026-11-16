@@ -338,7 +338,6 @@ export function createSettlementWatch(options: {
   }
 
   return {
-    /** Watches a task the worker just delivered. */
     track(task: bigint): void {
       const now = clock();
       watched()[task.toString()] = { deliveredAt: now, nextAt: now + STATUS_SEC };

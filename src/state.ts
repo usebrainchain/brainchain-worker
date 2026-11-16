@@ -275,7 +275,7 @@ function holderOf(text: string): { pid: number; space?: string } {
     if (typeof value === "number") return { pid: value };
     if (isObject(value) && typeof value.pid === "number" && typeof value.space === "string") return { pid: value.pid, space: value.space };
   } catch {
-    // Handled below.
+    // A lock still being written is not JSON yet.
   }
   return { pid: 0, space: "" };
 }
