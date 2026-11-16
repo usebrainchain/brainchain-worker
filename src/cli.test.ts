@@ -33,6 +33,8 @@ describe("parse", () => {
     const { values, switches } = parse("mint", ["--count=3", "--dry"]);
     expect(values.get("count")).toBe("3");
     expect([...switches]).toEqual(["dry"]);
+    // Accepted from before minting became opt-in, and changes nothing.
+    expect(parse("run", ["--exec", "wc -w", "--no-mint"]).switches).toEqual(new Set(["no-mint"]));
   });
 });
 

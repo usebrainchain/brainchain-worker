@@ -418,7 +418,7 @@ describe("run's settlement watch", () => {
     expect(stuck.fetcher).not.toHaveBeenCalled();
   });
 
-  it("still logs each outcome under --no-mint, and mints nothing", async () => {
+  it("still logs each outcome without --mint, and mints nothing", async () => {
     const t = setup({ mints: false });
     t.watch.track(7n);
     t.watch.track(8n);

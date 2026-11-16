@@ -2,7 +2,7 @@ import { decodeAbiParameters, decodeFunctionData, parseUnits, type Address, type
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
-import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, createBondChain, deedPage, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, MISSED_TO, proofIndexAbi, Ruling, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts, type BondTerms } from "./bond.js";
+import { bond, bondClaim, bondGas, bondLine, bondStatus, bondTerms, createBondChain, deedPage, BOND_LEAD_SEC, DeedStatus, encodeCheckData, GAS, MIN_BOND, MISSED_TO, proofIndexAbi, taskOfCheck, type BondChain, type BondConfig, type BondView, type TaskFacts, type BondTerms } from "./bond.js";
 import { Status } from "./chain.js";
 import { MAINNET, TESTNET } from "./network.js";
 
@@ -11,6 +11,8 @@ const POSTER: Address = "0x00000000000000000000000000000000000000D1";
 const INDEX: Address = "0x00000000000000000000000000000000000000f1";
 const TX: Hex = `0x${"fe".repeat(32)}`;
 const USDG = (n: string) => parseUnits(n, 6);
+/** ShippedDeeds.Ruling, as the contract declares it: Conceded is 5 and CheckMet 7. */
+const Ruling = { None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 4, Conceded: 5, Default: 6, CheckMet: 7 } as const;
 const NOW = 1_800_000_000n;
 const config: BondConfig & { proofIndex: Address } = { ...MAINNET.proofs.bonds!, proofIndex: INDEX };
 const offline = (async () => {
@@ -48,8 +50,7 @@ async function run(chain: BondChain, amount: string, options: { yes?: boolean; a
 }
 
 describe("ShippedDeeds' enums", () => {
-  it("pins Ruling as the contract declares it: Conceded is 5 and CheckMet 7, and a line reads the settled split, never the ruling number", () => {
-    expect(Ruling).toEqual({ None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 4, Conceded: 5, Default: 6, CheckMet: 7 });
+  it("pins DeedStatus as the contract declares it, and a line reads the settled split, never the ruling number", () => {
     expect(DeedStatus).toEqual({ None: 0, Open: 1, Ruled: 2, Appealed: 3, Settled: 4 });
     const delivered = view({ status: DeedStatus.Settled, ruling: Ruling.CheckMet, remainderBps: 10_000, settledAt: NOW });
     expect(delivered.ruling).toBe(7);

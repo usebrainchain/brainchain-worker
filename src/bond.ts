@@ -45,9 +45,8 @@ export const shippedAbi = parseAbi([
   "error NothingOwed()",
 ]);
 
-/** ShippedDeeds.Status and Ruling. */
+/** ShippedDeeds.Status. */
 export const DeedStatus = { None: 0, Open: 1, Ruled: 2, Appealed: 3, Settled: 4 } as const;
-export const Ruling = { None: 0, Accepted: 1, Rejected: 2, Partial: 3, Invalid: 4, Conceded: 5, Default: 6, CheckMet: 7 } as const;
 /** Who a missed bond pays, in the words every line about one uses. */
 export const MISSED_TO = "the agent that paid BrainChain's desk for the task, or to the poster for a task posted on the board directly";
 const BPS = 10_000n;

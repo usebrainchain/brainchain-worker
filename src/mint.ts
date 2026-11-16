@@ -243,7 +243,7 @@ export function createSettlementWatch(options: {
   settlement: (task: bigint) => Promise<Settlement | undefined>;
   store: Store;
   log: (message: string) => void;
-  /** False under --no-mint. */
+  /** True only under run --mint; without it, --no-mint included, nothing is minted. */
   mints: boolean;
   fetcher?: typeof fetch;
   /** Wall-clock seconds. */
@@ -350,7 +350,7 @@ export function createSettlementWatch(options: {
       const paid: [string, ProofTask][] = [];
       for (const [key, entry] of due) if (entry.paidAt !== undefined || (await settle(key, entry))) paid.push([key, entry]);
       if (paid.length === 0) return;
-      // A run under --no-mint after one that minted leaves those tasks' Proofs to `mint`.
+      // A run without --mint after one with it leaves those tasks' Proofs to `mint`.
       if (!options.mints) {
         for (const [key] of paid) drop(key);
         return;
