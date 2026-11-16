@@ -9,7 +9,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
 import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
 import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
-import { createExitChain, exit as exitToParent } from "./exit.js";
+import { checkToSolana, createExitChain, exit as exitToParent } from "./exit.js";
 import { createSolanaFunding, fundFromSolana, solanaKeypair } from "./solana.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
@@ -451,7 +451,7 @@ async function status(chain: Chain, network: Network): Promise<void> {
   Gas       ${gasLine(network, chain.account, s, gas, gasPrice, !network.buyStake && stakeBalance < s.toStake + (s.applying ? bond : 0n), sent)}`);
 }
 
-async function run(network: Network, { key, account }: Signer, values: Map<string, string>, once: boolean, mints: boolean): Promise<void> {
+function runFlags(values: Map<string, string>): { exec: string; format: "prompt" | "json"; minutes: number } {
   const exec = values.get("exec");
   if (!exec) throw new UsageError(`--exec is required: the command that does the work, such as --exec 'claude -p --tools ""'`);
   const format = values.get("format") ?? "prompt";
@@ -460,7 +460,10 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
   if (!/^\d{1,4}(\.\d+)?$/.test(minutes) || Number(minutes) <= 0 || Number(minutes) > 1440) {
     throw new UsageError("--timeout is the most minutes the command may spend on one task: more than 0, at most 1440, and 20 by default");
   }
+  return { exec, format, minutes: Number(minutes) };
+}
 
+async function run(network: Network, { key, account }: Signer, { exec, format, minutes }: ReturnType<typeof runFlags>, once: boolean, mints: boolean): Promise<void> {
   const { log, quietFor } = timedLog((line) => console.log(line));
   clearKeyFromEnvironment(key, log);
   const program = firstProgram(exec);
@@ -479,7 +482,7 @@ async function run(network: Network, { key, account }: Signer, values: Map<strin
     command,
     format,
     log,
-    timeoutMs: Number(minutes) * 60_000,
+    timeoutMs: minutes * 60_000,
     secrets: [key, key.slice(2)],
     store,
     stopping: stop.stopping,
@@ -712,8 +715,9 @@ export async function main(argv: string[]): Promise<void> {
   if (command === "exit") {
     const amount = values.get("amount");
     if (amount !== undefined && (!/^\d{1,9}(\.\d{1,6})?$/.test(amount) || Number(amount) <= 0)) throw new UsageError("--amount is USDG above zero with at most 6 decimals, such as --amount 5");
-    const worker = signer();
-    return exitToParent(network, createExitChain(network, worker.account), { ...(amount ? { amount } : {}), ...(values.has("to-solana") ? { toSolana: values.get("to-solana")! } : {}), dry: switches.has("dry"), log: console.log });
+    const toSolana = values.get("to-solana");
+    if (toSolana !== undefined) checkToSolana(network, toSolana);
+    return exitToParent(network, createExitChain(network, signer().account), { ...(amount ? { amount } : {}), ...(toSolana !== undefined ? { toSolana } : {}), dry: switches.has("dry"), log: console.log });
   }
   if (command === "fund") {
     if (!switches.has("from-solana")) throw new UsageError("fund takes --from-solana: the only source it knows today");
@@ -754,6 +758,7 @@ export async function main(argv: string[]): Promise<void> {
   if (command === "watch") {
     const veto = switches.has("veto");
     const once = switches.has("once");
+    if (veto && !network.contracts.gate) throw new UsageError(`${network.name} has no guardian gate yet, so there is nothing to veto through`);
     // Judging changes needs no key; vetoing and reporting do. A reader stands in for the signer otherwise.
     const keyed = veto || keyConfigured();
     const account = keyed ? signer().account : privateKeyToAccount(generatePrivateKey());
@@ -782,7 +787,6 @@ export async function main(argv: string[]): Promise<void> {
       log: console.log,
       ...watchResume(place, once),
     });
-    if (veto && !network.contracts.gate) throw new UsageError(`${network.name} has no guardian gate yet, so there is nothing to veto through`);
     if (veto) await requireWatcher(chain, console.log);
     console.log(watching(network, keyed ? account.address : undefined, veto));
     if (once) {
@@ -801,14 +805,14 @@ export async function main(argv: string[]): Promise<void> {
     // Reading a proposal needs no key, so any address stands in for the signer, and a key that is set is never read.
     return proposal(network, createProposals(network, privateKeyToAccount(generatePrivateKey())), BigInt(id), console.log);
   }
-  const worker = signer();
   if (command === "dispute" || command === "appeal") {
     const id = positional[0];
     if (id === undefined || !/^[1-9]\d{0,17}$/.test(id)) throw new UsageError(`Usage: brainchain-worker ${command} <task>, such as ${command} 12`);
-    return (command === "dispute" ? dispute : appeal)(network, createDisputeChain(network, worker.account), BigInt(id), console.log);
+    return (command === "dispute" ? dispute : appeal)(network, createDisputeChain(network, signer().account), BigInt(id), console.log);
   }
   if (command === "propose") {
     if (!values.has("target")) throw new UsageError("--target is required: board, executor or registry");
+    const worker = signer();
     const call = buildCall(network, worker.account.address, {
       target: values.get("target")!,
       call: values.get("call"),
@@ -818,24 +822,28 @@ export async function main(argv: string[]): Promise<void> {
     const uri = caseURI(call, { title: values.get("title") ?? "", rationale: values.get("rationale") ?? "", current: values.get("current"), proposed: values.get("proposed") });
     return propose(network, createProposals(network, worker.account), call, uri, { dry: switches.has("dry"), log: console.log });
   }
-  if (command === "run") return run(network, worker, values, switches.has("once"), switches.has("mint"));
-  const chain = createChain(network, worker.account);
+  if (command === "run") {
+    const flags = runFlags(values);
+    return run(network, signer(), flags, switches.has("once"), switches.has("mint"));
+  }
+  if (command === "price") {
+    if (positional[0] === undefined) throw new UsageError("Usage: brainchain-worker price <USDG>, such as price 0.25");
+    const asking = price(positional[0]);
+    const chain = createChain(network, signer().account);
+    const w = await chain.stake();
+    if (!w.registered) throw new Error("This worker has not staked yet. Run join, which sets the price too.");
+    if (w.price === asking) return console.log(`The price is already ${usdg(network, asking)} per task.`);
+    await needGas(chain, network);
+    await chain.setPrice(asking);
+    console.log(`Price set to ${usdg(network, asking)} per task.`);
+    return;
+  }
+  const chain = createChain(network, signer().account);
   switch (command) {
     case "join":
       return join(chain, network, values);
     case "status":
       return status(chain, network);
-    case "price": {
-      if (positional[0] === undefined) throw new UsageError("Usage: brainchain-worker price <USDG>, such as price 0.25");
-      const asking = price(positional[0]);
-      const w = await chain.stake();
-      if (!w.registered) throw new Error("This worker has not staked yet. Run join, which sets the price too.");
-      if (w.price === asking) return console.log(`The price is already ${usdg(network, asking)} per task.`);
-      await needGas(chain, network);
-      await chain.setPrice(asking);
-      console.log(`Price set to ${usdg(network, asking)} per task.`);
-      return;
-    }
     case "leave": {
       const w = await chain.stake();
       if (w.staked === 0n) {

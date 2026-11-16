@@ -145,6 +145,12 @@ export function createExitChain(network: Network, account: PrivateKeyAccount, re
   };
 }
 
+/** Refuses a Solana payout that cannot be made, before anything is read or signed. */
+export function checkToSolana(network: Network, toSolana: string): void {
+  if (!isSolanaAddress(toSolana)) throw new Error(`"${toSolana}" is not the address of a Solana wallet, so USDC sent there could not be spent`);
+  if (network.id !== "mainnet") throw new Error("--to-solana is mainnet only: Relay connects Solana with Robinhood Chain mainnet, not the testnets");
+}
+
 export async function exit(
   network: Network,
   chain: ExitChain,
@@ -162,10 +168,7 @@ export async function exit(
   const { log, dry } = options;
   const fetchImpl = options.fetchImpl ?? fetch;
   const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  if (options.toSolana !== undefined) {
-    if (!isSolanaAddress(options.toSolana)) throw new Error(`"${options.toSolana}" is not the address of a Solana wallet, so USDC sent there could not be spent`);
-    if (network.id !== "mainnet") throw new Error("--to-solana is mainnet only: Relay connects Solana with Robinhood Chain mainnet, not the testnets");
-  }
+  if (options.toSolana !== undefined) checkToSolana(network, options.toSolana);
   const terms = await exitTerms(network.service, fetchImpl);
   const refused = termsProblem(network, terms);
   if (refused) throw new Error(refused);

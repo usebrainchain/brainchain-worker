@@ -111,6 +111,24 @@ describe("help", () => {
     }
   });
 
+  it("names a mistake in the command line before a missing key", async () => {
+    for (const name of ["BRAINCHAIN_WORKER_KEY", "BRAINCHAIN_WORKER_KEY_FILE", "BRAINCHAIN_NETWORK", "BRAINCHAIN_RPC_URL"]) vi.stubEnv(name, "");
+    try {
+      const refusals: [string[], string][] = [
+        [["run", "--exec", "cat", "--timeout", "0"], "--timeout is the most minutes"],
+        [["run", "--exec", "cat", "--format", "xml"], "--format is prompt or json"],
+        [["exit", "--to-solana", "nope"], '"nope" is not the address of a Solana wallet'],
+        [["dispute", "x"], "Usage: brainchain-worker dispute <task>"],
+        [["price"], "Usage: brainchain-worker price <USDG>"],
+        [["price", "lots"], "The price must be a number"],
+      ];
+      for (const [argv, said] of refusals) await expect(main(argv), argv.join(" ")).rejects.toThrow(said);
+      await expect(main(["run", "--exec", "cat"])).rejects.toThrow("Set BRAINCHAIN_WORKER_KEY");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("prints only the command's own lines for each command", async () => {
     for (const command of COMMANDS) {
       for (const argv of [[command, "--help"], [command, "-h"], ["help", command], ["--help", command]]) {
