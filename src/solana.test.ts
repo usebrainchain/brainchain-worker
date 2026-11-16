@@ -398,9 +398,9 @@ describe("sendSvmStep", () => {
 });
 
 describe("solanaKeypair", () => {
-  const file = (text: string) => {
+  const file = (text: string, mode = 0o600) => {
     const path = join(mkdtempSync(join(tmpdir(), "brainchain-solana-")), "id.json");
-    writeFileSync(path, text);
+    writeFileSync(path, text, { mode });
     return path;
   };
 
@@ -420,5 +420,15 @@ describe("solanaKeypair", () => {
     const path = file(JSON.stringify([...SIGNER.secretKey]));
     expect(() => solanaKeypair({ BRAINCHAIN_SOLANA_KEY: "x", BRAINCHAIN_SOLANA_KEY_FILE: path })).toThrow("not both");
     expect(() => solanaKeypair({ BRAINCHAIN_SOLANA_KEY_FILE: `${path}.absent` })).toThrow(`names ${path}.absent, which could not be read (ENOENT)`);
+  });
+
+  it("warns about a keypair file other users can read, as for the worker's key", () => {
+    const warn = vi.fn();
+    const open = file(JSON.stringify([...SIGNER.secretKey]), 0o644);
+    expect(solanaKeypair({ BRAINCHAIN_SOLANA_KEY_FILE: open }, warn).publicKey.toBase58()).toBe(OWNER);
+    expect(warn).toHaveBeenCalledWith(`warning: other users can read ${open}; run chmod 600 on it`);
+    warn.mockClear();
+    solanaKeypair({ BRAINCHAIN_SOLANA_KEY_FILE: file(JSON.stringify([...SIGNER.secretKey])) }, warn);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

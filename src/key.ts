@@ -27,13 +27,18 @@ function keyFileProblem(text: string): string | undefined {
   return "holds characters that are not hex digits";
 }
 
+/** Warns when a key file is open to other users; it throws as statSync does for a file that is not there. */
+export function warnIfOthersCanRead(file: string, warn: (message: string) => void): void {
+  const stat = statSync(file);
+  // Windows reports no owner-only mode for any file: access there follows the folder's permissions, so there is nothing to warn about or chmod.
+  if (process.platform !== "win32" && stat.isFile() && (stat.mode & 0o077) !== 0) warn(`warning: other users can read ${file}; run chmod 600 on it`);
+}
+
 function fromFile(path: string, warn: (message: string) => void): string {
   const file = expandHome(path);
   let text: string;
   try {
-    const stat = statSync(file);
-    // Windows reports no owner-only mode for any file: access there follows the folder's permissions, so there is nothing to warn about or chmod.
-    if (process.platform !== "win32" && stat.isFile() && (stat.mode & 0o077) !== 0) warn(`warning: other users can read ${file}; run chmod 600 on it`);
+    warnIfOthersCanRead(file, warn);
     text = readFileSync(file, "utf8");
   } catch (error) {
     throw new Error(`BRAINCHAIN_WORKER_KEY_FILE names ${file}, which could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);

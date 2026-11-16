@@ -11,7 +11,7 @@ import { formatEther, formatUnits, parseUnits, type Address } from "viem";
 
 import { DepositSent } from "./bridge.js";
 import { reason } from "./chain.js";
-import { expandHome } from "./key.js";
+import { expandHome, warnIfOthersCanRead } from "./key.js";
 import { checkReturn, MAX_LOSS, MAX_STAKE_LOSS, NATIVE, RELAY_API, RelayError, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, waitForRelay, type RelayQuote, type RelayStatus, type SvmItem } from "./relay.js";
 
 export const SOLANA_RPC = "https://api.mainnet-beta.solana.com";
@@ -40,11 +40,11 @@ export function usdcAccount(owner: string): string {
 }
 
 /** The Solana key from BRAINCHAIN_SOLANA_KEY (base58) or BRAINCHAIN_SOLANA_KEY_FILE (a Solana CLI keypair file). */
-export function solanaKeypair(env: NodeJS.ProcessEnv = process.env): Keypair {
+export function solanaKeypair(env: NodeJS.ProcessEnv = process.env, warn: (message: string) => void = console.warn): Keypair {
   const file = env.BRAINCHAIN_SOLANA_KEY_FILE?.trim();
   const inline = env.BRAINCHAIN_SOLANA_KEY?.trim();
   if (file && inline) throw new Error("Set BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE, not both");
-  const raw = file ? readKeyFile(file) : inline;
+  const raw = file ? readKeyFile(file, warn) : inline;
   if (!raw) throw new Error("Set BRAINCHAIN_SOLANA_KEY to the Solana wallet's secret key (base58), or BRAINCHAIN_SOLANA_KEY_FILE to its keypair file");
   try {
     const bytes = raw.startsWith("[") ? Uint8Array.from(JSON.parse(raw) as number[]) : bs58.decode(raw);
@@ -54,9 +54,10 @@ export function solanaKeypair(env: NodeJS.ProcessEnv = process.env): Keypair {
   }
 }
 
-function readKeyFile(path: string): string {
+function readKeyFile(path: string, warn: (message: string) => void): string {
   const file = expandHome(path);
   try {
+    warnIfOthersCanRead(file, warn);
     return readFileSync(file, "utf8").trim();
   } catch (error) {
     throw new Error(`BRAINCHAIN_SOLANA_KEY_FILE names ${file}, which could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
