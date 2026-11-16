@@ -153,7 +153,9 @@ const COMMAND_USAGE: Record<string, string> = {
                                             a change that crosses a floor through the guardian gate, when the worker's
                                             key is the gate's watcher. Each run picks up where the last one stopped.
                                             --once reads one round, checks the decisions added since the last run
-                                            (the latest 10 on the first) and exits 1 on a finding or when a
+                                            (the latest 10 on the first), or says there are none, and lists a
+                                            change that has run or was vetoed only if it is new since the last
+                                            run. It exits 0 when all is well, and 1 on a finding or when a
                                             decision could not be checked or reported.`,
   credit: `  brainchain-worker credit --agent-id <id> [--premium <bps>]
                                             Ask BrainChain to back a credit line for the worker's ERC-8004 agent
@@ -678,13 +680,14 @@ export const watchPlace = (log: Address, key: Address | undefined) => (key === u
 export function watchResume(place: string, once: boolean, dir?: string) {
   let kept = readWatched(place, dir);
   return {
-    seenDecision: kept,
-    ...(once ? { recent: FIRST_RUN_DECISIONS } : {}),
-    saw(count: bigint) {
+    seenDecision: kept?.seen,
+    ...(kept?.block === undefined ? {} : { seenBlock: kept.block }),
+    ...(once ? { recent: FIRST_RUN_DECISIONS, once: true } : {}),
+    saw(count: bigint, block: bigint | undefined) {
       // A long watch ends a round every 30 seconds, mostly with nothing new.
-      if (count === kept) return;
-      writeWatched(place, count, dir);
-      kept = count;
+      if (count === kept?.seen && block === kept.block) return;
+      writeWatched(place, { seen: count, ...(block === undefined ? {} : { block }) }, dir);
+      kept = { seen: count, ...(block === undefined ? {} : { block }) };
     },
   };
 }

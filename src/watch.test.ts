@@ -282,6 +282,36 @@ describe("a one-shot run", () => {
   });
 });
 
+describe("a run that picks up from a saved place", () => {
+  const closed = (id: bigint, block: bigint) => ({ ...change(id, encodeFunctionData({ abi, functionName: "setPaused", args: [true] })), block });
+
+  it("lists a closed change only when it was queued after the latest change an earlier run listed", async () => {
+    const queued = [closed(1n, 100n), closed(2n, 200n), closed(3n, 300n)];
+    const lines: string[] = [];
+    const saw: (bigint | undefined)[] = [];
+    const { chain } = fakeChain({ queued, open: false, decisions: [5n] });
+    await createWatch({ network: TESTNET, chain, verify: async () => ({ findings: [] }), veto: false, log: (l) => lines.push(l), seenDecision: 5n, seenBlock: 200n, recent: 10n, once: true, saw: (_, block) => saw.push(block) }).round();
+    expect(lines.filter((l) => l.startsWith("change"))).toEqual([`change 3: setPaused on ${BOARD}; closed, it has run or was vetoed`]);
+    expect(saw).toEqual([300n]);
+  });
+
+  it("still judges an open change every run, since a veto owed on it may not have landed", async () => {
+    const lines: string[] = [];
+    const { chain } = fakeChain({ queued: [closed(1n, 100n)], open: true, decisions: [5n] });
+    await createWatch({ network: TESTNET, chain, verify: async () => ({ findings: [] }), veto: false, log: (l) => lines.push(l), seenDecision: 5n, seenBlock: 200n, once: true }).round();
+    expect(lines[0]).toMatch(/^change 1: setPaused on .* pauses or resumes new posts, which no floor covers, runs after/);
+  });
+
+  it("says so in one line when no decision is new, on a single round only", async () => {
+    const once: string[] = [];
+    await createWatch({ network: TESTNET, chain: fakeChain({ decisions: [357n] }).chain, verify: async () => ({ findings: [] }), veto: false, log: (l) => once.push(l), seenDecision: 357n, recent: 10n, once: true }).round();
+    expect(once).toEqual(["No new decisions since 357."]);
+    const long: string[] = [];
+    await createWatch({ network: TESTNET, chain: fakeChain({ decisions: [357n] }).chain, verify: async () => ({ findings: [] }), veto: false, log: (l) => long.push(l), seenDecision: 357n }).round();
+    expect(long).toEqual([]);
+  });
+});
+
 describe("what a decision's checks come to", () => {
   const check = (name: string, status: "ok" | "fail" | "skip" | "error", message = name) => ({ name, status, message });
 

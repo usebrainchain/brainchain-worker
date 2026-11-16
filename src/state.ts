@@ -85,24 +85,33 @@ export function privateDir(dir: string, log: (line: string) => void): void {
   }
 }
 
-/** The decision count a watch run got to, kept per decision log; undefined when there is none or it cannot be read. */
-export function readWatched(log: string, dir = stateDir()): bigint | undefined {
+/** Where a watch run got to: the decision count it checked up to, and the block of the latest queued change it listed. */
+export interface WatchPlace {
+  seen: bigint;
+  block?: bigint;
+}
+
+const isDigits = (value: unknown): value is string => typeof value === "string" && /^\d+$/.test(value);
+
+/** Where a watch run got to, kept per decision log; undefined when there is no place or it cannot be read. */
+export function readWatched(log: string, dir = stateDir()): WatchPlace | undefined {
   try {
-    const { seen } = JSON.parse(readFileSync(join(dir, `watch.${log.toLowerCase()}.json`), "utf8")) as { seen?: unknown };
-    return typeof seen === "string" && /^\d+$/.test(seen) ? BigInt(seen) : undefined;
+    const { seen, block } = JSON.parse(readFileSync(join(dir, `watch.${log.toLowerCase()}.json`), "utf8")) as { seen?: unknown; block?: unknown };
+    if (!isDigits(seen)) return undefined;
+    return { seen: BigInt(seen), ...(isDigits(block) ? { block: BigInt(block) } : {}) };
   } catch {
     return undefined;
   }
 }
 
-export function writeWatched(log: string, seen: bigint, dir = stateDir()): void {
+export function writeWatched(log: string, { seen, block }: WatchPlace, dir = stateDir()): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, `watch.${log.toLowerCase()}.json`);
   // Each write its own temp file: runs from cron overlap, and nothing else keeps them apart.
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   const fd = openSync(temp, "w", 0o600);
   try {
-    writeFileSync(fd, JSON.stringify({ seen: seen.toString() }));
+    writeFileSync(fd, JSON.stringify({ seen: seen.toString(), ...(block === undefined ? {} : { block: block.toString() }) }));
     // On disk before the rename, so a power loss leaves the old place or the new one, never an empty file.
     fsyncSync(fd);
   } finally {

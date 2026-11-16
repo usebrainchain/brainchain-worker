@@ -448,11 +448,11 @@ describe("watchPlace", () => {
 
   it("keeps a place for each key apart from the place of runs without one", () => {
     const folder = mkdtempSync(path.join(tmpdir(), "brainchain-watch-"));
-    writeWatched(watchPlace(LOG, undefined), 100n, folder);
+    writeWatched(watchPlace(LOG, undefined), { seen: 100n }, folder);
     expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBeUndefined();
-    writeWatched(watchPlace(LOG, ACCOUNT), 94n, folder);
-    expect(readWatched(watchPlace(LOG, undefined), folder)).toBe(100n);
-    expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toBe(94n);
+    writeWatched(watchPlace(LOG, ACCOUNT), { seen: 94n, block: 5_000n }, folder);
+    expect(readWatched(watchPlace(LOG, undefined), folder)).toEqual({ seen: 100n });
+    expect(readWatched(watchPlace(LOG, ACCOUNT), folder)).toEqual({ seen: 94n, block: 5_000n });
     expect(readWatched(watchPlace(LOG, "0x00000000000000000000000000000000000000c2"), folder)).toBeUndefined();
   });
 });
@@ -494,12 +494,26 @@ describe("watchResume", () => {
     const first = watchResume(place, false, folder);
     expect(first.seenDecision).toBeUndefined();
     expect(first).not.toHaveProperty("recent");
-    expect(watchResume(place, true, folder)).toMatchObject({ seenDecision: undefined, recent: 10n });
-    first.saw(40n);
+    expect(watchResume(place, true, folder)).toMatchObject({ seenDecision: undefined, recent: 10n, once: true });
+    first.saw(40n, undefined);
     const restarted = watchResume(place, false, folder);
     expect(restarted.seenDecision).toBe(40n);
     expect(restarted).not.toHaveProperty("recent");
+    expect(restarted).not.toHaveProperty("seenBlock");
     expect(watchResume(place, true, folder).seenDecision).toBe(40n);
+  });
+
+  it("keeps the block of the latest change listed, so a later run lists only closed changes queued after it", () => {
+    const folder = mkdtempSync(path.join(tmpdir(), "brainchain-watch-"));
+    const place = watchPlace("0x4E4cB48f3802bD519E0Eed896dF82197B0ecBc09", undefined);
+    watchResume(place, true, folder).saw(357n, 9_120n);
+    expect(watchResume(place, true, folder)).toMatchObject({ seenDecision: 357n, seenBlock: 9_120n });
+    // A place from before blocks were kept still reads, and gains one at the next save.
+    writeWatched(place, { seen: 357n }, folder);
+    const old = watchResume(place, true, folder);
+    expect(old).not.toHaveProperty("seenBlock");
+    old.saw(357n, 9_120n);
+    expect(readWatched(place, folder)).toEqual({ seen: 357n, block: 9_120n });
   });
 });
 

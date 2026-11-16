@@ -275,12 +275,20 @@ export function createWatch(options: {
   seenDecision?: bigint;
   /** With no count to pick up from, how many of the latest decisions the first round checks; without it, that round only notes where the log stands. */
   recent?: bigint;
-  /** Told how far the checks have got after each round; it may throw, which costs only a repeat of those checks. */
-  saw?: (count: bigint) => void;
+  /** The block of the latest queued change an earlier run listed; a change closed by then is not listed again. */
+  seenBlock?: bigint;
+  /** A single round, as --once runs, which says so when no decision is new. */
+  once?: boolean;
+  /**
+   * Told how far the checks have got after each round, and the block of the
+   * latest queued change seen; it may throw, which costs only a repeat of those checks.
+   */
+  saw?: (count: bigint, block: bigint | undefined) => void;
 }) {
   const { network, chain, verify, log } = options;
   let nextBlock = options.fromBlock ?? network.fromBlock;
   let seenDecision = options.seenDecision;
+  let latestChange = options.seenBlock;
   const judged = new Set<string>();
   /** Vetoes due and not yet landed; each is tried every round until it lands or its change closes. */
   const owed = new Map<string, { id: bigint; why: string }>();
@@ -296,12 +304,15 @@ export function createWatch(options: {
       for (const change of await chain.queued(from, to)) {
         const key = change.changeId.toString();
         if (judged.has(key)) continue;
+        if (latestChange === undefined || change.block > latestChange) latestChange = change.block;
         const { name, broken, does } = judge(change.data);
         // A failed read leaves the change unjudged and the block range unread, so the next round comes back to it.
         const open = await chain.open(change.changeId);
         judged.add(key);
         const why = broken.join("; ");
         if (!open) {
+          // An earlier run listed it; a closed change needs nothing more.
+          if (options.seenBlock !== undefined && change.block <= options.seenBlock) continue;
           log(`change ${change.changeId}: ${name} on ${change.target}${broken.length > 0 ? ` broke the constitution (${why})` : ""}; closed, it has run or was vetoed`);
           continue;
         }
@@ -348,6 +359,8 @@ export function createWatch(options: {
     if (seenDecision === undefined) {
       seenDecision = count;
       log(`${count} decisions recorded so far; new ones are checked from here`);
+    } else if (options.once && seenDecision === count) {
+      log(`No new decisions since ${count}.`);
     }
     const checked: { id: bigint; proof: Hex }[] = [];
     const found: { id: bigint; checks: string[] }[] = [];
@@ -386,7 +399,7 @@ export function createWatch(options: {
     }
     seenDecision = reached;
     try {
-      options.saw?.(reached);
+      options.saw?.(reached, latestChange);
     } catch (error) {
       log(`warning: could not save how far this got, so the next run checks these decisions again: ${reason(error)}`);
     }

@@ -255,16 +255,16 @@ describe("writeWatched", () => {
     const log = "0xABC";
     // A fixed temp name is what two runs would fight over.
     mkdirSync(join(folder, "watch.0xabc.json.tmp"));
-    writeWatched(log, 7n, folder);
-    writeWatched(log, 9n, folder);
-    expect(readWatched(log, folder)).toBe(9n);
+    writeWatched(log, { seen: 7n }, folder);
+    writeWatched(log, { seen: 9n, block: 40n }, folder);
+    expect(readWatched(log, folder)).toEqual({ seen: 9n, block: 40n });
     expect(readdirSync(folder).filter((name) => name.endsWith(".tmp"))).toEqual(["watch.0xabc.json.tmp"]);
   });
 
   it("flushes the place to disk before it replaces the last one", () => {
     vi.mocked(fsyncSync).mockClear();
     vi.mocked(renameSync).mockClear();
-    writeWatched("0xABC", 7n, dir());
+    writeWatched("0xABC", { seen: 7n }, dir());
     expect(fsyncSync).toHaveBeenCalledOnce();
     expect(vi.mocked(fsyncSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(renameSync).mock.invocationCallOrder[0]!);
   });
