@@ -47,6 +47,8 @@ export interface BridgeChain {
   depositEth(amount: bigint): Promise<Hex>;
   /** Approves the token's gateway when needed and sends the deposit. */
   depositToken(asset: Exclude<Asset, "eth">, amount: bigint, value: bigint): Promise<Hex>;
+  /** Whether the $BRAIN move has closed on the parent chain; false where there is none. */
+  moveClosed(): Promise<boolean>;
 }
 
 export function createBridgeChain(network: Network, account: PrivateKeyAccount): BridgeChain {
@@ -70,6 +72,9 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount):
 
   return {
     account: account.address,
+    moveClosed: async () =>
+      !!bridge.move &&
+      (await read.readContract({ address: bridge.move, abi: parseAbi(["function closedAt() view returns (uint64)"]), functionName: "closedAt" })) !== 0n,
     parentEth: () => read.getBalance({ address: account.address }),
     tokenBalance: (asset) => read.readContract({ address: token(asset), abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     async arrivalCost(asset, amount) {
@@ -154,6 +159,10 @@ export async function bridge(
     return log(`sent, arrives on ${network.name} in about a minute: ${tx}`);
   }
 
+  // After the move the stake token configured here is the old $BRAIN: bridging it would carry a token nothing takes.
+  if (asset === "stake" && (await chain.moveClosed())) {
+    throw new Error(`$BRAIN moved to new contracts, and this release of the worker still names the old one. Bridge the new $BRAIN at https://usebrainchain.com/bridge; staking moves to it with the next worker release, when BrainChain's contracts switch.`);
+  }
   const held = await chain.tokenBalance(asset);
   if (held < amount) {
     throw new Error(`${chain.account} holds ${grouped(held, decimals)} ${symbol} on ${parent.name}, ${grouped(amount - held, decimals)} short of ${shown}`);
