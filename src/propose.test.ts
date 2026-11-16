@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
 import { buildCall, CASE_BYTES, caseURI, createProposals, GOVERNED, proposal, propose, ProposalError, type Call, type ProposalChain } from "./propose.js";
+import { gasHelp } from "./standing.js";
 
 const ME: Address = "0x00000000000000000000000000000000000000C1";
 const ROUTER: Address = "0x15Cf18dBA874EA0c77ED8Cecf38aDa64697102fb";
@@ -133,9 +134,9 @@ function fakeChain(overrides: Partial<ProposalChain> = {}): ProposalChain {
 describe("propose", () => {
   const call = buildCall(MAINNET, ME, { target: "board", call: "setFee", args: `[300, "${ROUTER}"]` });
 
-  async function run(chain: ProposalChain, dry = false) {
+  async function run(chain: ProposalChain, dry = false, confirm: { yes?: boolean; ask?: (question: string) => Promise<string> } = { yes: true }) {
     const lines: string[] = [];
-    await propose(MAINNET, chain, call, "data:application/json;base64,e30=", { dry, log: (line) => lines.push(line) });
+    await propose(MAINNET, chain, call, "data:application/json;base64,e30=", { dry, yes: confirm.yes ?? false, ...(confirm.ask ? { ask: confirm.ask } : {}), log: (line) => lines.push(line) });
     return lines;
   }
 
@@ -148,9 +149,35 @@ describe("propose", () => {
     expect(lines.at(-1)).toBe(`Proposal 2 is waiting for Jev (${TX}). Follow it with ${cli("proposal 2")}.`);
   });
 
-  it("sends nothing on a dry run, even without the bond", async () => {
-    const chain = fakeChain({ stakeBalance: vi.fn(async () => 0n) });
+  it("sends nothing on a dry run", async () => {
+    const chain = fakeChain();
     expect((await run(chain, true)).at(-1)).toBe("Dry run, nothing sent.");
+    expect(chain.propose).not.toHaveBeenCalled();
+  });
+
+  it("checks the bond and the gas on a dry run too, so it fails where the real run would", async () => {
+    const empty = fakeChain({ stakeBalance: vi.fn(async () => 0n), ethBalance: vi.fn(async () => 0n) });
+    const error = await run(empty, true).catch((e: unknown) => (e as Error).message);
+    expect(error).toBe(
+      `The wallet holds 0 BRAIN of the 250,000 BRAIN bond. ${MAINNET.buyStake}\n${ME} has no ETH on BrainChain for gas. ${gasHelp(MAINNET, ME, 0n, 2)}.\nDry run, nothing sent.`,
+    );
+    expect(empty.propose).not.toHaveBeenCalled();
+  });
+
+  it("asks before it bonds, and sends nothing unless the answer is yes", async () => {
+    const questions: string[] = [];
+    for (const [answer, sends] of [["y", true], ["yes", true], ["", false], ["n", false]] as const) {
+      const chain = fakeChain();
+      const lines = await run(chain, false, { ask: async (question) => (questions.push(question), answer) });
+      expect(chain.propose).toHaveBeenCalledTimes(sends ? 1 : 0);
+      if (!sends) expect(lines.at(-1)).toBe("Nothing sent.");
+    }
+    expect(questions[0]).toBe("Bond 250,000 BRAIN, burned unless BrainChain adopts the change? [y/N] ");
+  });
+
+  it("refuses to send without a terminal to ask on, unless given --yes", async () => {
+    const chain = fakeChain();
+    await expect(run(chain, false, {})).rejects.toThrow("There is no terminal to confirm on. Run again with --yes to send without asking.");
     expect(chain.propose).not.toHaveBeenCalled();
   });
 

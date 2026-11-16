@@ -339,7 +339,14 @@ export async function propose(
   chain: ProposalChain,
   call: Call,
   uri: string,
-  options: { dry: boolean; log: (line: string) => void },
+  options: {
+    dry: boolean;
+    /** Sends without asking. */
+    yes: boolean;
+    /** Asks the person at the terminal; undefined when there is no terminal. */
+    ask?: (question: string) => Promise<string>;
+    log: (line: string) => void;
+  },
 ): Promise<void> {
   const { log } = options;
   const [bond, balance, gas, within, threshold, timelock, vetoed, open, revert] = await Promise.all([
@@ -361,15 +368,21 @@ export async function propose(
   Data      ${call.data}
   Bond      ${stake(network, bond)}, returned if Jev adopts the change with at least ${percent(threshold)} confidence, burned otherwise
   Decision  within ${days(within)}; an adopted change runs ${hours(timelock)} later`);
+  // A dry run stops where the real one would, so it passes only when the real one can send.
+  const short = [
+    ...(balance < bond ? [`The wallet holds ${stake(network, balance)} of the ${stake(network, bond)} bond.${network.buyStake ? ` ${network.buyStake}` : ""}`] : []),
+    ...(gas === 0n ? [`${chain.account} has no ETH on ${network.name} for gas. ${gasHelp(network, chain.account, 0n, await chain.sent())}.`] : []),
+  ];
+  if (short.length > 0) throw new Error(`${short.join("\n")}${options.dry ? "\nDry run, nothing sent." : ""}`);
   if (options.dry) {
     log("Dry run, nothing sent.");
     return;
   }
-  if (balance < bond) {
-    const buy = network.buyStake ? ` ${network.buyStake}` : "";
-    throw new Error(`The wallet holds ${stake(network, balance)} of the ${stake(network, bond)} bond.${buy}`);
+  if (!options.yes) {
+    if (!options.ask) throw new Error("There is no terminal to confirm on. Run again with --yes to send without asking.");
+    const answer = (await options.ask(`Bond ${stake(network, bond)}, burned unless BrainChain adopts the change? [y/N] `)).trim().toLowerCase();
+    if (answer !== "y" && answer !== "yes") return log("Nothing sent.");
   }
-  if (gas === 0n) throw new Error(`${chain.account} has no ETH on ${network.name} for gas. ${gasHelp(network, chain.account, 0n, await chain.sent())}.`);
   log(`Bonding ${stake(network, bond)} and proposing...`);
   const { id, tx } = await chain.propose(call, uri, bond);
   log(`Proposal ${id} is waiting for Jev (${tx}). Follow it with ${cli(`proposal ${id}`)}.`);

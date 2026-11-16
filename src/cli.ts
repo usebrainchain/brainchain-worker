@@ -131,10 +131,13 @@ const COMMAND_USAGE: Record<string, string> = {
                                             other; the wallet needs about 0.002 SOL for fees. --dry checks and sends
                                             nothing. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
-                            --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry]
+                            --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]
                                             Bond the stake token and propose a change to BrainChain for Jev to
                                             decide. --data <hex> gives the call as raw calldata instead of
-                                            --call and --args. --dry checks the call and sends nothing.`,
+                                            --call and --args. The bond is burned unless the change is adopted,
+                                            so propose shows the bond and asks before sending; --yes sends
+                                            without asking. --dry checks the call, the bond and the gas, and
+                                            sends nothing.`,
   proposal: `  brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.`,
   watch: `  brainchain-worker watch [--veto] [--once]
                                             Watch the chain: judge every queued change against the constitution
@@ -218,7 +221,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   fund: { "from-solana": true, usdc: false, stake: true, "gas-usdc": false, dry: true },
   watch: { veto: true, once: true },
   credit: { "agent-id": false, premium: false },
-  propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true },
+  propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true, yes: true },
   proposal: {},
   dispute: {},
   appeal: {},
@@ -638,22 +641,27 @@ export function bondArgs(positional: string[]): { action: "bond"; task: bigint; 
   return { action: "bond", task, amount: parseUnits(second, 6) };
 }
 
+/** Asks the person at the terminal, for a send that costs money; undefined when there is no terminal, as under a supervisor. */
+function terminal(): { ask?: (question: string) => Promise<string> } {
+  if (!process.stdin.isTTY) return {};
+  return {
+    async ask(question) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        return await rl.question(question);
+      } finally {
+        rl.close();
+      }
+    },
+  };
+}
+
 async function bondCommand(network: Network, positional: string[], yes: boolean): Promise<void> {
   const args = bondArgs(positional);
   const config = network.proofs.bonds;
   const chain = createBondChain(network, config ?? { registry: zeroAddress, check: zeroAddress, usdg: zeroAddress }, signer().account);
   if (args.action !== "bond") return (args.action === "status" ? bondStatus : bondClaim)(network, config, chain, args.task, console.log);
-  const ask = process.stdin.isTTY
-    ? async (question: string) => {
-        const rl = createInterface({ input: process.stdin, output: process.stdout });
-        try {
-          return await rl.question(question);
-        } finally {
-          rl.close();
-        }
-      }
-    : undefined;
-  return bond(network, config, chain, args.task, { amount: args.amount, yes, ...(ask ? { ask } : {}), log: console.log });
+  return bond(network, config, chain, args.task, { amount: args.amount, yes, ...terminal(), log: console.log });
 }
 
 /** Where watch keeps its place: a key's place counts toward its watchtower mark, so each key has its own, apart from runs without one. */
@@ -847,7 +855,7 @@ export async function main(argv: string[]): Promise<void> {
       data: values.get("data"),
     });
     const uri = caseURI(call, { title: values.get("title") ?? "", rationale: values.get("rationale") ?? "", current: values.get("current"), proposed: values.get("proposed") });
-    return propose(network, createProposals(network, worker.account), call, uri, { dry: switches.has("dry"), log: console.log });
+    return propose(network, createProposals(network, worker.account), call, uri, { dry: switches.has("dry"), yes: switches.has("yes"), ...terminal(), log: console.log });
   }
   if (command === "run") {
     const flags = runFlags(values);
