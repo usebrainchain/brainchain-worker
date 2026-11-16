@@ -52,7 +52,9 @@ describe("bridge", () => {
     const { chain, sent } = fakeChain({ cost: parseEther("0.0003") });
     const lines = await run(chain, "stake", "1250000");
     expect(sent).toEqual([`stake ${parseEther("1250000")} value ${parseEther("0.0003")}`]);
-    expect(lines[0]).toBe(`bridging 1,250,000 BRAIN from Robinhood Chain to ${ACCOUNT} on BrainChain (sending 0.0003 ETH for its arrival, the unused part refunded there)`);
+    expect(lines[0]).toBe(
+      `bridging 1,250,000 BRAIN from Robinhood Chain to ${ACCOUNT} on BrainChain (sending 0.0003 ETH for its arrival, the unused part refunded there; with gas, the wallet needs about 0.0004 ETH on Robinhood Chain)`,
+    );
   });
 
   it("takes bounty amounts in 6 decimals and sends nothing on a dry run", async () => {
@@ -71,6 +73,25 @@ describe("bridge", () => {
     await expect(run(noGas.chain, "eth", "0.001")).rejects.toThrow(/0.001 ETH plus gas is needed/);
     expect(short.sent).toEqual([]);
     expect(noGas.sent).toEqual([]);
+  });
+
+  it("prints the whole plan on a dry run for an empty wallet, the ETH the deposit needs included, then every shortfall", async () => {
+    const empty = fakeChain({ eth: 0n, bounty: 0n });
+    const lines: string[] = [];
+    const error = await bridge(MAINNET, empty.chain, { asset: "bounty", amount: "5", dry: true, log: (line) => lines.push(line) }).catch((e: unknown) => (e as Error).message);
+    expect(lines).toEqual([
+      `bridging 5 USDG from Robinhood Chain to ${ACCOUNT} on BrainChain (sending 0.0003 ETH for its arrival, the unused part refunded there; with gas, the wallet needs about 0.0004 ETH on Robinhood Chain)`,
+    ]);
+    expect(error).toBe(
+      `${ACCOUNT} holds 0 USDG on Robinhood Chain, 5 short of 5 USDG\n` +
+        `${ACCOUNT} holds 0 ETH on Robinhood Chain; about 0.0004 ETH is needed to pay the deposit's arrival and gas. ${MAINNET.bridge!.gas}\n` +
+        "dry run: nothing sent",
+    );
+    const noEth = fakeChain({ eth: 0n });
+    const ethLines: string[] = [];
+    await expect(bridge(MAINNET, noEth.chain, { asset: "eth", amount: "0.001", dry: true, log: (line) => ethLines.push(line) })).rejects.toThrow(/0\.001 ETH plus gas is needed\. .*\ndry run: nothing sent$/s);
+    expect(ethLines).toEqual([`bridging 0.001 ETH from Robinhood Chain to ${ACCOUNT} on BrainChain`]);
+    expect([...empty.sent, ...noEth.sent]).toEqual([]);
   });
 
   it("will not send while an earlier transaction of the wallet is unmined, since it may be a deposit", async () => {

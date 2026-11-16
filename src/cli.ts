@@ -107,7 +107,8 @@ const COMMAND_USAGE: Record<string, string> = {
                                             Move ETH for gas, the stake token or the bounty token from Robinhood
                                             Chain to the worker's address on BrainChain; it arrives in about a
                                             minute. It takes one of the three at a time. --eth works on both
-                                            networks, the tokens on mainnet. --dry checks the balances and sends
+                                            networks, the tokens on mainnet. --dry prints the plan, with the ETH
+                                            a token deposit needs, then anything the wallet lacks, and sends
                                             nothing.`,
   exit: `  brainchain-worker exit [--amount <USDG>] [--to-solana <address>] [--dry]
                                             On testnet, get the worker's tUSDG on BrainChain back, usually within

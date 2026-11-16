@@ -165,25 +165,30 @@ export async function bridge(
   } catch (error) {
     throw new Error(`could not read the wallet on ${parent.name}: ${reason(error)}`);
   }
+  // The plan comes first and every shortfall after it, so a dry run says all a wallet still needs at once.
+  const refuse = (short: string[]) => {
+    if (short.length > 0) throw new Error([...short, ...(dry ? ["dry run: nothing sent"] : [])].join("\n"));
+  };
   if (asset === "eth") {
     const gas = parseUnits("0.00002", 18);
-    if (eth < amount + gas) throw new Error(`${chain.account} holds ${formatEther(eth)} ETH on ${parent.name}; ${shown} plus gas is needed. ${parent.gas}`);
     log(`bridging ${shown} from ${parent.name} to ${chain.account} on ${network.name}`);
+    refuse(eth < amount + gas ? [`${chain.account} holds ${formatEther(eth)} ETH on ${parent.name}; ${shown} plus gas is needed. ${parent.gas}`] : []);
     if (dry) return log("dry run: nothing sent");
     await settled();
     const tx = await chain.depositEth(amount);
     return log(`sent, arrives on ${network.name} in about a minute: ${tx}`);
   }
 
-  const held = await chain.tokenBalance(asset);
-  if (held < amount) {
-    throw new Error(`${chain.account} holds ${grouped(held, decimals)} ${symbol} on ${parent.name}, ${grouped(amount - held, decimals)} short of ${shown}`);
-  }
-  const value = await chain.arrivalCost(asset, amount);
-  if (eth < value + parseUnits("0.0001", 18)) {
-    throw new Error(`${chain.account} holds ${formatEther(eth)} ETH on ${parent.name}; about ${formatEther(value + parseUnits("0.0001", 18))} ETH is needed to pay the deposit's arrival and gas. ${parent.gas}`);
-  }
-  log(`bridging ${shown} from ${parent.name} to ${chain.account} on ${network.name} (sending ${formatEther(value)} ETH for its arrival, the unused part refunded there)`);
+  const [held, value] = await Promise.all([chain.tokenBalance(asset), chain.arrivalCost(asset, amount)]);
+  const needs = value + parseUnits("0.0001", 18);
+  log(
+    `bridging ${shown} from ${parent.name} to ${chain.account} on ${network.name} (sending ${formatEther(value)} ETH for its arrival, the unused part refunded there; ` +
+      `with gas, the wallet needs about ${formatEther(needs)} ETH on ${parent.name})`,
+  );
+  refuse([
+    ...(held < amount ? [`${chain.account} holds ${grouped(held, decimals)} ${symbol} on ${parent.name}, ${grouped(amount - held, decimals)} short of ${shown}`] : []),
+    ...(eth < needs ? [`${chain.account} holds ${formatEther(eth)} ETH on ${parent.name}; about ${formatEther(needs)} ETH is needed to pay the deposit's arrival and gas. ${parent.gas}`] : []),
+  ]);
   if (dry) return log("dry run: nothing sent");
   await settled();
   const tx = await chain.depositToken(asset, amount, value);
