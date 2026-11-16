@@ -321,6 +321,11 @@ async function needGas(chain: Chain, network: Network): Promise<void> {
   if ((await chain.ethBalance()) === 0n) throw await noGas(chain, network);
 }
 
+/** A transaction join sent, under the step it belongs to, so each can be looked up. An approval that was not needed sent nothing. */
+function txLine(what: string, tx: Hex | undefined): void {
+  if (tx !== undefined) console.log(`  ${what}: ${tx}`);
+}
+
 export async function join(chain: Chain, network: Network, values: Map<string, string>): Promise<void> {
   const name = values.get("name")?.trim() ?? "";
   const about = values.get("about")?.trim() ?? "";
@@ -350,7 +355,11 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     const taken = await chain.openApplication();
     if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with ${cli(`proposal ${taken}`)}.`);
   } else if (name || about) {
-    console.log("This worker is past its application, so --name and --about are not used.");
+    console.log(
+      open
+        ? `Application ${open.id} is already waiting for BrainChain's decision, so --name and --about are not used. ${cli("status")} says how long it has waited.`
+        : "This worker is past its application, so --name and --about are not used.",
+    );
   }
   // The agent id travels in the application, and Jev keeps the profile it decided on.
   if (agentId !== undefined) {
@@ -397,18 +406,21 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     };
     if (now < faucet.opensAt) throw closed(faucet.opensAt);
     console.log(`Claiming ${network.stakeSymbol} from the testnet faucet...`);
-    await chain.claimStakeToken().catch((error: unknown) => {
-      const opensAt = faucetReopens(error);
-      throw opensAt === undefined ? error : closed(opensAt);
-    });
+    txLine(
+      "claimed",
+      await chain.claimStakeToken().catch((error: unknown) => {
+        const opensAt = faucetReopens(error);
+        throw opensAt === undefined ? error : closed(opensAt);
+      }),
+    );
   }
   if (toStake > 0n) {
     console.log(`Staking ${stake(network, toStake)}${w.staked > 0n ? " more, up to the minimum," : ""} at ${usdg(network, asking)} per task...`);
-    await chain.approve(network.contracts.stakeToken, network.contracts.staking, toStake);
-    await chain.stakeTokens(toStake, asking);
+    txLine("approved", await chain.approve(network.contracts.stakeToken, network.contracts.staking, toStake));
+    txLine("staked", await chain.stakeTokens(toStake, asking));
   } else if (w.price !== asking) {
     console.log(`Setting your price to ${usdg(network, asking)} per task...`);
-    await chain.setPrice(asking);
+    txLine("price set", await chain.setPrice(asking));
   }
   if (allowed) {
     console.log(`${toStake > 0n ? "Staked back to the minimum, so this worker can be hired again." : "This worker can already be hired."} Start it with ${RUN}.`);
@@ -419,13 +431,14 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     return;
   }
   if (open) {
-    console.log(`Application ${open.id} is already waiting for Jev.`);
+    // Said already when a name or description came with it.
+    if (!name && !about) console.log(`Application ${open.id} is already waiting for BrainChain's decision. ${cli("status")} says how long it has waited.`);
     return;
   }
   console.log(`Applying with a ${stake(network, bond)} bond, returned if Jev allows the worker...`);
-  await chain.approve(network.contracts.stakeToken, network.contracts.bonds, bond);
+  txLine("approved", await chain.approve(network.contracts.stakeToken, network.contracts.bonds, bond));
   const profile = Buffer.from(JSON.stringify({ name, about, ...(agentId !== undefined ? { agentId: Number(agentId) } : {}) })).toString("base64");
-  await chain.apply(`data:application/json;base64,${profile}`);
+  txLine("applied", await chain.apply(`data:application/json;base64,${profile}`));
   console.log(
     `\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
       `Start ${RUN} now so it takes its first task as soon as it is hired, and follow\n` +

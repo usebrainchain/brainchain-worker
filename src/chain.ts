@@ -514,10 +514,11 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     bond: () => client.readContract({ address: bonds, abi: bondsAbi, functionName: "bond" }),
     /** Seconds between Jev allowing a worker and the worker being hireable. */
     timelock: () => client.readContract({ address: executor, abi: executorAbi, functionName: "timelock" }),
-    async approve(token: Address, spender: Address, amount: bigint) {
+    /** Approves `spender` for `amount` unless it already may take that much; the approval's hash, or undefined when none was needed. */
+    async approve(token: Address, spender: Address, amount: bigint): Promise<Hex | undefined> {
       const current = await client.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] });
-      if (current >= amount) return;
-      await send({ address: token, abi: erc20Abi, functionName: "approve", args: [spender, amount] });
+      if (current >= amount) return undefined;
+      return send({ address: token, abi: erc20Abi, functionName: "approve", args: [spender, amount] });
     },
     claimStakeToken: () => send({ address: stakeToken, abi: erc20Abi, functionName: "faucet" }),
     /** What the stake token's faucet gives, and from when this wallet can claim it. */

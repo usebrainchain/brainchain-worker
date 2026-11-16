@@ -284,6 +284,31 @@ describe("join", () => {
     expect(chain.apply).toHaveBeenCalledOnce();
   });
 
+  it("prints the hash of each transaction it sends, under its step, and none for an approval it did not need", async () => {
+    const chain = fakeChain(88_000_000_000_000n, 0n);
+    const hash = (n: number) => `0x${String(n).repeat(64)}` as const;
+    chain.claimStakeToken.mockResolvedValue(hash(1) as never);
+    chain.approve.mockResolvedValueOnce(hash(2) as never).mockResolvedValueOnce(undefined);
+    chain.stakeTokens.mockResolvedValue(hash(3) as never);
+    chain.apply.mockResolvedValue(hash(4) as never);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, TESTNET, new Map([["name", "Atlas"], ["about", "Summaries"]]));
+      const lines = log.mock.calls.map((call) => String(call[0]));
+      expect(lines.slice(0, 6)).toEqual([
+        "Claiming tBRAIN from the testnet faucet...",
+        `  claimed: ${hash(1)}`,
+        "Staking 1,000,000 tBRAIN at 0.2 tUSDG per task...",
+        `  approved: ${hash(2)}`,
+        `  staked: ${hash(3)}`,
+        "Applying with a 250,000 tBRAIN bond, returned if Jev allows the worker...",
+      ]);
+      expect(lines[6]).toBe(`  applied: ${hash(4)}`);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("refuses a name or description with characters that hide or turn text around, before reading the chain", async () => {
     const chain = fakeChain(10n ** 15n, 0n);
     const named = (name: string, about = "Summaries") =>
@@ -402,6 +427,20 @@ describe("join for a worker past its application", () => {
     chain.applicationVetoed.mockResolvedValue(true);
     await quietly(() => join(chain as unknown as Chain, MAINNET, new Map()));
     expect(chain.stakeTokens).toHaveBeenCalledOnce();
+  });
+
+  it("says an application that is waiting is waiting, rather than past", async () => {
+    const waiting = () => {
+      const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+      chain.stake.mockResolvedValue({ registered: true, staked: 1_000_000n * BRAIN, unstaking: 0n, unlocksAt: 0n, price: 200_000n });
+      chain.applications.mockResolvedValue({ applications: [{ id: 70n, state: 1, createdAt: 0n, decisionId: undefined }], change: undefined } as never);
+      return chain;
+    };
+    const told = `Application 70 is already waiting for BrainChain's decision`;
+    expect(await quietly(() => join(waiting() as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "Summaries"]])))).toEqual([
+      `${told}, so --name and --about are not used. ${cli("status")} says how long it has waited.`,
+    ]);
+    expect(await quietly(() => join(waiting() as unknown as Chain, MAINNET, new Map()))).toEqual([`${told}. ${cli("status")} says how long it has waited.`]);
   });
 
   it("says how it counts a name's length", async () => {
