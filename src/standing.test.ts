@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Status, type Flight } from "./chain.js";
 import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { aboutEth, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, shortOfStake, stake, wallet, type Snapshot } from "./standing.js";
+import { aboutEth, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, shortOfStake, stake, unapplied, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
@@ -211,6 +211,22 @@ describe("hireable", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("unapplied", () => {
+  const fresh = { ...standing(), allowed: false, applying: true } as unknown as Snapshot;
+
+  it("is a worker that never applied, staked or not, with nothing of its own in flight", () => {
+    expect(unapplied(fresh, 0)).toBe(true);
+    expect(unapplied({ ...fresh, w: { ...fresh.w, staked: 500n * BRAIN }, toStake: 0n } as Snapshot, 0)).toBe(true);
+  });
+
+  it("is not a worker that is allowed, about to be, has applied, or still has a task to finish", () => {
+    expect(unapplied(standing(), 0)).toBe(false);
+    expect(unapplied({ ...fresh, pending: true } as Snapshot, 0)).toBe(false);
+    expect(unapplied({ ...fresh, applications: [{ id: 3n, state: 3, createdAt: 0n, decisionId: 9n }] } as unknown as Snapshot, 0)).toBe(false);
+    expect(unapplied(fresh, 1)).toBe(false);
   });
 });
 

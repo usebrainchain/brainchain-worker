@@ -35,6 +35,13 @@ export async function snapshot(chain: Chain) {
 
 export type Snapshot = Awaited<ReturnType<typeof snapshot>>;
 
+/**
+ * Whether no task can come to this worker until it joins: it is not allowed,
+ * nothing allowing it waits to run, it has never applied, and no task of its
+ * own is in flight to finish.
+ */
+export const unapplied = (s: Snapshot, inFlight: number) => !s.allowed && !s.pending && s.applications.length === 0 && inFlight === 0;
+
 /** The highest gas limit seen for each transaction join can send, across testnet and mainnet. */
 export const GAS = { faucet: 76_000n, approve: 50_000n, stake: 120_000n, setPrice: 31_000n, apply: 240_000n };
 /** The highest gas limit seen for delivering a result. */

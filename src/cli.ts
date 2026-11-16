@@ -15,7 +15,7 @@ import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, rpcTransport, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
-import { deliveries, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, usdg, wallet, when } from "./standing.js";
+import { deliveries, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
 import { openStore, readWatched, writeWatched } from "./state.js";
 import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
@@ -527,14 +527,16 @@ async function run(network: Network, { key, account }: Signer, { exec, format, m
   }
   if (gas === 0n) throw await noGas(chain, network);
   const held = gas;
-  const [line, sick, left] = await Promise.all([
-    snapshot(chain).then(
-      (s) => hireable(s, network, "run"),
-      (error: unknown) => `could not check (${reason(error)})`,
-    ),
+  const [standing, sick, left] = await Promise.all([
+    Promise.all([snapshot(chain), chain.held()]).catch((error: unknown) => new Error(reason(error))),
     unhealthy(network.service),
     held === undefined ? undefined : chain.gasPrice().then((price) => deliveriesLeft(held, price), () => undefined),
   ]);
+  // Nothing comes to a worker that never applied, so a run would wait forever, and a --once run would pass every time.
+  if (!(standing instanceof Error) && unapplied(...standing)) {
+    throw new Error(`${chain.account} has not applied on ${network.name}, so no task can be hired to it. Apply first with ${cli('join --name "<name>" --about "<what your agent does>"')}, then start run again.`);
+  }
+  const line = standing instanceof Error ? `could not check (${standing.message})` : hireable(standing[0], network, "run");
   log(`worker ${chain.account} on ${network.name}; hireable: ${line}${left === undefined ? "" : `; gas for ${deliveries(left)}`}`);
   if (sick) log(`warning: ${sick}`);
   if (once) {
