@@ -1,9 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-
-import { stateDir } from "./state.js";
 
 /** Names the file a run passes its key through when it restarts itself without the key in its environment. */
 const HANDOFF = "BRAINCHAIN_WORKER_KEY_HANDOFF";
@@ -81,14 +79,18 @@ export function writeKeyFile(path: string, key: string): string {
   return file;
 }
 
-/** Memory rather than disk where the system offers it. The file lives for the milliseconds a restart takes. */
-function handoffDir(): string {
+/**
+ * Where the key waits for the milliseconds a restart takes: memory where the
+ * system offers it, else the temp folder, which macOS keeps per user. A pipe
+ * would keep it off disk, but execve leaves the new image only stdin, stdout
+ * and stderr, and those stay the worker's own.
+ */
+export function handoffDir(): string {
   try {
     accessSync("/dev/shm", constants.W_OK);
     return "/dev/shm";
   } catch {
-    mkdirSync(stateDir(), { recursive: true, mode: 0o700 });
-    return stateDir();
+    return tmpdir();
   }
 }
 

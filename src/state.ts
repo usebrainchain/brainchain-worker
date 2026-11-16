@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { copyFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -55,6 +55,22 @@ export interface Store {
 }
 
 export const stateDir = () => join(homedir(), ".config", "brainchain-worker");
+
+/**
+ * Makes the worker's folder, which holds its saved work and its locks, for its
+ * owner alone, and narrows one an earlier tool or umask left open to others.
+ */
+export function privateDir(dir: string, log: (line: string) => void): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Windows has no owner-only mode: access there follows the folder's permissions.
+  if (process.platform === "win32" || (statSync(dir).mode & 0o077) === 0) return;
+  try {
+    chmodSync(dir, 0o700);
+    log(`${dir} was open to other users, so it is now yours alone (mode 700)`);
+  } catch {
+    log(`warning: other users can open ${dir}; run chmod 700 on it`);
+  }
+}
 
 /** The decision count a watch run got to, kept per decision log; undefined when there is none or it cannot be read. */
 export function readWatched(log: string, dir = stateDir()): bigint | undefined {
@@ -375,6 +391,7 @@ function migrate(old: string, file: string, board: string): boolean {
  * run on testnet and mainnet at once without sharing cursors or tasks.
  */
 export function openStore(address: string, network: Network, log: (line: string) => void = console.log, dir = stateDir()): Store {
+  privateDir(dir, log);
   const old = join(dir, address);
   const file = `${old}.${network.id}`;
   lock(`${file}.lock`, () => {

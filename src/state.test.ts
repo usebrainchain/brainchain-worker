@@ -1,12 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, fsyncSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MAINNET, TESTNET } from "./network.js";
-import { fileStore, lock, openStore, readWatched, writeWatched } from "./state.js";
+import { fileStore, lock, openStore, privateDir, readWatched, writeWatched } from "./state.js";
 
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -267,6 +267,29 @@ describe("writeWatched", () => {
     writeWatched("0xABC", 7n, dir());
     expect(fsyncSync).toHaveBeenCalledOnce();
     expect(vi.mocked(fsyncSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(renameSync).mock.invocationCallOrder[0]!);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("privateDir", () => {
+  it("makes the folder its owner's alone, and narrows one that others can open", () => {
+    const fresh = join(dir(), "config", "brainchain-worker");
+    const log = vi.fn();
+    privateDir(fresh, log);
+    expect(statSync(fresh).mode & 0o777).toBe(0o700);
+    expect(log).not.toHaveBeenCalled();
+    chmodSync(fresh, 0o755);
+    privateDir(fresh, log);
+    expect(statSync(fresh).mode & 0o777).toBe(0o700);
+    expect(log).toHaveBeenCalledWith(`${fresh} was open to other users, so it is now yours alone (mode 700)`);
+  });
+
+  it("is where a run's state goes, so a run narrows it at start", () => {
+    const folder = dir();
+    chmodSync(folder, 0o775);
+    const log = vi.fn();
+    openStore("0x5B38Da6a701c568545dCfcB03FcB875f56beddC4", TESTNET, log, folder);
+    expect(statSync(folder).mode & 0o777).toBe(0o700);
+    expect(log).toHaveBeenCalledWith(`${folder} was open to other users, so it is now yours alone (mode 700)`);
   });
 });
 

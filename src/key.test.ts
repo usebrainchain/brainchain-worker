@@ -1,14 +1,14 @@
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
+import { clearKeyFromEnvironment, handoffDir, keyConfigured, keyText, writeKeyFile } from "./key.js";
 
 const KEY = `0x${"4f".repeat(32)}`;
 const dir = () => mkdtempSync(join(tmpdir(), "brainchain-worker-"));
-// A handoff file goes in the state folder where the system has no /dev/shm.
+// A home of its own, so nothing here writes to the real one, and a handoff that went there would show.
 beforeAll(() => void vi.stubEnv("HOME", dir()));
 afterAll(() => void vi.unstubAllEnvs());
 
@@ -122,10 +122,16 @@ describe("clearKeyFromEnvironment", () => {
     const next = { ...(passed as NodeJS.ProcessEnv) };
     const handoff = next.BRAINCHAIN_WORKER_KEY_HANDOFF!;
     expect(statSync(handoff).mode & 0o777).toBe(0o600);
+    expect(dirname(handoff)).toBe(handoffDir());
     expect(keyConfigured(next)).toBe(true);
     expect(keyText(next)).toBe(KEY);
     expect(existsSync(handoff)).toBe(false);
     expect(next.BRAINCHAIN_WORKER_KEY_HANDOFF).toBeUndefined();
+  });
+
+  it("hands the key over in memory where the system has /dev/shm, else in the per-user temp folder, never in the home folder", () => {
+    expect([process.platform === "linux" ? "/dev/shm" : undefined, tmpdir()]).toContain(handoffDir());
+    expect(handoffDir().startsWith(process.env.HOME!)).toBe(false);
   });
 
   it("clears every key variable in the restart, the Solana key's and both file paths included", () => {
