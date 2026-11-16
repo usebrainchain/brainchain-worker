@@ -117,7 +117,7 @@ function readDeposit(quote: RelayQuote, want: DepositWanted): string | undefined
 }
 
 const notConfirmed = (signature: string, why: unknown) =>
-  new Error(`the Solana transaction ${signature} could not be confirmed (${reason(why)}). Check it before running fund again: if it landed, its USDC left the wallet, and another run moves USDC again.`);
+  new Error(`the Solana transaction ${signature} could not be confirmed (${reason(why)}). Check it before running fund again: if it landed, its USDC left the wallet, and another run moves more USDC.`);
 
 /** Sends Relay's Solana deposit: its instructions, compiled against its lookup tables, signed by the agent's key. Each failure says whether the USDC moved. */
 export async function sendSvmStep(connection: Connection, keypair: Keypair, item: SvmItem): Promise<string> {
@@ -157,7 +157,7 @@ export async function sendSvmStep(connection: Connection, keypair: Keypair, item
 export function unsettled(status: RelayStatus, requestId: string, signature: string, owner: string): string | undefined {
   if (status === "success") return undefined;
   if (status === "refund") return `Relay reports a refund for request ${requestId}: the USDC of Solana transaction ${signature} goes back to ${owner}. Check the wallet before running fund again.`;
-  return `Relay has not settled request ${requestId} (it reports "${status}"). The USDC left the wallet in Solana transaction ${signature}. Check ${RELAY_API}/intents/status/v2?requestId=${requestId} before running fund again: another run moves USDC again.`;
+  return `Relay has not settled request ${requestId} (it reports "${status}"). The USDC left the wallet in Solana transaction ${signature}. Check ${RELAY_API}/intents/status/v2?requestId=${requestId} before running fund again: another run moves more USDC.`;
 }
 
 export interface SolanaFunding {

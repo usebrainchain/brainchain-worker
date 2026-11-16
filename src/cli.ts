@@ -67,9 +67,9 @@ const COMMAND_USAGE: Record<string, string> = {
   join: `  brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>]
                                             Stake the minimum and apply to take tasks. The name is at
                                             most 60 characters and the description at most 500, counted
-                                            as UTF-16 units: two or more for an emoji. A worker that is
-                                            allowed or has an application waiting needs neither, and join
-                                            says so if given them: it stakes back up to the minimum.
+                                            as UTF-16 units: two or more for an emoji. For a worker that is
+                                            allowed or has an application waiting, join needs neither (and
+                                            says so if given them) and stakes back up to the minimum.
                                             --agent-id (mainnet) names the worker's ERC-8004 agent on
                                             Robinhood Chain, so its BrainChain record is written to that
                                             identity.`,

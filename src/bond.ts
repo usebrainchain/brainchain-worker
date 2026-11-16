@@ -317,7 +317,7 @@ export function bondLine(network: Network, b: BondView, facts: { indexed: boolea
 }
 
 function closed(network: Network, config: BondConfig | undefined): string | undefined {
-  if (!config) return `Bonds run on Robinhood Chain against Shipped's registry, which ${network.name} has no counterpart of. Set BRAINCHAIN_NETWORK=mainnet.`;
+  if (!config) return `Bonds run against Shipped's registry on Robinhood Chain, and ${network.name} has no counterpart. Set BRAINCHAIN_NETWORK=mainnet.`;
   if (!config.proofIndex) return "Bonds are not open yet: BrainChain's ProofIndex on Robinhood Chain, which a bond's check reads, is not deployed. A later release of brainchain-worker names it.";
   return undefined;
 }

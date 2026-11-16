@@ -393,7 +393,7 @@ describe("unsettled", () => {
     expect(unsettled("refund", "0xreq", "sig", OWNER)).toBe(`Relay reports a refund for request 0xreq: the USDC of Solana transaction sig goes back to ${OWNER}. Check the wallet before running fund again.`);
     for (const status of ["failure", "pending"] as const) {
       const line = unsettled(status, "0xreq", "sig", OWNER)!;
-      expect(line).toBe(`Relay has not settled request 0xreq (it reports "${status}"). The USDC left the wallet in Solana transaction sig. Check https://api.relay.link/intents/status/v2?requestId=0xreq before running fund again: another run moves USDC again.`);
+      expect(line).toBe(`Relay has not settled request 0xreq (it reports "${status}"). The USDC left the wallet in Solana transaction sig. Check https://api.relay.link/intents/status/v2?requestId=0xreq before running fund again: another run moves more USDC.`);
       expect(line).not.toContain("refund");
       expect(line).not.toContain("Nothing was sent");
     }
@@ -428,7 +428,7 @@ describe("sendSvmStep", () => {
   it("says to check before another run when it cannot tell", async () => {
     const lost = connection({ confirmTransaction: vi.fn(async () => Promise.reject(new Error("socket hang up"))) });
     const failure = await sendSvmStep(lost, SIGNER, deposit(1n)).catch((error: Error) => error.message);
-    expect(failure).toMatch(/^the Solana transaction \w+ could not be confirmed \(socket hang up\)\. Check it before running fund again: if it landed, its USDC left the wallet, and another run moves USDC again\.$/);
+    expect(failure).toMatch(/^the Solana transaction \w+ could not be confirmed \(socket hang up\)\. Check it before running fund again: if it landed, its USDC left the wallet, and another run moves more USDC\.$/);
     expect(failure).not.toContain("did not move");
     const timeout = connection({ sendTransaction: vi.fn(async () => Promise.reject(new Error("fetch failed"))) });
     await expect(sendSvmStep(timeout, SIGNER, deposit(1n))).rejects.toThrow("could not be confirmed (fetch failed)");
