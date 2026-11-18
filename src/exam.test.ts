@@ -21,13 +21,21 @@ const OPENED = 4_102_444_800;
 const DEADLINE = OPENED + 7_200;
 const PRICE = "5000000";
 
+const LEVELS = [
+  "Returns the right answer on every hidden case, with clear code that follows the rules in the brief and does not special-case inputs",
+  "Returns the right answer on every hidden case",
+  "Returns a wrong answer on a hidden case, defines no function of the asked name, or answers by special-casing inputs",
+];
 const INFO = {
   pay: `${MAINNET.service}/x402/exams`,
   price: "5.00 USD a sitting, paid over x402 in USDG on Robinhood Chain",
   classes: [{ class: "code", about: "Small Python functions, each judged on hidden cases it is run on." }],
   sitting: {
     items: 5,
+    hardItems: 3,
     passMark: 4,
+    levels: LEVELS,
+    passes: LEVELS[1],
     minutes: 120,
     licenceDays: 60,
     waitAfterFailingDays: 7,
@@ -36,7 +44,10 @@ const INFO = {
   },
 };
 const RULES = [
-  "  Sitting   5 items in 120 minutes; 4 accepted is a pass",
+  "  Sitting   5 items in 120 minutes, 3 of them from the hardest band; 4 accepted is a pass",
+  `  Levels    ${LEVELS[0]}`,
+  `            ${LEVELS[1]} (an item is accepted at this level or better)`,
+  `            ${LEVELS[2]}`,
   "  Licence   lasts 60 days; after a failed sitting the agent waits 7 days before the next",
   "  Audits    A licensed agent's work is audited now and then with a task it cannot tell from any other. 2 failed audits in the last 3 suspend the licence.",
   "  Refunds   None. A sitting buys the judgments, whatever they say.",
@@ -64,10 +75,14 @@ interface Paid {
 
 /**
  * The service as the exam's routes answer: the exam's facts, the price to a request with no payment, `paid` for
- * one with a payment, and a delivery taken for each item. `asked` is what the real request is quoted when that
- * differs from the price first read.
+ * one with a payment, and a delivery taken for each item. `refuse` is what it says of a request with no payment
+ * when it will not open the sitting, given how many such requests came before. `asked` is what the request is
+ * quoted the second time it comes without a payment, when that differs from the first.
  */
-function service(network: Network, options: { paid?: (sent: Paid, earlier: number) => Response | Promise<Response>; asked?: string; payTo?: string; routes?: Record<string, () => Response> } = {}) {
+function service(
+  network: Network,
+  options: { paid?: (sent: Paid, earlier: number) => Response | Promise<Response>; refuse?: (earlier: number) => Response | undefined; asked?: string; payTo?: string; routes?: Record<string, () => Response>; info?: unknown } = {},
+) {
   const seen: Paid[] = [];
   const unpaid: string[] = [];
   const delivered: { item: number; text: string; signature: Hex }[] = [];
@@ -89,13 +104,13 @@ function service(network: Network, options: { paid?: (sent: Paid, earlier: numbe
     if (req.method === "GET") read.push(path);
     const route = options.routes?.[`${req.method} ${path.split("?")[0]}`];
     if (route) return route();
-    if (path === "/exams") return json(INFO);
+    if (path === "/exams") return json(options.info ?? INFO);
     if (path === "/x402/exams") {
       const body = await req.text();
       const header = req.headers.get("payment-signature");
       if (!header) {
         unpaid.push(body);
-        return new Response("{}", { status: 402, headers: { "payment-required": offer(body === "{}" ? PRICE : (options.asked ?? PRICE)) } });
+        return options.refuse?.(unpaid.length - 1) ?? new Response("{}", { status: 402, headers: { "payment-required": offer(unpaid.length === 1 ? PRICE : (options.asked ?? PRICE)) } });
       }
       seen.push({ header, body });
       return (options.paid ?? opened)(seen.at(-1)!, seen.length - 1);
@@ -175,8 +190,12 @@ describe("exam sit", () => {
     expect(lines).toEqual([
       `A sitting for agent 501 in class code costs 5 USDG on Robinhood Chain, paid by ${wallet.address} over x402.`,
       ...RULES,
-      "Nothing was signed or paid. To sit, run this again with --max-price 5.",
+      "Nothing was approved or paid. To sit, run this again with --max-price 5.",
     ]);
+    // The price came with the answer to the request itself, sent once with the wallet's signature and no payment.
+    expect(desk.unpaid).toHaveLength(1);
+    const asked = JSON.parse(desk.unpaid[0]!) as { agent: { chainId: number; id: string }; at: number; signature: Hex };
+    expect(await recoverMessageAddress({ message: sittingMessage(274663, asked.agent, "code", asked.at), signature: asked.signature })).toBe(wallet.address);
     expect(chain.holdsAgent).toHaveBeenCalledWith(501n);
     expect(chain.funds).not.toHaveBeenCalled();
     expect(chain.approve).not.toHaveBeenCalled();
@@ -187,11 +206,11 @@ describe("exam sit", () => {
   it("refuses a price above --max-price, a class the exam does not have and an offer it does not sign, before anything is sent", async () => {
     const desk = service(MAINNET);
     const over = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 4_999_999n });
-    await expect(over.run()).rejects.toThrow(/^A sitting costs 5 USDG, above --max-price 4\.999999\. Nothing was signed or paid\.$/);
+    await expect(over.run()).rejects.toThrow(/^A sitting costs 5 USDG, above --max-price 4\.999999\. Nothing was approved or paid\.$/);
     await expect(sitting(MAINNET, desk.fetcher, chainFor(), { class: "prose", maxPrice: 5_000_000n }).run()).rejects.toThrow('The exam has no class "prose". Its classes: code. Nothing was signed or paid.');
     const elsewhere = service(MAINNET, { payTo: "0x000000000000000000000000000000000000dEaD" });
     await expect(sitting(MAINNET, elsewhere.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(
-      `The BrainChain service at brain.usebrainchain.com offers no sitting for USDG on Robinhood Chain paid to ${MAINNET.exitDesk}, the only payment this release of brainchain-worker signs. Nothing was signed or paid.`,
+      `The BrainChain service at brain.usebrainchain.com offers no sitting for USDG on Robinhood Chain paid to ${MAINNET.exitDesk}, the only payment this release of brainchain-worker signs. Nothing was approved or paid.`,
     );
     expect([...desk.seen, ...elsewhere.seen]).toEqual([]);
     expect(over.saved()).toEqual([]);
@@ -200,16 +219,17 @@ describe("exam sit", () => {
   it("checks the wallet holds the agent before it reads a price, and leaves that to the desk where no registry is named", async () => {
     const desk = service(MAINNET);
     const stranger = sitting(MAINNET, desk.fetcher, chainFor(undefined, false), { maxPrice: 5_000_000n });
-    await expect(stranger.run()).rejects.toThrow(`${wallet.address} neither owns ERC-8004 agent 501 on Robinhood Chain nor is its registered wallet, so the desk would refuse the sitting. Nothing was signed or paid.`);
+    await expect(stranger.run()).rejects.toThrow(`${wallet.address} does not hold ERC-8004 agent 501 on Robinhood Chain: it is neither its controller nor its registered wallet. The service would refuse the sitting. Nothing was signed or paid.`);
     const unread = sitting(MAINNET, desk.fetcher, chainFor(undefined, "unread"), { maxPrice: 5_000_000n });
     await expect(unread.run()).rejects.toThrow("The ERC-8004 identity registry on Robinhood Chain could not be read, so --agent-id was not checked. Nothing was signed or paid. Try again.");
     expect(desk.read).toEqual([]);
+    expect(desk.unpaid).toEqual([]);
 
     const testnet = service(TESTNET);
     const { run, lines } = sitting(TESTNET, testnet.fetcher, chainFor(undefined, "unread"));
     await run();
     expect(lines[0]).toBe(`A sitting for agent 501 in class code costs 5 test USDG on Robinhood Chain testnet, paid by ${wallet.address} over x402.`);
-    expect(lines).toContain(`  This release names no ERC-8004 registry on Robinhood Chain testnet, so whether ${wallet.address} holds agent 501 is left to the desk, which checks before it charges.`);
+    expect(lines).toContain(`  This release names no ERC-8004 registry on Robinhood Chain testnet, so whether ${wallet.address} holds agent 501 is left to the service, which checks before it charges.`);
   });
 
   it("says with --dry all the wallet still needs, or what it would do, and signs nothing", async () => {
@@ -219,7 +239,7 @@ describe("exam sit", () => {
       [
         `${wallet.address} holds 1.25 USDG on Robinhood Chain, 3.75 USDG short of the sitting's price.`,
         `${wallet.address} holds no ETH on Robinhood Chain to send the approval with. Send it a little ETH on Robinhood Chain.`,
-        "dry run: nothing signed or sent",
+        "dry run: nothing approved or paid",
       ].join("\n"),
     );
     const unapproved = chainFor({ usdg: 5_000_000n, allowance: 1_000_000n, eth: 10n ** 15n });
@@ -227,11 +247,11 @@ describe("exam sit", () => {
     await ready.run();
     expect(ready.lines.slice(-2)).toEqual([
       "  Permit2, which an x402 payment in USDG moves through, may spend 1 USDG of the wallet's. sit first approves 5 USDG for it, which takes a little ETH on Robinhood Chain.",
-      "dry run: nothing signed or sent. Without --dry, sit approves Permit2, signs the request, pays 5 USDG and saves the sitting.",
+      "dry run: nothing approved or paid. Without --dry, sit approves Permit2, pays 5 USDG and saves the sitting.",
     ]);
     const unconfirmed = sitting(MAINNET, desk.fetcher, chainFor(), { dry: true });
     await unconfirmed.run();
-    expect(unconfirmed.lines.at(-1)).toBe("dry run: nothing signed or sent. Without --dry and with --max-price 5, sit signs the request, pays 5 USDG and saves the sitting.");
+    expect(unconfirmed.lines.at(-1)).toBe("dry run: nothing approved or paid. Without --dry and with --max-price 5, sit pays 5 USDG and saves the sitting.");
     expect(unapproved.approve).not.toHaveBeenCalled();
     expect(desk.seen).toEqual([]);
     expect([...empty.saved(), ...ready.saved()]).toEqual([]);
@@ -244,8 +264,8 @@ describe("exam sit", () => {
     await run();
     expect(chain.approve).toHaveBeenCalledExactlyOnceWith(5_000_000n);
     expect(desk.seen).toHaveLength(1);
-    // The price was read with an empty request, then the real one was sent, quoted and paid.
-    expect(desk.unpaid).toEqual(["{}", desk.seen[0]!.body]);
+    // The request went once with no payment, to be refused or quoted, and then again to be paid.
+    expect(desk.unpaid).toEqual([desk.seen[0]!.body, desk.seen[0]!.body]);
     const sent = JSON.parse(desk.seen[0]!.body) as { agent: { chainId: number; id: string }; class: string; wallet: string; at: number; signature: Hex };
     expect(sent).toMatchObject({ agent: { chainId: 4663, id: "501" }, class: "code", wallet: wallet.address });
     expect(await recoverMessageAddress({ message: sittingMessage(274663, sent.agent, "code", sent.at), signature: sent.signature })).toBe(wallet.address);
@@ -254,14 +274,14 @@ describe("exam sit", () => {
     expect(payment.payload.permit2Authorization.from).toBe(wallet.address);
     expect(saved()).toEqual([{ agentId: "501", class: "code", at: sent.at, sitting: SITTING, deadline: DEADLINE, briefs: briefs.map(({ index, title, brief }) => ({ index, title, brief })) }]);
 
-    expect(lines.slice(5, 10)).toEqual([
+    expect(lines.slice(1 + RULES.length, 6 + RULES.length)).toEqual([
       "  Permit2, which an x402 payment in USDG moves through, may spend 0 USDG of the wallet's. sit first approves 5 USDG for it, which takes a little ETH on Robinhood Chain.",
       "Approving 5 USDG for Permit2 on Robinhood Chain...",
       `  approved: 0x${"a1".repeat(32)}`,
       "Paying 5 USDG for the sitting...",
       `Sitting ${SITTING} is open until 2100-01-01T02:00:00Z.`,
     ]);
-    expect(lines[10]).toBe("\nItem 0: Item 0\nWrite f0(x).\n\nReturn only the function, in one Python code block.");
+    expect(lines[6 + RULES.length]).toBe("\nItem 0: Item 0\nWrite f0(x).\n\nReturn only the function, in one Python code block.");
     expect(lines.slice(-2)).toEqual([
       `\nDeliver each item once, before 2100-01-01T02:00:00Z, with \`${CLI} exam submit --sitting ${SITTING} --item 0 --file <path>\`. An item takes one delivery.`,
       `\`${CLI} exam status --sitting ${SITTING}\` shows each item's outcome.`,
@@ -276,7 +296,71 @@ describe("exam sit", () => {
     expect(saved()).toEqual([]);
   });
 
-  it("passes on a refusal the desk makes before it charges, in its own words, and keeps nothing of it", async () => {
+  it("hears the service's refusal on the first request, before it reads the wallet, approves or pays anything", async () => {
+    for (const [status, error] of [
+      [403, `Wallet ${wallet.address} does not hold agent 501: it is neither its controller nor its registered wallet. Nothing was charged.`],
+      [409, "Agent 501 holds a code licence until 2100-03-02 00:00 UTC. It may sit again from 2100-02-16 00:00 UTC. Nothing was charged."],
+      [409, "Agent 501 failed a code sitting on 2099-12-30 00:00 UTC and may sit again from 2100-01-06 00:00 UTC. Nothing was charged."],
+      [503, "The agent's identity could not be read just now. Nothing was charged; try again."],
+    ] as const) {
+      const desk = service(MAINNET, { refuse: () => json({ error }, status) });
+      const chain = chainFor({ usdg: 5_000_000n, allowance: 0n, eth: 10n ** 15n });
+      const { run, lines, saved } = sitting(MAINNET, desk.fetcher, chain, { maxPrice: 5_000_000n });
+      expect(await run().catch((e: Error) => e.message)).toBe(error);
+      expect(desk.unpaid).toHaveLength(1);
+      expect(desk.seen).toEqual([]);
+      for (const call of [chain.funds, chain.approve]) expect(call).not.toHaveBeenCalled();
+      expect(lines).toEqual([]);
+      expect(saved()).toEqual([]);
+    }
+  });
+
+  it("keeps a sitting the service says is already paid for and opening, in place of paying for a second", async () => {
+    const other: Hex = `0x${"0d".repeat(32)}`;
+    const refusal = () => json({ error: "A sitting for agent 501 is already paid for and being opened. Send the request that paid for it again to read it. Nothing was charged.", sitting: other }, 409);
+    const told =
+      `A sitting for agent 501 is already paid for, and the service is opening it: ${MAINNET.service}/exams/${other}. Through the paid route only the request that paid for it reads its briefs, and that request is not kept here. ` +
+      `Once the sitting is open, \`${CLI} exam sit --agent-id 501\` reads the briefs with this wallet's signature and goes on with it. Nothing was charged.`;
+    // Told on the first request, as a worker whose folder was lost is.
+    let open = false;
+    const desk = service(MAINNET, { refuse: refusal, routes: { [`GET /exams/${other}/briefs`]: () => (open ? json({ ...view({ sitting: other }), briefs }) : json({ error: "No sitting with that id." }, 404)) } });
+    const chain = chainFor({ usdg: 5_000_000n, allowance: 0n, eth: 10n ** 15n });
+    const first = sitting(MAINNET, desk.fetcher, chain, { maxPrice: 5_000_000n });
+    await expect(first.run()).rejects.toThrow(told);
+    expect(desk.seen).toEqual([]);
+    for (const call of [chain.funds, chain.approve]) expect(call).not.toHaveBeenCalled();
+    expect(first.saved()).toEqual([{ agentId: "501", class: "code", at: expect.any(Number), sitting: other }]);
+    // Once it is open, the same command reads its briefs with the wallet's signature and goes on with it.
+    open = true;
+    const second = sitting(MAINNET, desk.fetcher, chain, { dir: first.dir });
+    await second.run();
+    expect(second.lines[0]).toBe(`Agent 501 has sitting ${other} open until 2100-01-01T02:00:00Z, so this goes on with it and pays nothing.`);
+    expect(desk.unpaid).toHaveLength(1);
+
+    // Or told only with the payment, when the service answered the first request with its plain offer: the payment is not kept.
+    const late = service(MAINNET, { paid: refusal });
+    const paying = sitting(MAINNET, late.fetcher, chainFor(), { maxPrice: 5_000_000n });
+    await expect(paying.run()).rejects.toThrow(told);
+    expect(late.seen).toHaveLength(1);
+    expect(paying.saved()).toEqual([{ agentId: "501", class: "code", at: expect.any(Number), sitting: other }]);
+  });
+
+  it("goes on with a sitting the service says is open, when its briefs can be read with this wallet's signature", async () => {
+    const error = `Agent 501 has a sitting open until 2100-01-01 02:00 UTC: ${MAINNET.service}/exams/${SITTING}. Nothing was charged.`;
+    const desk = service(MAINNET, { refuse: () => json({ error }, 409), routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
+    const { run, lines, saved } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n });
+    await run();
+    expect(lines[0]).toBe(`Agent 501 has sitting ${SITTING} open until 2100-01-01T02:00:00Z, so this goes on with it and pays nothing.`);
+    expect(saved()).toEqual([expect.objectContaining({ sitting: SITTING, deadline: DEADLINE })]);
+    expect(desk.seen).toEqual([]);
+    // Another wallet's sitting for the same agent cannot be read, so the service's words stand as they are.
+    const theirs = service(MAINNET, { refuse: () => json({ error }, 409), routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ error: "The signature is not the sitting wallet's signature of the briefs message." }, 403) } });
+    const stranger = sitting(MAINNET, theirs.fetcher, chainFor(), { maxPrice: 5_000_000n });
+    expect(await stranger.run().catch((e: Error) => e.message)).toBe(error);
+    expect(stranger.saved()).toEqual([]);
+  });
+
+  it("passes on a refusal the desk makes only once it has the payment, in its own words, and keeps nothing of it", async () => {
     for (const [status, error] of [
       [403, `Wallet ${wallet.address} does not hold agent 501: it is neither its controller nor its registered wallet. Nothing was charged.`],
       [409, "Agent 501 holds a code licence until 2100-03-02 00:00 UTC. It may sit again from 2100-02-16 00:00 UTC. Nothing was charged."],
@@ -319,7 +403,9 @@ describe("exam sit", () => {
       expect(said).toMatch(/^(The sitting is paid for, and the desk has not opened it yet \(The sitting is paid for, but its items could not be drawn just now.*\)|The desk did not confirm the sitting \(fetch failed\)\. The payment may have gone through)\./);
       expect(said).toContain(`Run \`${CLI} exam sit --agent-id 501\` again: it sends the same request with the same payment, and nothing more is paid.`);
       const { header, body } = desk.seen[0]!;
-      expect(saved()).toEqual([{ agentId: "501", class: "code", at: (JSON.parse(body) as { at: number }).at, request: { body, header: ["payment-signature", header] } }]);
+      // The payment is kept as it was sent, with the sitting's id once the service has named it, so status can read it.
+      const kept = { agentId: "501", class: "code", at: (JSON.parse(body) as { at: number }).at, request: { body, header: ["payment-signature", header] } };
+      expect(saved()).toEqual([said!.startsWith("The sitting is paid for") ? { ...kept, sitting: SITTING } : kept]);
 
       // The next run needs no --max-price: nothing new is signed, checked or approved.
       open = true;
@@ -402,7 +488,9 @@ describe("exam sit", () => {
     expect(inputs[0]!.input).toMatch(/^You are a worker on BrainChain\. Complete the task below and reply with only the deliverable\./);
     expect(inputs[0]!.input).toContain('"title": "Item 0"');
     expect(inputs[0]!.input).toContain("Return only the function, in one Python code block.");
-    expect(inputs[0]!.input).toContain('"passLevel": "Does everything the brief asks, in the form it asks for, and is right on every hidden case"');
+    // The levels are the ones the service grades an item against, and the level it must reach.
+    expect(inputs[0]!.input).toContain(`"passLevel": "${LEVELS[1]}"`);
+    for (const level of LEVELS) expect(inputs[0]!.input).toContain(level);
 
     expect(desk.delivered.map(({ item }) => item)).toEqual([0, 1, 2, 4]);
     for (const { item, text, signature } of desk.delivered) {
@@ -434,8 +522,8 @@ describe("exam sit", () => {
       task: "2",
       title: "Item 2",
       brief: briefs[2]!.brief,
-      levels: ["Does everything the brief asks, in the form it asks for, and is right on every hidden case", "Misses what the brief asks, or is wrong on a hidden case"],
-      passLevel: "Does everything the brief asks, in the form it asks for, and is right on every hidden case",
+      levels: LEVELS,
+      passLevel: LEVELS[1],
       deadline: "2100-01-01T02:00:00.000Z",
     });
     expect(desk.delivered.map(({ item }) => item)).toEqual([0, 2, 4]);
@@ -443,6 +531,16 @@ describe("exam sit", () => {
     // An item takes less than a task's result does, and what is over is never sent.
     expect(lines).toContain("item 3: not delivered (The work is 48001 bytes; at most 48000 are accepted for an item. Nothing was sent)");
     expect(JSON.stringify(desk.delivered)).not.toContain(KEY.slice(2));
+  });
+
+  it("refuses --exec before anything is signed when the service states no levels to give the command", async () => {
+    const { levels: _, ...bare } = INFO.sitting;
+    const desk = service(MAINNET, { info: { ...INFO, sitting: bare } });
+    const command: Command = { run: async () => "def f(x): return x", kill: () => undefined };
+    await expect(sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n, command }).run()).rejects.toThrow(
+      `The service states no levels for an item, and --exec gives the command each item with them. Nothing was signed or paid. Without --exec, sit prints the briefs, and \`${CLI} exam submit\` delivers each item.`,
+    );
+    expect(desk.unpaid).toEqual([]);
   });
 
   it("goes on with a sitting that is still open, on the items still to deliver, and pays nothing", async () => {
@@ -461,7 +559,7 @@ describe("exam sit", () => {
     expect(desk.seen).toEqual([]);
     expect(chain.funds).not.toHaveBeenCalled();
     // The briefs are shown to the wallet sitting it, so the request for them is signed.
-    const asked = new URL(`${MAINNET.service}${desk.read[0]}`);
+    const asked = new URL(`${MAINNET.service}${desk.read.find((path) => path.includes("/briefs"))}`);
     const at = Number(asked.searchParams.get("at"));
     expect(await recoverMessageAddress({ message: briefsMessage(274663, SITTING, at), signature: asked.searchParams.get("signature") as Hex })).toBe(wallet.address);
   });
@@ -544,8 +642,25 @@ describe("exam status", () => {
     expect((await status(MAINNET, view(), { dir }))[0]).toContain(`Sitting ${SITTING} for agent 501`);
     saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED + 9, request: { body: "{}", header: ["payment-signature", "abc"] } }, dir);
     await expect(status(MAINNET, view(), { dir })).rejects.toThrow(
-      `The sitting for agent 501 was paid for at 2100-01-01T00:00:09Z, and the desk had not opened it. Run \`${CLI} exam sit --agent-id 501\` again: it sends the same request with the same payment, and nothing more is paid.`,
+      `The sitting for agent 501 was paid for at 2100-01-01T00:00:09Z, and the service has not answered for it. Run \`${CLI} exam sit --agent-id 501\` again: it sends the same request with the same payment, and nothing more is paid.`,
     );
+  });
+
+  it("shows a sitting that is paid for and not open yet as opening, with the service's reason, never as unknown", async () => {
+    const opening = (extra: Record<string, unknown> = {}) => ({ sitting: SITTING, state: "opening", payment: "paid", message: "The sitting is paid for and its items are being drawn.", ...extra });
+    const unkept = `Through the paid route only the request that paid for the sitting reads its briefs. Once it is open, \`${CLI} exam sit --agent-id <id>\` reads them with the signature of the wallet sitting it, and goes on with it.`;
+    expect(await status(MAINNET, opening({ reason: "the pool has no item left to draw" }))).toEqual([`Sitting ${SITTING}: paid for, opening`, "  Not open yet: the pool has no item left to draw", unkept]);
+    expect(await status(MAINNET, opening({ payment: "unconfirmed" }))).toEqual([`Sitting ${SITTING}: the service is confirming its payment on chain, and opens it once it has`, unkept]);
+    // A payment the service gave up is kept beside the ones it took: nothing opens from it.
+    expect(await status(MAINNET, opening({ payment: "failed" }))).toEqual([`Sitting ${SITTING}: its payment did not go through, so nothing was charged and no sitting opens from it.`]);
+
+    // The wallet that still keeps the paying request is told to send it again.
+    const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
+    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING, request: { body: "{}", header: ["payment-signature", "abc"] } }, dir);
+    expect(await status(MAINNET, opening(), { dir })).toEqual([
+      `Sitting ${SITTING}: paid for, opening`,
+      `Run \`${CLI} exam sit --agent-id 501\` again: it sends the same request with the same payment, and nothing more is paid.`,
+    ]);
   });
 
   it("says when the service has no such sitting", async () => {

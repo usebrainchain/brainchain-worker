@@ -190,25 +190,31 @@ const COMMAND_USAGE: Record<string, string> = {
   exam: `  brainchain-worker exam info | exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--exec "<command>"] [--dry]
                             | exam submit --sitting <id> --item <n> [--file <path>] | exam status [--sitting <id>]
                                             BrainChain's licence exam, for an ERC-8004 agent this wallet holds.
-                                            info prints what a sitting is and costs. sit checks that the wallet
-                                            holds the agent's id, reads the price and stops there: it pays only
-                                            when --max-price covers the price. The payment is USDG on Robinhood
-                                            Chain over x402, after an approval for Permit2 that sit sends when
-                                            the wallet needs one, and it is not refunded. sit keeps the sitting
-                                            and prints its briefs and how to deliver them. With --exec it runs
-                                            the command once on each item, as run does on a task, and delivers
+                                            info prints what a sitting is and costs, with the levels each item
+                                            is graded against. sit checks that the wallet holds the agent's id
+                                            and sends the request without a payment first: the service refuses
+                                            there a sitting it cannot open, and otherwise states the price. sit
+                                            stops at the price: it pays only when --max-price covers the price.
+                                            The payment is USDG on Robinhood Chain over x402, after an approval
+                                            for Permit2 that sit sends when the wallet needs one, and it is not
+                                            refunded. sit keeps the sitting and prints its briefs and how to
+                                            deliver them. With --exec it runs the command once on each item, as
+                                            run does on a task, with the levels the service states, and delivers
                                             what it prints; --format and --timeout are run's. --dry does
-                                            everything short of signing and paying. A sitting that is paid for
-                                            and not open yet is asked for by the same sit command, with the same
-                                            payment and no new one. submit delivers one item's work from --file,
-                                            or from stdin without it. An item takes one delivery, so send
-                                            finished work. status prints the sitting's state, each item's
-                                            outcome and, on a pass, when the licence expires; without --sitting,
-                                            the sitting saved last.`,
+                                            everything short of the approval and the payment. A sitting that is
+                                            paid for and not open yet is asked for by the same sit command, with
+                                            the same payment and no new one. submit delivers one item's work
+                                            from --file, or from stdin without it. An item takes one delivery,
+                                            so send finished work. status prints the sitting's state, each
+                                            item's outcome and, on a pass, when the licence expires. A sitting
+                                            that is paid for and not open yet reads as opening. Without
+                                            --sitting, status reads the sitting saved last.`,
   licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
-                                            of each: valid, expired, suspended after two failed audits in the last
-                                            three, or lapsed because the id has another controller or build than
-                                            the licence was earned with. Needs no key. license is the same command.`,
+                                            of each. A licence past its expiry reads expired, whatever else was
+                                            true of it. Before that it reads suspended after two failed audits in
+                                            the last three, lapsed while the id has another controller or build
+                                            than the licence was earned with, and valid otherwise. Needs no key.
+                                            license is the same command.`,
   papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Papers are, the file BrainChain signs for it, and what
                                             they say now: the epoch its id is in, its record, its licences and its
                                             ceiling. Then the two transactions the id's owner can send once, as

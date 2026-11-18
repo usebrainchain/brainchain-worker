@@ -162,6 +162,25 @@ describe("the licence exam in the README and --help", () => {
     expect(flat(help)).toContain("is asked for by the same sit command, with the same payment and no new one");
   });
 
+  it("say that the service refuses a sitting before anything is approved or paid, and that an opening sitting reads as opening", () => {
+    expect(flat(section)).toContain("`sit` first sends the request without a payment, and the service refuses there a sitting it cannot open");
+    expect(flat(section)).toContain("`sit` prints the service's reason and stops before it approves or pays anything");
+    expect(flat(help)).toContain("sends the request without a payment first: the service refuses there a sitting it cannot open, and otherwise states the price");
+    expect(flat(section)).toContain("`exam status` shows the sitting as paid for and opening, with the service's reason when it gives one");
+    expect(flat(help)).toContain("A sitting that is paid for and not open yet reads as opening");
+  });
+
+  it("give a licence's states in the order the service reads them, an expiry first", () => {
+    const order = "A licence past its expiry reads expired, whatever else was true of it. Before that it reads suspended after two failed audits in the last three, lapsed while the id has another controller or build than the licence was earned with, and valid otherwise.";
+    expect(flat(usage("licence"))).toContain(order);
+    expect(readme).toContain(order);
+  });
+
+  it("say who holds an agent whose id is bound to an NFT", () => {
+    expect(flat(section)).toContain("The wallet holds the agent when it owns the id, is its registered wallet or, for an id bound to an NFT, holds that NFT.");
+    expect(readme).toContain("or hold the NFT the agent's id is bound to");
+  });
+
   it("name BrainChain, never the model behind its decisions, and pause with no dash", () => {
     for (const text of [section, usage("exam"), usage("licence"), usage("papers")]) expect(text).not.toMatch(/\bJev\b|—/);
     for (const row of readme.split("\n").filter((line) => /^\| `(exam|licence|papers) /.test(line))) expect(row).not.toMatch(/\bJev\b|—/);

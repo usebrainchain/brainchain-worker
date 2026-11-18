@@ -748,8 +748,23 @@ describe("exam, licence and papers", () => {
     const routes = { "GET /exams": () => json({ price: "5.00 USD a sitting", classes: [{ class: "code", about: "" }], sitting: {} }), "POST /x402/exams": () => json({}, 402, { "payment-required": offer }) };
     const { lines, asked } = await against(routes, ["exam", "sit", "--agent-id", "7"], { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` });
     expect(lines[0]).toMatch(/^A sitting for agent 7 in class code costs 5 test USDG on Robinhood Chain testnet, paid by 0x[0-9a-fA-F]{40} over x402\.$/);
-    expect(lines.at(-1)).toBe("Nothing was signed or paid. To sit, run this again with --max-price 5.");
-    expect(asked.map(({ method, path, body }) => `${method} ${path} ${body}`)).toEqual(["GET /exams ", "POST /x402/exams {}"]);
+    expect(lines.at(-1)).toBe("Nothing was approved or paid. To sit, run this again with --max-price 5.");
+    // The price is the service's answer to the request itself, sent with the wallet's signature and no payment.
+    expect(asked.map(({ method, path }) => `${method} ${path}`)).toEqual(["GET /exams", "POST /x402/exams"]);
+    expect(JSON.parse(asked[1]!.body)).toMatchObject({ agent: { chainId: 46630, id: "7" }, class: "code", signature: expect.stringMatching(/^0x[0-9a-f]{130}$/) });
+  });
+
+  it("stops at the service's refusal of the request, in the service's words", async () => {
+    const error = "Agent 7 holds a code licence until 2100-03-02 00:00 UTC. It may sit again from 2100-02-16 00:00 UTC. Nothing was charged.";
+    const routes = { "GET /exams": () => json({ price: "5.00 USD a sitting", classes: [{ class: "code", about: "" }], sitting: {} }), "POST /x402/exams": () => json({ error }, 409) };
+    const env = { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` };
+    expect(await against(routes, ["exam", "sit", "--agent-id", "7", "--max-price", "5"], env).catch((e: Error) => e.message)).toBe(error);
+  });
+
+  it("shows a sitting that is paid for and not open yet as opening", async () => {
+    const opening = { sitting: SITTING, state: "opening", payment: "paid", reason: "the pool has no item left to draw", message: "The sitting is paid for and its items are being drawn." };
+    const { lines } = await against({ [`GET /exams/${SITTING}`]: () => json(opening) }, ["exam", "status", "--sitting", SITTING]);
+    expect(lines.slice(0, 2)).toEqual([`Sitting ${SITTING}: paid for, opening`, "  Not open yet: the pool has no item left to draw"]);
   });
 
   it("delivers an item's work from --file as it is, and refuses a file that is not text", async () => {
