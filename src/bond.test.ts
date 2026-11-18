@@ -123,7 +123,7 @@ describe("bond", () => {
     expect(amount).toBe(USDG("5"));
     expect(terms.refundTo).toBe(POSTER);
     expect(terms.deadline).toBe(NOW + 86_400n + BOND_LEAD_SEC);
-    expect(lines.at(-1)).toBe(`A bond with registry id 7 is open on Shipped (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+    expect(lines.at(-1)).toBe(`A bond with registry id 7 is open on Shipped (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what BrainChain reads at later hires.`);
     expect(bondGas(20_000_000n, true)).toBe((GAS.create + GAS.approve) * 20_000_000n);
   });
 
@@ -165,8 +165,8 @@ describe("bond", () => {
       [fakeChain({ task: task({ bounty: USDG("8") }) }), "5", "The bond must be at least the task's bounty, 8 USDG; 5 USDG is under it."],
       [fakeChain({ task: task() }), "1.5", `The bond must be at least ${Number(MIN_BOND) / 1e6} USDG`],
       [fakeChain({ task: undefined }), "5", "There is no task 12 on BrainChain."],
-      [fakeChain({ task: task({ status: Status.Hired, model: `0x${"0".repeat(24)}${"a".repeat(40)}` }) }), "5", "Task 12 is not hired to this worker. Bond a task after Jev hires you for it."],
-      [fakeChain({ task: task({ status: Status.Paid }) }), "5", "Task 12 is not hired to this worker. Bond a task after Jev hires you for it."],
+      [fakeChain({ task: task({ status: Status.Hired, model: `0x${"0".repeat(24)}${"a".repeat(40)}` }) }), "5", "Task 12 is not hired to this worker. Bond a task after BrainChain hires you for it."],
+      [fakeChain({ task: task({ status: Status.Paid }) }), "5", "Task 12 is not hired to this worker. Bond a task after BrainChain hires you for it."],
       [fakeChain({ task: task({ deadline: NOW - 1n }) }), "5", "deadline, 2027-01-15T07:59:59Z, has passed"],
       [fakeChain({ task: task(), bonds: [view()] }), "5", "This worker already has a bond open on task 12 (registry id 4)."],
       [fakeChain({ task: task(), usdg: USDG("4") }), "5", `${ACCOUNT} holds 4 USDG on Robinhood Chain, under the 5 USDG to bond. Nothing was sent.`],
@@ -312,7 +312,7 @@ describe("deed page", () => {
   it("names the bond by Shipped's number and page after creating it", async () => {
     const chain = fakeChain({ task: task() });
     const { lines } = await run(chain, "5", { yes: true, fetch: answering(page) });
-    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what BrainChain reads at later hires.`);
   });
 
   it("names an open bond by Shipped's number in the refusal of a second", async () => {

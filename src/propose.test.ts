@@ -104,7 +104,7 @@ describe("caseURI", () => {
 
   it("refuses a case the brain would read as blank: it reads at most 4,096 bytes of JSON", () => {
     expect(CASE_BYTES).toBe(4_096);
-    expect(() => caseURI(call, { title: "t", rationale: "界".repeat(1_500) })).toThrow(/^The case is \d+ bytes as JSON, and Jev reads at most 4096/);
+    expect(() => caseURI(call, { title: "t", rationale: "界".repeat(1_500) })).toThrow(/^The case is \d+ bytes as JSON, and the decision model reads at most 4096/);
     expect(caseURI(call, { title: "t", rationale: "r".repeat(1_500) })).toMatch(/^data:application\/json;base64,/);
   });
 });
@@ -144,9 +144,9 @@ describe("propose", () => {
     const chain = fakeChain();
     const lines = await run(chain);
     expect(chain.propose).toHaveBeenCalledWith(call, "data:application/json;base64,e30=", parseEther("250000"));
-    expect(lines[0]).toContain("Bond      250,000 BRAIN, returned if Jev adopts the change with at least 60% confidence, burned otherwise");
+    expect(lines[0]).toContain("Bond      250,000 BRAIN, returned if BrainChain adopts the change with at least 60% confidence, burned otherwise");
     expect(lines[0]).toContain("Decision  within 7 days; an adopted change runs 48 hours later");
-    expect(lines.at(-1)).toBe(`Proposal 2 is waiting for Jev (${TX}). Follow it with ${cli("proposal 2")}.`);
+    expect(lines.at(-1)).toBe(`Proposal 2 is waiting for BrainChain's decision (${TX}). Follow it with ${cli("proposal 2")}.`);
   });
 
   it("sends nothing on a dry run", async () => {
@@ -213,13 +213,13 @@ describe("proposal", () => {
   const head = `Proposal 2 by ${ME}, bond 250,000 BRAIN`;
 
   it("shows an open proposal's deadline, and that anyone can expire it once passed", async () => {
-    expect(await show(fakeChain())).toBe(`${head}\n  Waiting for Jev: Jev decides by 2027-01-22T05:13:20Z.`);
+    expect(await show(fakeChain())).toBe(`${head}\n  Waiting for BrainChain's decision: it is due by 2027-01-22T05:13:20Z.`);
     expect(await show(fakeChain({ now: vi.fn(async () => 1_900_000_000n) }))).toContain(`anyone can return the bond by calling expire on ${MAINNET.contracts.bonds}`);
   });
 
   it("reads the deadline the contract fixed at proposal, whatever today's window is", async () => {
     const chain = fakeChain({ decideWithin: vi.fn(async () => 1n) });
-    expect(await show(chain)).toBe(`${head}\n  Waiting for Jev: Jev decides by 2027-01-22T05:13:20Z.`);
+    expect(await show(chain)).toBe(`${head}\n  Waiting for BrainChain's decision: it is due by 2027-01-22T05:13:20Z.`);
     expect(chain.decideWithin).not.toHaveBeenCalled();
   });
 
@@ -229,7 +229,7 @@ describe("proposal", () => {
       outcome: vi.fn(async () => ({ decisionId: 9n, adopted: true })),
       queued: vi.fn(async () => ({ changeId: 3n, eta: 1_800_172_800n, executed: false, vetoed: false })),
     });
-    expect(await show(chain)).toBe(`${head}\n  Jev adopted it (decision 9) and the bond was returned; change 3 runs from 2027-01-17T08:00:00Z.`);
+    expect(await show(chain)).toBe(`${head}\n  BrainChain adopted it (decision 9) and the bond was returned; change 3 runs from 2027-01-17T08:00:00Z.`);
   });
 
   it("shows a kept setting, an expiry and a missing proposal", async () => {
@@ -237,7 +237,7 @@ describe("proposal", () => {
       get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 0n, state: 3, deadline: 0n })),
       outcome: vi.fn(async () => ({ decisionId: 4n, adopted: false })),
     });
-    expect(await show(burned)).toContain("Jev kept the current setting (decision 4); the bond was burned.");
+    expect(await show(burned)).toContain("BrainChain kept the current setting (decision 4); the bond was burned.");
     const expired = fakeChain({
       get: vi.fn(async (id: bigint) => ({ id, proposer: ME, bond: parseEther("250000"), createdAt: 0n, state: 2, deadline: 0n })),
       outcome: vi.fn(async () => "expired" as const),

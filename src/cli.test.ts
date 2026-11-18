@@ -343,7 +343,7 @@ describe("join", () => {
         "Staking 1,000,000 tBRAIN at 0.2 tUSDG per task...",
         `  approved: ${hash(2)}`,
         `  staked: ${hash(3)}`,
-        "Applying with a 250,000 tBRAIN bond, returned if Jev allows the worker...",
+        "Applying with a 250,000 tBRAIN bond, returned if BrainChain allows the worker...",
       ]);
       expect(lines[6]).toBe(`  applied: ${hash(4)}`);
     } finally {
@@ -625,9 +625,9 @@ describe("watchResume", () => {
 describe("hireWatch", () => {
   it("reads again every few minutes until the worker can be hired, and gives each new answer once", async () => {
     let now = 0;
-    const answers = ["no: application 9 is waiting for Jev", undefined, "no: Jev allowed this worker; it can be hired after 2026-11-04T23:02:19Z", "yes"];
+    const answers = ["no: application 9 is waiting for BrainChain's decision", undefined, "no: BrainChain allowed this worker; it can be hired after 2026-11-04T23:02:19Z", "yes"];
     const check = vi.fn(async () => answers.shift());
-    const changed = hireWatch("no: application 9 is waiting for Jev", check, 300_000, () => now);
+    const changed = hireWatch("no: application 9 is waiting for BrainChain's decision", check, 300_000, () => now);
     expect(await changed()).toBeUndefined();
     expect(check).not.toHaveBeenCalled();
     now += 300_000;
@@ -636,7 +636,7 @@ describe("hireWatch", () => {
     now += 300_000;
     expect(await changed()).toBeUndefined();
     now += 300_000;
-    expect(await changed()).toBe("no: Jev allowed this worker; it can be hired after 2026-11-04T23:02:19Z");
+    expect(await changed()).toBe("no: BrainChain allowed this worker; it can be hired after 2026-11-04T23:02:19Z");
     now += 300_000;
     expect(await changed()).toBe("yes");
     now += 3_600_000;

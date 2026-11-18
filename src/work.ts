@@ -627,7 +627,7 @@ export function createWork(options: {
       };
       const delivered = (key: string, text: string, tx?: Hex) => {
         result.delivered += 1;
-        log(`task ${key}: delivered (${toBytes(text).byteLength} bytes${tx ? `, ${tx}` : ""}). Jev grades it next.`);
+        log(`task ${key}: delivered (${toBytes(text).byteLength} bytes${tx ? `, ${tx}` : ""}). BrainChain grades it next.`);
         options.delivered?.(BigInt(key));
       };
       // The board is read, not a receipt: the submit that landed may be one whose hash was never saved, or one a later resend replaced.

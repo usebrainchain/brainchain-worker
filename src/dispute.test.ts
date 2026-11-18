@@ -85,7 +85,7 @@ describe("appeal", () => {
   });
 
   it("says why a task cannot be appealed", async () => {
-    await expect(appeal(TESTNET, fake({ status: Status.Disputed }), 7n, () => {})).rejects.toThrow("still waiting for Jev's ruling");
+    await expect(appeal(TESTNET, fake({ status: Status.Disputed }), 7n, () => {})).rejects.toThrow("still waiting for BrainChain's ruling");
     await expect(appeal(TESTNET, fake({ status: Appealed }), 7n, () => {})).rejects.toThrow("already under appeal");
     await expect(appeal(TESTNET, fake({ status: Status.Paid }), 7n, () => {})).rejects.toThrow("no ruling open to appeal");
     await expect(appeal(TESTNET, fake({ status: Ruled }, { window: 3_600n, ruledAt: NOW - 3_601n, pays: false }), 7n, () => {})).rejects.toThrow("closed at");

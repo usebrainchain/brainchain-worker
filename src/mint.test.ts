@@ -398,7 +398,7 @@ describe("run's settlement watch", () => {
     refunded.settle({ paid: false, reason: 3, slashed: 0n });
     refunded.at(300);
     await refunded.watch.round();
-    expect(logged(refunded.log)).toEqual(["task 7: refunded to its poster: Jev did not accept the work"]);
+    expect(logged(refunded.log)).toEqual(["task 7: refunded to its poster: BrainChain did not accept the work"]);
     expect(refunded.store.state.proofs).toEqual({});
 
     const slashed = setup({ network: TESTNET });
@@ -406,7 +406,7 @@ describe("run's settlement watch", () => {
     slashed.settle({ paid: false, reason: 4, slashed: 100n * 10n ** 18n });
     slashed.at(300);
     await slashed.watch.round();
-    expect(logged(slashed.log)).toEqual(["task 46: refunded to its poster: Jev ruled for the poster; 100 tBRAIN of the worker's stake was slashed"]);
+    expect(logged(slashed.log)).toEqual(["task 46: refunded to its poster: BrainChain ruled for the poster; 100 tBRAIN of the worker's stake was slashed"]);
 
     const stuck = setup();
     stuck.watch.track(7n);

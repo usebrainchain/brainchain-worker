@@ -54,6 +54,11 @@ describe("what --help and the README list", () => {
     const names = (text: string) => [...new Set(text.match(/\bBRAINCHAIN_[A-Z_]+/g) ?? [])].sort();
     expect(names(environment)).toEqual(names(helped));
   });
+
+  it("names the decision model by its id alone", () => {
+    for (const text of [help, readme, skill]) expect(text).not.toMatch(/\bJev\b/);
+    expect(readme).toContain("Its decision model is served by TypeSafe, and records name it by its id, such as `jev-1.14.0`.");
+  });
 });
 
 describe("mainnet's figures in the README", () => {
@@ -83,7 +88,7 @@ describe("bonds in the README and --help", () => {
     expect(readme).toContain("BrainChain reads a worker's settled bonds, delivered and missed, at later hires");
     expect(readme).toContain("After BrainChain hires this worker for the task");
     expect(readme).not.toMatch(/offered first|While the task is open|Not open yet|(?:Jev|BrainChain) reads the bond when it hires/);
-    expect(flat(help)).toContain("behind a task Jev hired this worker for");
+    expect(flat(help)).toContain("behind a task BrainChain hired this worker for");
   });
 
   it("give the deadline the bond is created with", () => {

@@ -141,14 +141,14 @@ export async function dispute(network: Network, chain: DisputeChain, id: bigint,
   if (now > closes) throw new Error(`The dispute window for task ${id} closed at ${at(closes)}.`);
   const tx = await chain.dispute(id);
   log(`Disputed the grade on task ${id} (${task.accepted ? "it accepted the work" : "it rejected the work"}): ${tx}`);
-  log(`Jev rules within ${task.ruleWindow / 3_600n} hours. A confident ruling decides; otherwise the grade stands.`);
+  log(`BrainChain rules within ${task.ruleWindow / 3_600n} hours. A confident ruling decides; otherwise the grade stands.`);
 }
 
 /** Appeals the ruling on a task, as the side it went against, with the bond the board fixed when the task was posted. */
 export async function appeal(network: Network, chain: DisputeChain, id: bigint, log: (line: string) => void): Promise<void> {
   const [task, now] = await Promise.all([chain.task(id), chain.now()]);
   if (task.status === 0) throw new Error(`There is no task ${id} on ${network.name}.`);
-  if (task.status === Status.Disputed) throw new Error(`Task ${id} is still waiting for Jev's ruling. Appeal once it is ruled.`);
+  if (task.status === Status.Disputed) throw new Error(`Task ${id} is still waiting for BrainChain's ruling. Appeal once it is ruled.`);
   if (task.status === Appealed) throw new Error(`Task ${id} is already under appeal; a ruling can be appealed once.`);
   if (task.status !== Ruled) throw new Error(`Task ${id} has no ruling open to appeal.`);
   const terms = await chain.appealOf(id);
@@ -201,5 +201,5 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
     );
   });
   log(`Appealed the ruling on task ${id} with a ${amount} bond: ${tx}`);
-  log(`Jev rules again within ${task.ruleWindow / 3_600n} hours. The bond comes back unless Jev confidently rules the same way.`);
+  log(`BrainChain rules again within ${task.ruleWindow / 3_600n} hours, and the bond comes back unless it confidently rules the same way.`);
 }

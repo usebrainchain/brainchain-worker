@@ -291,9 +291,9 @@ describe("record", () => {
       }
       expect(lines).toEqual([
         `task 1: the ruling refunds the poster after 1970-01-01T01:01:40Z unless appealed with ${cli("appeal 1")}`,
-        "task 1: ruling appealed, Jev rules again by 1970-01-01T06:03:20Z",
+        "task 1: ruling appealed, BrainChain rules again by 1970-01-01T06:03:20Z",
         "task 1: hired, due by 2033-05-18T03:33:20Z",
-        "task 1: grade disputed by this worker, Jev rules by 1970-01-01T06:00:03Z",
+        "task 1: grade disputed by this worker, BrainChain rules by 1970-01-01T06:00:03Z",
       ]);
       status = Status.Paid;
       expect(await chain.record()).toMatchObject({ paid: 1, inFlight: [] });

@@ -362,7 +362,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   if (!t) throw new Error(`There is no task ${task} on ${network.name}.`);
   if (t.poster.toLowerCase() === chain.account.toLowerCase()) throw new Error(`Task ${task} was posted by this wallet. A bond guarantees delivery to someone else: it earns no standing on a task the worker posted itself.`);
   const hiredHere = t.status === Status.Hired && t.model.toLowerCase().endsWith(chain.account.slice(2).toLowerCase());
-  if (!hiredHere) throw new Error(`Task ${task} is not hired to this worker. Bond a task after Jev hires you for it.`);
+  if (!hiredHere) throw new Error(`Task ${task} is not hired to this worker. Bond a task after BrainChain hires you for it.`);
   const now = await chain.now();
   if (t.deadline <= now) throw new Error(`Task ${task}'s deadline, ${when(t.deadline)}, has passed.`);
   if (options.amount < t.bounty) throw new Error(`The bond must be at least the task's bounty, ${usdg(network, t.bounty)}; ${usdg(network, options.amount)} is under it.`);
@@ -406,7 +406,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   const { deed, tx } = await chain.create(terms, options.amount);
   const page = await deedPage(deed, options.fetch);
   const opened = page ? `Bond No. ${page.number} is open on Shipped: ${page.url} (${tx}).` : `A bond with registry id ${deed} is open on Shipped (${tx}).`;
-  log(`${opened} ${cli(`bond status ${task}`)} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
+  log(`${opened} ${cli(`bond status ${task}`)} follows it. A worker's settled bonds, delivered and missed, are part of what BrainChain reads at later hires.`);
 }
 
 export async function bondStatus(

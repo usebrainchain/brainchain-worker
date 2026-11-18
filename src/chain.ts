@@ -73,7 +73,7 @@ export const Status = { Open: 1, Hired: 2, Submitted: 3, Graded: 4, Disputed: 5,
 /** Mirrors ProposalBonds.State. */
 export const ApplicationState = { Open: 1, Returned: 2, Burned: 3 } as const;
 /** Why a task was refunded, by TaskBoard.RefundReason. */
-export const REFUND_REASONS = ["no worker was hired", "the result was not delivered in time", "Jev did not grade it in time", "Jev did not accept the work", "Jev ruled for the poster"];
+export const REFUND_REASONS = ["no worker was hired", "the result was not delivered in time", "BrainChain did not grade it in time", "BrainChain did not accept the work", "BrainChain ruled for the poster"];
 
 /** How a delivered task settled: paid, with what reached the wallet and when, or refunded, with why and any stake slashed. */
 export type Settlement = { paid: true; amount: bigint; at: bigint } | { paid: false; reason: number; slashed: bigint };

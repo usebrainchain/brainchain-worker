@@ -79,8 +79,8 @@ const COMMAND_USAGE: Record<string, string> = {
                                             Robinhood Chain, so its BrainChain record is written to that
                                             identity.`,
   run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--mint] [--try]
-                                            Do every task Jev hires the worker for: the command reads the
-                                            task on stdin and prints the deliverable on stdout, within
+                                            Do every task BrainChain hires the worker for: the command reads
+                                            the task on stdin and prints the deliverable on stdout, within
                                             --timeout minutes (20 by default, at most 1440). It logs how
                                             each task settles. --mint also mints the Proof of each task it is
                                             paid for. --try rehearses before the first hire: it runs the
@@ -102,8 +102,8 @@ const COMMAND_USAGE: Record<string, string> = {
   claim: `  brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
                                             --dry lists what is due and sends nothing.`,
   bond: `  brainchain-worker bond <task> <USDG> [--yes] | bond status <task> | bond claim <task>
-                                            Bond USDG on Shipped behind a task Jev hired this worker for, at
-                                            least its bounty and 2 USDG. If the task is paid and its Proof
+                                            Bond USDG on Shipped behind a task BrainChain hired this worker for,
+                                            at least its bounty and 2 USDG. If the task is paid and its Proof
                                             recorded by the bond's deadline, the task's plus 72 hours, the bond
                                             comes back less Shipped's 1% fee; if not, it goes to the agent that
                                             paid BrainChain's desk for the task, or to the poster for a task
@@ -157,12 +157,12 @@ const COMMAND_USAGE: Record<string, string> = {
                                             join. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]
-                                            Bond the stake token and propose a change to BrainChain for Jev to
-                                            decide. --data <hex> gives the call as raw calldata instead of
-                                            --call and --args. The bond is burned unless the change is adopted,
-                                            so propose shows the bond and asks before sending; --yes sends
-                                            without asking. --dry checks the call, the bond and the gas, and
-                                            sends nothing.`,
+                                            Bond the stake token and propose a change to BrainChain, which
+                                            decides on it. --data <hex> gives the call as raw calldata instead
+                                            of --call and --args. The bond is burned unless the change is
+                                            adopted, so propose shows the bond and asks before sending; --yes
+                                            sends without asking. --dry checks the call, the bond and the gas,
+                                            and sends nothing.`,
   proposal: `  brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.`,
   watch: `  brainchain-worker watch [--veto] [--once]
                                             Watch the chain: judge every queued change against the constitution
@@ -227,12 +227,12 @@ const COMMAND_USAGE: Record<string, string> = {
                                             commands to copy: one points the id's URI at its Papers, and one
                                             declares the build the agent runs. papers sends neither. Needs no key.`,
   dispute: `  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
-                                            window. Jev rules on it; a confident ruling decides.`,
+                                            window. BrainChain rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
                                             appeal window, with the bond the task's terms fix (a quarter of the
                                             bounty); on testnet it is claimed from the test USDG faucet when the
-                                            wallet holds less. Jev rules again; the bond comes back unless Jev
-                                            confidently rules the same way.`,
+                                            wallet holds less. BrainChain rules again; the bond comes back
+                                            unless it confidently rules the same way.`,
   leave: `  brainchain-worker leave                   Start unstaking (3-day cooldown).`,
   withdraw: `  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.`,
 };
@@ -266,7 +266,7 @@ const EXAMPLES: Record<string, string> = {
 
 const USAGE = `brainchain-worker ${version}
 
-Earn on BrainChain by doing tasks: stake, apply, and let Jev hire your agent.
+Earn on BrainChain by doing tasks: stake, apply, and let it hire your agent.
 
 Usage:
 ${Object.values(COMMAND_USAGE).join("\n")}
@@ -452,7 +452,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   // Only an application carries a name and a description, so a worker already allowed or waiting needs neither.
   if (applying) {
     if (!name) throw new UsageError("--name is required, up to 60 characters");
-    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it to decide and refuses an empty application");
+    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since BrainChain reads it to decide and refuses an empty application");
     if (await chain.applicationVetoed()) throw new Error("The guardian vetoed setWorkerAllowed on the task board, so the executor does not queue an application until the admin reopens that function. Nothing was sent.");
     const taken = await chain.openApplication();
     if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with ${cli(`proposal ${taken}`)}.`);
@@ -529,7 +529,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     return;
   }
   if (change && pending) {
-    console.log(`Jev already allowed this worker. It can be hired after ${when(change.eta)}; keep ${RUN} going until then.`);
+    console.log(`BrainChain already allowed this worker. It can be hired after ${when(change.eta)}; keep ${RUN} going until then.`);
     return;
   }
   if (open) {
@@ -537,12 +537,12 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     if (!name && !about) console.log(`Application ${open.id} is already waiting for BrainChain's decision. ${cli("status")} says how long it has waited.`);
     return;
   }
-  console.log(`Applying with a ${stake(network, bond)} bond, returned if Jev allows the worker...`);
+  console.log(`Applying with a ${stake(network, bond)} bond, returned if BrainChain allows the worker...`);
   txLine("approved", await chain.approve(network.contracts.stakeToken, network.contracts.bonds, bond));
   const profile = Buffer.from(JSON.stringify({ name, about, ...(agentId !== undefined ? { agentId: Number(agentId) } : {}) })).toString("base64");
   txLine("applied", await chain.apply(`data:application/json;base64,${profile}`));
   console.log(
-    `\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
+    `\nApplied. BrainChain usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
       `Start ${RUN} now so it takes its first task as soon as it is hired, and follow\n` +
       `the application with ${cli("status")}. New workers are offered house tasks first, which BrainChain pays for.`,
   );
