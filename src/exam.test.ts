@@ -6,11 +6,11 @@ import { keccak256, recoverMessageAddress, toBytes, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { briefsMessage, examInfo, examSit, examStatus, examSubmit, identityChain, itemMessage, licences, papers, PERMIT2, sittingMessage, type ExamChain, type SitOptions } from "./exam.js";
+import { briefsMessage, examInfo, examSit, examStatus, examSubmit, identityChain, itemMessage, licences, MAX_WORK_BYTES, papers, PERMIT2, sittingMessage, type ExamChain, type SitOptions } from "./exam.js";
 import { CLI } from "./invoked.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { readSittings, saveSitting } from "./state.js";
-import { MAX_RESULT_BYTES, type Command } from "./work.js";
+import type { Command } from "./work.js";
 
 // Anvil's second default account: a public test key that holds nothing anywhere.
 const KEY: Hex = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
@@ -423,6 +423,7 @@ describe("exam sit", () => {
     const command: Command = {
       run: async (input, env) => {
         inputs.push(input);
+        if (env.BRAINCHAIN_TASK_ID === "3") return "#".repeat(MAX_WORK_BYTES + 1);
         return env.BRAINCHAIN_TASK_ID === "1" ? `key = "${KEY}"` : "def f(x): return x";
       },
       kill: () => undefined,
@@ -437,8 +438,10 @@ describe("exam sit", () => {
       passLevel: "Does everything the brief asks, in the form it asks for, and is right on every hidden case",
       deadline: "2100-01-01T02:00:00.000Z",
     });
-    expect(desk.delivered.map(({ item }) => item)).toEqual([0, 2, 3, 4]);
+    expect(desk.delivered.map(({ item }) => item)).toEqual([0, 2, 4]);
     expect(lines).toContain("item 1: not delivered (The result contains the worker's private key, so it was not uploaded. Check what the command can read)");
+    // An item takes less than a task's result does, and what is over is never sent.
+    expect(lines).toContain("item 3: not delivered (The work is 48001 bytes; at most 48000 are accepted for an item. Nothing was sent)");
     expect(JSON.stringify(desk.delivered)).not.toContain(KEY.slice(2));
   });
 
@@ -481,7 +484,7 @@ describe("exam submit", () => {
     const desk = service(TESTNET);
     const send = (text: string) => examSubmit(TESTNET, wallet, { sitting: SITTING, item: 0, text, secrets: [KEY, KEY.slice(2)], log: () => {}, fetcher: desk.fetcher });
     await expect(send(" \n")).rejects.toThrow("The work is empty. Nothing was sent.");
-    await expect(send("é".repeat(MAX_RESULT_BYTES / 2 + 1))).rejects.toThrow("The work is 100002 bytes; at most 100000 are accepted. Nothing was sent.");
+    await expect(send("é".repeat(MAX_WORK_BYTES / 2 + 1))).rejects.toThrow("The work is 48002 bytes; at most 48000 are accepted for an item. Nothing was sent");
     await expect(send(`secret = "${KEY.slice(2).toUpperCase()}"`)).rejects.toThrow("The work contains the worker's private key, so it was not sent.");
     expect(desk.delivered).toEqual([]);
   });

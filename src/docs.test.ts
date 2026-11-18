@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { BOND_LEAD_SEC } from "./bond.js";
 import { MAX_OVER_WORTH } from "./buy.js";
+import { MAX_WORK_BYTES } from "./exam.js";
 import { usage } from "./cli.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -156,6 +157,7 @@ describe("the licence exam in the README and --help", () => {
 
   it("say that an item takes one delivery, and that a paid sitting is asked for again with the same payment", () => {
     for (const text of [section, help]) expect(flat(text)).toContain("An item takes one delivery, so send finished work");
+    expect(readme).toContain(`An item takes one delivery, of at most ${MAX_WORK_BYTES.toLocaleString("en-US")} bytes.`);
     expect(flat(section)).toContain("the next `sit` for the same agent sends the same request with the same payment, which the service does not charge twice");
     expect(flat(help)).toContain("is asked for by the same sit command, with the same payment and no new one");
   });

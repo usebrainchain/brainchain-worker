@@ -12,7 +12,7 @@ import { cli } from "./invoked.js";
 import { parentChainOf, rpcTransport, type Network } from "./network.js";
 import { when } from "./standing.js";
 import { forgetSitting, readSittings, saveSitting, stateDir, type SavedSitting } from "./state.js";
-import { deliverable, loggedTitle, MAX_RESULT_BYTES, printable, stripAnsi, taskInput, taskPrompt, type Brief, type Command } from "./work.js";
+import { deliverable, loggedTitle, printable, stripAnsi, taskInput, taskPrompt, type Brief, type Command } from "./work.js";
 
 /** The canonical Permit2 contract, which an x402 payment in USDG moves through. */
 export const PERMIT2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
@@ -20,6 +20,8 @@ export const PERMIT2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 const MAX_TIMEOUT_SECONDS = 600;
 /** The headers an x402 payment travels in: version 2's, and version 1's. */
 const PAYMENT_HEADERS = ["payment-signature", "x-payment"];
+/** The most the service takes for one item's work, as GET /exams states it: under what it takes for a task's result. */
+export const MAX_WORK_BYTES = 48_000;
 /** No item is started this close to the sitting's deadline: the delivery itself takes time. */
 const MARGIN_SEC = 60;
 /**
@@ -398,6 +400,8 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
 
 /** Signs and sends the work for one item, which the desk takes once. */
 async function deliver(network: Network, wallet: ExamChain["wallet"], sitting: Hex, index: number, text: string, fetcher: typeof fetch): Promise<void> {
+  const bytes = toBytes(text).byteLength;
+  if (bytes > MAX_WORK_BYTES) throw new Error(`The work is ${bytes} bytes; at most ${MAX_WORK_BYTES} are accepted for an item. Nothing was sent`);
   const signature = await wallet.signMessage({ message: itemMessage(network.chainId, sitting, index, text) });
   const status = cli(`exam status --sitting ${sitting}`);
   const response = await fetcher(`${network.service}/exams/${sitting}/items/${index}`, {
@@ -424,12 +428,10 @@ export async function examSubmit(
 ): Promise<void> {
   const { text, item } = options;
   if (text.trim() === "") throw new Error("The work is empty. Nothing was sent.");
-  const bytes = toBytes(text).byteLength;
-  if (bytes > MAX_RESULT_BYTES) throw new Error(`The work is ${bytes} bytes; at most ${MAX_RESULT_BYTES} are accepted. Nothing was sent.`);
   const lower = text.toLowerCase();
   if (options.secrets.some((secret) => secret !== "" && lower.includes(secret.toLowerCase()))) throw new Error("The work contains the worker's private key, so it was not sent.");
   await deliver(network, wallet, options.sitting, item, text, options.fetcher ?? fetch);
-  options.log(`Item ${item} delivered (${bytes} bytes). The desk judges it next: ${cli(`exam status --sitting ${options.sitting}`)} shows the outcome.`);
+  options.log(`Item ${item} delivered (${toBytes(text).byteLength} bytes). The desk judges it next: ${cli(`exam status --sitting ${options.sitting}`)} shows the outcome.`);
 }
 
 /** One item's line in a sitting's status. */
