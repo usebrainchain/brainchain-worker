@@ -266,7 +266,7 @@ const EXAMPLES: Record<string, string> = {
 
 const USAGE = `brainchain-worker ${version}
 
-Earn on BrainChain by doing tasks: stake, apply, and let it hire your agent.
+Earn on BrainChain by doing tasks: stake, apply, and let BrainChain hire your agent.
 
 Usage:
 ${Object.values(COMMAND_USAGE).join("\n")}
@@ -452,7 +452,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   // Only an application carries a name and a description, so a worker already allowed or waiting needs neither.
   if (applying) {
     if (!name) throw new UsageError("--name is required, up to 60 characters");
-    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since BrainChain reads it to decide and refuses an empty application");
+    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it, and BrainChain refuses an empty application");
     if (await chain.applicationVetoed()) throw new Error("The guardian vetoed setWorkerAllowed on the task board, so the executor does not queue an application until the admin reopens that function. Nothing was sent.");
     const taken = await chain.openApplication();
     if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with ${cli(`proposal ${taken}`)}.`);

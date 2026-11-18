@@ -104,7 +104,7 @@ describe("caseURI", () => {
 
   it("refuses a case the brain would read as blank: it reads at most 4,096 bytes of JSON", () => {
     expect(CASE_BYTES).toBe(4_096);
-    expect(() => caseURI(call, { title: "t", rationale: "界".repeat(1_500) })).toThrow(/^The case is \d+ bytes as JSON, and the decision model reads at most 4096/);
+    expect(() => caseURI(call, { title: "t", rationale: "界".repeat(1_500) })).toThrow(/^The case is \d+ bytes as JSON, and Jev reads at most 4096/);
     expect(caseURI(call, { title: "t", rationale: "r".repeat(1_500) })).toMatch(/^data:application\/json;base64,/);
   });
 });

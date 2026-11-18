@@ -842,7 +842,7 @@ describe("papers", () => {
 });
 
 describe("what the exam's lines never say", () => {
-  it("is the name of the model behind BrainChain's decisions, or a dash for a pause", async () => {
+  it("is a dash for a pause", async () => {
     const lines: string[] = [];
     const log = (line: string) => lines.push(line);
     const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => json({ brainchain: { papers: {} } }), "GET /licences/4663/501": () => json({ licences: [] }), [`GET /exams/${SITTING}`]: () => json(view()) } });
@@ -852,7 +852,7 @@ describe("what the exam's lines never say", () => {
     await licences(MAINNET, { agentId: "501", log, fetcher: desk.fetcher });
     await papers(MAINNET, { agentId: "501", log, fetcher: desk.fetcher });
     expect(lines.length).toBeGreaterThan(30);
-    expect(lines.join("\n")).not.toMatch(/\bJev\b|—/);
+    expect(lines.join("\n")).not.toContain("—");
     expect(PERMIT2).toBe("0x000000000022D473030F116dDEE9F6B43aC78BA3");
   });
 });

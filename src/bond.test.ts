@@ -123,7 +123,7 @@ describe("bond", () => {
     expect(amount).toBe(USDG("5"));
     expect(terms.refundTo).toBe(POSTER);
     expect(terms.deadline).toBe(NOW + 86_400n + BOND_LEAD_SEC);
-    expect(lines.at(-1)).toBe(`A bond with registry id 7 is open on Shipped (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what BrainChain reads at later hires.`);
+    expect(lines.at(-1)).toBe(`A bond with registry id 7 is open on Shipped (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
     expect(bondGas(20_000_000n, true)).toBe((GAS.create + GAS.approve) * 20_000_000n);
   });
 
@@ -312,7 +312,7 @@ describe("deed page", () => {
   it("names the bond by Shipped's number and page after creating it", async () => {
     const chain = fakeChain({ task: task() });
     const { lines } = await run(chain, "5", { yes: true, fetch: answering(page) });
-    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what BrainChain reads at later hires.`);
+    expect(lines.at(-1)).toBe(`Bond No. 3 is open on Shipped: https://app.shipped.bond/bonds/3 (${TX}). ${cli("bond status 12")} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
   });
 
   it("names an open bond by Shipped's number in the refusal of a second", async () => {

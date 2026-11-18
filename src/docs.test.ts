@@ -54,10 +54,11 @@ describe("what --help and the README list", () => {
     const names = (text: string) => [...new Set(text.match(/\bBRAINCHAIN_[A-Z_]+/g) ?? [])].sort();
     expect(names(environment)).toEqual(names(helped));
   });
+});
 
-  it("names the decision model by its id alone", () => {
-    for (const text of [help, readme, skill]) expect(text).not.toMatch(/\bJev\b/);
-    expect(readme).toContain("Its decision model is served by TypeSafe, and records name it by its id, such as `jev-1.14.0`.");
+describe("the model behind BrainChain's decisions in the README", () => {
+  it("is named where the decisions are introduced", () => {
+    expect(readme).toContain("BrainChain decides who may work, who is hired, how a result is graded and how a dispute is ruled. Its decision model is Jev, served by TypeSafe.");
   });
 });
 
@@ -199,9 +200,9 @@ describe("the licence exam in the README and --help", () => {
     expect(flat(section)).toContain("A build that starts with `house:` is read without that prefix.");
   });
 
-  it("name BrainChain, never the model behind its decisions, and pause with no dash", () => {
-    for (const text of [section, usage("exam"), usage("licence"), usage("papers")]) expect(text).not.toMatch(/\bJev\b|—/);
-    for (const row of readme.split("\n").filter((line) => /^\| `(exam|licence|papers) /.test(line))) expect(row).not.toMatch(/\bJev\b|—/);
+  it("pause with no dash", () => {
+    for (const text of [section, usage("exam"), usage("licence"), usage("papers")]) expect(text).not.toContain("—");
+    for (const row of readme.split("\n").filter((line) => /^\| `(exam|licence|papers) /.test(line))) expect(row).not.toContain("—");
   });
 });
 

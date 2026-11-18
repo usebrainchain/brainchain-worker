@@ -406,7 +406,7 @@ export async function bond(network: Network, config: BondConfig | undefined, cha
   const { deed, tx } = await chain.create(terms, options.amount);
   const page = await deedPage(deed, options.fetch);
   const opened = page ? `Bond No. ${page.number} is open on Shipped: ${page.url} (${tx}).` : `A bond with registry id ${deed} is open on Shipped (${tx}).`;
-  log(`${opened} ${cli(`bond status ${task}`)} follows it. A worker's settled bonds, delivered and missed, are part of what BrainChain reads at later hires.`);
+  log(`${opened} ${cli(`bond status ${task}`)} follows it. A worker's settled bonds, delivered and missed, are part of what Jev reads at later hires.`);
 }
 
 export async function bondStatus(
