@@ -36,6 +36,7 @@ const INFO = {
     passMark: 4,
     levels: LEVELS,
     passes: LEVELS[1],
+    barBps: 5000,
     minutes: 120,
     licenceDays: 60,
     waitAfterFailingDays: 7,
@@ -48,6 +49,7 @@ const RULES = [
   `  Levels    ${LEVELS[0]}`,
   `            ${LEVELS[1]} (an item is accepted at this level or better)`,
   `            ${LEVELS[2]}`,
+  "  Judges    work that answers every hidden case right is accepted when the judges accept it with at least 50% confidence, and work with a case wrong never is",
   "  Licence   lasts 60 days; after a failed sitting the agent waits 7 days before the next",
   "  Audits    A licensed agent's work is audited now and then with a task it cannot tell from any other. 2 failed audits in the last 3 suspend the licence.",
   "  Refunds   None. A sitting buys the judgments, whatever they say.",
@@ -169,6 +171,17 @@ describe("exam info", () => {
       ...RULES,
       `Sit it with \`${CLI} exam sit --agent-id <id>\`: that shows the price and pays nothing until --max-price confirms it.`,
     ]);
+  });
+
+  it("says how sure the judges must be from the bar the service states, and nothing where it states none", async () => {
+    const judges = async (sitting: Record<string, unknown>) => {
+      const lines: string[] = [];
+      await examInfo(MAINNET, { log: (line) => lines.push(line), fetcher: service(MAINNET, { info: { ...INFO, sitting } }).fetcher });
+      return lines.find((line) => line.startsWith("  Judges"));
+    };
+    expect(await judges({ ...INFO.sitting, barBps: 6250 })).toContain("when the judges accept it with at least 62.5% confidence");
+    const { barBps: _, ...bare } = INFO.sitting;
+    expect(await judges(bare)).toBeUndefined();
   });
 
   it("says when the exam is not open, and passes on what the service says is wrong", async () => {
@@ -645,10 +658,10 @@ describe("exam status", () => {
   };
 
   it("prints an open sitting, each item's state and what is still to deliver", async () => {
-    const items = view().items.map((item, i) => (i === 0 ? { ...item, state: "judged", accepted: true, right: 12, of: 12, decision: "4801" } : i === 1 ? { ...item, state: "submitted" } : i === 2 ? { ...item, state: "missed" } : item));
+    const items = view().items.map((item, i) => (i === 0 ? { ...item, state: "judged", accepted: true, right: 12, of: 12, confidenceBps: 9100, decision: "4801" } : i === 1 ? { ...item, state: "submitted" } : i === 2 ? { ...item, state: "missed" } : item));
     expect(await status(MAINNET, view({ items }))).toEqual([
       `Sitting ${SITTING} for agent 501, class code: open until 2100-01-01T02:00:00Z`,
-      "  Item 0    accepted (12 of 12 hidden cases right, decision 4801): Item 0",
+      "  Item 0    accepted (12 of 12 hidden cases right, judges 91% sure, decision 4801): Item 0",
       "  Item 1    delivered, waiting to be judged: Item 1",
       "  Item 2    missed: the sitting's time ran out first: Item 2",
       "  Item 3    open: Item 3",
@@ -661,7 +674,11 @@ describe("exam status", () => {
     const licence = { licence: { class: "code", issuedAt: DEADLINE, expiresAt: DEADLINE + 60 * 86_400 }, signature: "0x01" };
     const passed = await status(MAINNET, view({ state: "passed", closedAt: DEADLINE, items: judged(4), licence }));
     expect(passed[0]).toBe(`Sitting ${SITTING} for agent 501, class code: passed at 2100-01-01T02:00:00Z`);
+    // An item judged before the judges' confidence was kept has none to show.
     expect(passed[5]).toBe("  Item 4    rejected (11 of 12 hidden cases right, decision 4804): Item 4");
+    // An item refused with every hidden case right explains itself: the judges were under the bar.
+    const doubted = judged(5).map((item, i) => (i === 2 ? { ...item, accepted: false, right: 18, of: 18, confidenceBps: 4900, decision: "886" } : item));
+    expect((await status(MAINNET, view({ state: "passed", closedAt: DEADLINE, items: doubted, licence })))[3]).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges 49% sure, decision 886): Item 2");
     expect(passed.at(-1)).toBe("Passed, with 4 of 5 accepted. The licence is valid until 2100-03-02T02:00:00Z, for as long as the agent's id keeps its controller and its build.");
     const failed = await status(MAINNET, view({ state: "failed", closedAt: DEADLINE, items: judged(3) }));
     expect(failed.at(-1)).toBe(`Failed, with 3 of 5 accepted; a pass takes 4. \`${CLI} exam info\` says how long the agent waits before the next sitting.`);

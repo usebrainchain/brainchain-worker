@@ -81,6 +81,8 @@ const date = (seconds: unknown) => (typeof seconds === "number" ? when(BigInt(Ma
 /** Text over several lines from the service, with nothing in it that moves the cursor or hides. */
 const shown = (text: string) => stripAnsi(text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 const hostOf = (network: Network) => new URL(network.service).host;
+/** Basis points as a percentage: 4950 is 49.5%. */
+const percent = (bps: number) => `${bps / 100}%`;
 
 /** One request to the service, and its answer as JSON: `{}` for a body that is none. */
 async function ask(network: Network, path: string, fetcher: typeof fetch, init: RequestInit = {}): Promise<{ response: Response; body: Record<string, unknown> }> {
@@ -114,7 +116,7 @@ async function examFacts(network: Network, fetcher: typeof fetch): Promise<ExamI
   const info = await read(network, "/exams", fetcher, closed(network));
   const sitting = isObject(info.sitting) ? info.sitting : {};
   const count = (name: string) => (typeof sitting[name] === "number" ? (sitting[name] as number) : undefined);
-  const [items, hard, passMark, minutes, licenceDays, wait] = ["items", "hardItems", "passMark", "minutes", "licenceDays", "waitAfterFailingDays"].map(count);
+  const [items, hard, passMark, minutes, licenceDays, wait, bar] = ["items", "hardItems", "passMark", "minutes", "licenceDays", "waitAfterFailingDays", "barBps"].map(count);
   const classes = Array.isArray(info.classes) ? info.classes.flatMap((c: unknown) => (isObject(c) && typeof c.class === "string" ? [{ class: c.class, about: typeof c.about === "string" ? printable(c.about) : "" }] : [])) : [];
   const levels = Array.isArray(sitting.levels) && sitting.levels.every((level: unknown) => typeof level === "string") ? (sitting.levels as string[]) : [];
   const passIndex = typeof sitting.passes === "string" ? levels.indexOf(sitting.passes) : -1;
@@ -126,6 +128,7 @@ async function examFacts(network: Network, fetcher: typeof fetch): Promise<ExamI
         ? [`Sitting   ${items} items in ${minutes} minutes${hard === undefined ? "" : `, ${hard} of them from the hardest band`}${passMark === undefined ? "" : `; ${passMark} accepted is a pass`}`]
         : []),
       ...levels.map((level, i) => `${i === 0 ? "Levels   " : "         "} ${printable(level)}${i === passIndex ? " (an item is accepted at this level or better)" : ""}`),
+      ...(bar === undefined ? [] : [`Judges    work that answers every hidden case right is accepted when the judges accept it with at least ${percent(bar)} confidence, and work with a case wrong never is`]),
       ...(licenceDays !== undefined ? [`Licence   lasts ${licenceDays} days${wait === undefined ? "" : `; after a failed sitting the agent waits ${wait} days before the next`}`] : []),
       ...(typeof sitting.audits === "string" ? [`Audits    ${printable(sitting.audits)}`] : []),
       ...(typeof sitting.refunds === "string" ? [`Refunds   ${printable(sitting.refunds)}`] : []),
@@ -508,8 +511,9 @@ export async function examSubmit(
 /** One item's line in a sitting's status. */
 function itemLine(item: Record<string, unknown>): string {
   const cases = typeof item.right === "number" && typeof item.of === "number" ? `${item.right} of ${item.of} hidden cases right` : undefined;
+  const judges = typeof item.confidenceBps === "number" ? `judges ${percent(item.confidenceBps)} sure` : undefined;
   const decision = typeof item.decision === "string" ? `decision ${printable(item.decision)}` : undefined;
-  const detail = [cases, decision].filter(Boolean).join(", ");
+  const detail = [cases, judges, decision].filter(Boolean).join(", ");
   const outcome =
     item.state === "judged"
       ? `${item.accepted === true ? "accepted" : "rejected"}${detail ? ` (${detail})` : ""}`

@@ -172,6 +172,12 @@ describe("the licence exam in the README and --help", () => {
     expect(flat(section)).toContain("past that, `sit` says to run it again a minute later");
   });
 
+  it("say that the judges' bar is printed, and that a judged item shows how sure they were", () => {
+    expect(flat(usage("exam"))).toContain("with the levels each item is graded against and how sure the judges must be to accept one");
+    expect(readme).toContain("how sure the judges must be to accept an item");
+    expect(readme).toContain("how sure the judges were, so an item refused with every case right explains itself");
+  });
+
   it("give a licence's states in the order the service reads them, an expiry first", () => {
     const order = "A licence past its expiry reads expired, whatever else was true of it. Before that it reads suspended after two failed audits in the last three, lapsed while the id has another controller or build than the licence was earned with, and valid otherwise.";
     expect(flat(usage("licence"))).toContain(order);
