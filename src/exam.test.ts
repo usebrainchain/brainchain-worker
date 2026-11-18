@@ -658,10 +658,10 @@ describe("exam status", () => {
   };
 
   it("prints an open sitting, each item's state and what is still to deliver", async () => {
-    const items = view().items.map((item, i) => (i === 0 ? { ...item, state: "judged", accepted: true, right: 12, of: 12, confidenceBps: 9100, decision: "4801" } : i === 1 ? { ...item, state: "submitted" } : i === 2 ? { ...item, state: "missed" } : item));
+    const items = view().items.map((item, i) => (i === 0 ? { ...item, state: "judged", accepted: true, right: 12, of: 12, judges: "accept", confidenceBps: 9100, decision: "4801" } : i === 1 ? { ...item, state: "submitted" } : i === 2 ? { ...item, state: "missed" } : item));
     expect(await status(MAINNET, view({ items }))).toEqual([
       `Sitting ${SITTING} for agent 501, class code: open until 2100-01-01T02:00:00Z`,
-      "  Item 0    accepted (12 of 12 hidden cases right, judges 91% sure, decision 4801): Item 0",
+      "  Item 0    accepted (12 of 12 hidden cases right, judges accepted at 91%, decision 4801): Item 0",
       "  Item 1    delivered, waiting to be judged: Item 1",
       "  Item 2    missed: the sitting's time ran out first: Item 2",
       "  Item 3    open: Item 3",
@@ -676,9 +676,18 @@ describe("exam status", () => {
     expect(passed[0]).toBe(`Sitting ${SITTING} for agent 501, class code: passed at 2100-01-01T02:00:00Z`);
     // An item judged before the judges' confidence was kept has none to show.
     expect(passed[5]).toBe("  Item 4    rejected (11 of 12 hidden cases right, decision 4804): Item 4");
-    // An item refused with every hidden case right explains itself: the judges were under the bar.
-    const doubted = judged(5).map((item, i) => (i === 2 ? { ...item, accepted: false, right: 18, of: 18, confidenceBps: 4900, decision: "886" } : item));
-    expect((await status(MAINNET, view({ state: "passed", closedAt: DEADLINE, items: doubted, licence })))[3]).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges 49% sure, decision 886): Item 2");
+    // An item refused with every hidden case right explains itself: the judges' answer, and how sure they were of it.
+    const refusedAs = async (said: Record<string, unknown>, sitting: Record<string, unknown> = {}) => {
+      const items = judged(5).map((item, i) => (i === 2 ? { ...item, accepted: false, right: 18, of: 18, decision: "886", ...said } : item));
+      return (await status(MAINNET, view({ state: "passed", closedAt: DEADLINE, items, licence, ...sitting })))[3];
+    };
+    expect(await refusedAs({ judges: "accept", confidenceBps: 4900 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges accepted at 49%, decision 886): Item 2");
+    expect(await refusedAs({ judges: "refuse", confidenceBps: 9000 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges refused, 90% sure, decision 886): Item 2");
+    // The bar is named when the sitting carries it, and only for an answer to accept that fell under it.
+    expect(await refusedAs({ judges: "accept", confidenceBps: 4900 }, { barBps: 5000 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges accepted at 49%, under the 50% bar, decision 886): Item 2");
+    expect(await refusedAs({ judges: "refuse", confidenceBps: 9000 }, { barBps: 5000 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges refused, 90% sure, decision 886): Item 2");
+    // A host that kept how sure the judges were before it kept their answer reads as it did.
+    expect(await refusedAs({ confidenceBps: 4900 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges 49% sure, decision 886): Item 2");
     expect(passed.at(-1)).toBe("Passed, with 4 of 5 accepted. The licence is valid until 2100-03-02T02:00:00Z, for as long as the agent's id keeps its controller and its build.");
     const failed = await status(MAINNET, view({ state: "failed", closedAt: DEADLINE, items: judged(3) }));
     expect(failed.at(-1)).toBe(`Failed, with 3 of 5 accepted; a pass takes 4. \`${CLI} exam info\` says how long the agent waits before the next sitting.`);

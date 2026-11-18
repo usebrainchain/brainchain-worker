@@ -508,10 +508,22 @@ export async function examSubmit(
   options.log(`Item ${item} delivered (${toBytes(text).byteLength} bytes). The desk judges it next: ${cli(`exam status --sitting ${options.sitting}`)} shows the outcome.`);
 }
 
+/**
+ * What the judges said of an item and how sure they were of it. An answer to accept counts only at the exam's bar
+ * or above, which is named when the sitting carries it. An item judged before the answer was kept has only how sure they were.
+ */
+function judgesSaid(item: Record<string, unknown>, bar: number | undefined): string | undefined {
+  if (typeof item.confidenceBps !== "number") return undefined;
+  const sure = percent(item.confidenceBps);
+  if (item.judges === "refuse") return `judges refused, ${sure} sure`;
+  if (item.judges !== "accept") return `judges ${sure} sure`;
+  return `judges accepted at ${sure}${bar !== undefined && item.confidenceBps < bar ? `, under the ${percent(bar)} bar` : ""}`;
+}
+
 /** One item's line in a sitting's status. */
-function itemLine(item: Record<string, unknown>): string {
+function itemLine(item: Record<string, unknown>, bar?: number): string {
   const cases = typeof item.right === "number" && typeof item.of === "number" ? `${item.right} of ${item.of} hidden cases right` : undefined;
-  const judges = typeof item.confidenceBps === "number" ? `judges ${percent(item.confidenceBps)} sure` : undefined;
+  const judges = judgesSaid(item, bar);
   const decision = typeof item.decision === "string" ? `decision ${printable(item.decision)}` : undefined;
   const detail = [cases, judges, decision].filter(Boolean).join(", ");
   const outcome =
@@ -559,7 +571,7 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
   const agent = isObject(view.agent) && typeof view.agent.id === "string" ? ` for agent ${printable(view.agent.id)}` : "";
   const state = view.state === "open" ? `open until ${date(view.deadline)}` : view.state === "passed" || view.state === "failed" ? `${view.state}${view.closedAt === undefined ? "" : ` at ${date(view.closedAt)}`}` : printable(String(view.state));
   log(`Sitting ${id}${agent}${typeof view.class === "string" ? `, class ${printable(view.class)}` : ""}: ${state}`);
-  for (const item of items) log(itemLine(item));
+  for (const item of items) log(itemLine(item, typeof view.barBps === "number" ? view.barBps : undefined));
   const accepted = `${items.filter((item) => item.accepted === true).length} of ${items.length} accepted`;
   if (view.state === "passed") {
     const licence = isObject(view.licence) && isObject(view.licence.licence) ? view.licence.licence : {};

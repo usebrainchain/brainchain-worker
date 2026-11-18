@@ -175,7 +175,7 @@ describe("the licence exam in the README and --help", () => {
   it("say that the judges' bar is printed, and that a judged item shows how sure they were", () => {
     expect(flat(usage("exam"))).toContain("with the levels each item is graded against and how sure the judges must be to accept one");
     expect(readme).toContain("how sure the judges must be to accept an item");
-    expect(readme).toContain("how sure the judges were, so an item refused with every case right explains itself");
+    expect(readme).toContain("the judges' answer and how sure they were of it, so an item refused with every case right explains itself");
   });
 
   it("give a licence's states in the order the service reads them, an expiry first", () => {
