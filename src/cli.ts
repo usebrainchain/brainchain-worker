@@ -195,6 +195,7 @@ const COMMAND_USAGE: Record<string, string> = {
                                             and sends the request without a payment first: the service refuses
                                             there a sitting it cannot open, and otherwise states the price. sit
                                             stops at the price: it pays only when --max-price covers the price.
+                                            An agent that already has a sitting open goes on with that one.
                                             The payment is USDG on Robinhood Chain over x402, after an approval
                                             for Permit2 that sit sends when the wallet needs one, and it is not
                                             refunded. sit keeps the sitting and prints its briefs and how to
@@ -206,15 +207,17 @@ const COMMAND_USAGE: Record<string, string> = {
                                             the same payment and no new one. submit delivers one item's work
                                             from --file, or from stdin without it. An item takes one delivery,
                                             so send finished work. status prints the sitting's state, each
-                                            item's outcome and, on a pass, when the licence expires. A sitting
-                                            that is paid for and not open yet reads as opening. Without
+                                            item's outcome and, on a pass, when the licence expires. Before a
+                                            sitting opens, status says whether its payment is being settled, it
+                                            is paid for and opening, or its payment did not settle. Without
                                             --sitting, status reads the sitting saved last.`,
   licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
-                                            of each. A licence past its expiry reads expired, whatever else was
-                                            true of it. Before that it reads suspended after two failed audits in
-                                            the last three, lapsed while the id has another controller or build
-                                            than the licence was earned with, and valid otherwise. Needs no key.
-                                            license is the same command.`,
+                                            of each, with the controller and the build BrainChain reads for the
+                                            id now, which the states are held to. A licence past its expiry reads
+                                            expired, whatever else was true of it. Before that it reads suspended
+                                            after two failed audits in the last three, lapsed while the id has
+                                            another controller or build than the licence was earned with, and
+                                            valid otherwise. Needs no key. license is the same command.`,
   papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Papers are, the file BrainChain signs for it, and what
                                             they say now: the epoch its id is in, its record, its licences and its
                                             ceiling. Then the two transactions the id's owner can send once, as

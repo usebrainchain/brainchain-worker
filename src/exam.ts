@@ -178,12 +178,25 @@ function openedSitting(body: Record<string, unknown>): Opened | undefined {
   return { sitting: body.sitting as Hex, deadline: body.deadline, briefs: briefs.map(({ index, title, brief }) => ({ index, title, brief })), open: briefs.filter((b) => b.state === undefined || b.state === "open").map((b) => b.index) };
 }
 
-/** A sitting's briefs again, which the desk shows to the wallet sitting it and to nobody else. */
-async function briefsOf(network: Network, wallet: ExamChain["wallet"], sitting: Hex, fetcher: typeof fetch): Promise<Opened | undefined> {
+/**
+ * Whether the service is speaking of a sitting it holds a payment for and has not opened: `paying` while the payment
+ * settles, `opening` once it is paid, `failed` when the payment did not settle. A sitting that closed without a pass
+ * reads `failed` too, so the payment's own state beside it is what tells the two apart.
+ */
+const beforeOpening = (body: Record<string, unknown>): "paying" | "opening" | "failed" | undefined =>
+  typeof body.payment === "string" && (body.state === "paying" || body.state === "opening" || body.state === "failed") ? body.state : undefined;
+
+/**
+ * What the service says of a sitting when this wallet signs for its briefs, which it shows to the wallet sitting it
+ * and to nobody else: the open sitting, where one that is not open yet stands, or nothing this wallet can use.
+ */
+async function briefsOf(network: Network, wallet: ExamChain["wallet"], sitting: Hex, fetcher: typeof fetch): Promise<{ opened?: Opened; state?: "paying" | "opening" | "failed" }> {
   const at = Math.floor(Date.now() / 1000);
   const signature = await wallet.signMessage({ message: briefsMessage(network.chainId, sitting, at) });
   const { response, body } = await ask(network, `/exams/${sitting}/briefs?at=${at}&signature=${signature}`, fetcher);
-  return response.ok ? openedSitting(body) : undefined;
+  if (response.ok) return { opened: openedSitting(body) };
+  // Until a sitting is open its briefs address answers 409 with where it stands.
+  return response.status === 409 ? { state: beforeOpening(body) } : {};
 }
 
 const failure = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
@@ -248,27 +261,35 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     return current;
   };
 
+  /** A sitting the agent already has that is not open yet: kept, so status and the next sit find it, and said plainly. */
+  const notOpenYet = (sitting: Hex, state: "paying" | "opening", nothing: string): never => {
+    saveSitting(account, network, { ...mine, at: Math.floor(Date.now() / 1000), sitting }, dir);
+    throw new Error(
+      `A sitting for agent ${agentId} is already ${state === "paying" ? "being paid for, and the service is settling its payment" : "paid for, and the service is opening it"}: ${network.service}/exams/${sitting}. ` +
+        `Through the paid route only the request that paid for it reads its briefs, and that request is not kept here. ` +
+        `Once the sitting is open, ${again} reads the briefs with this wallet's signature and goes on with it. ${nothing}`,
+    );
+  };
+
   /**
-   * A sitting the service will not open, which it says before it charges. A refusal that names a sitting is about
-   * one this agent already has: open, it is gone on with; paid for and still opening, it is kept, so status and
-   * the next sit find it. Any other refusal is the service's own words.
+   * A request the service turned away, which it does before it charges. A refusal that names a sitting is about the
+   * one this agent already has: open and sat by this wallet, it is gone on with; paid for and not open yet, it is
+   * kept. Any other refusal, and a sitting this wallet cannot read, is the service's own words. `nothing` says what
+   * this run had not done when it was turned away.
    */
-  const refused = async (status: number, reply: Record<string, unknown>): Promise<Opened> => {
+  const refused = async (status: number, reply: Record<string, unknown>, nothing: string): Promise<Opened> => {
+    if (status === 429) throw new Error(`The service has had too many sitting requests from this address in the last minute, so it did not look at this one. ${nothing} Run ${again} again in a minute.`);
     const said = typeof reply.error === "string" ? printable(reply.error) : `The service answered ${status}.`;
     const charged = /Nothing was charged/.test(said) ? said : `${said} Nothing was charged.`;
-    // A sitting still opening is named in the reply; one already open only by its address in the service's sentence.
-    const paidFor = typeof reply.sitting === "string" && /^0x[0-9a-fA-F]{64}$/.test(reply.sitting) ? reply.sitting : undefined;
-    const named = status === 409 ? ((paidFor ?? /\/exams\/(0x[0-9a-fA-F]{64})(?![0-9a-fA-F])/.exec(said)?.[1])?.toLowerCase() as Hex | undefined) : undefined;
+    const named = status === 409 && typeof reply.sitting === "string" && /^0x[0-9a-fA-F]{64}$/.test(reply.sitting) ? (reply.sitting.toLowerCase() as Hex) : undefined;
     if (named === undefined) throw new Error(charged);
-    const current = await briefsOf(network, chain.wallet, named, fetcher);
-    if (!current && !paidFor) throw new Error(charged);
-    saveSitting(account, network, { ...mine, at: Math.floor(Date.now() / 1000), sitting: named, ...(current ? { deadline: current.deadline, briefs: current.briefs } : {}) }, dir);
-    if (current) return goOn(current);
-    throw new Error(
-      `A sitting for agent ${agentId} is already paid for, and the service is opening it: ${network.service}/exams/${named}. ` +
-        `Through the paid route only the request that paid for it reads its briefs, and that request is not kept here. ` +
-        `Once the sitting is open, ${again} reads the briefs with this wallet's signature and goes on with it. Nothing was charged.`,
-    );
+    const { opened, state } = await briefsOf(network, chain.wallet, named, fetcher);
+    if (opened) {
+      saveSitting(account, network, { ...mine, at: Math.floor(Date.now() / 1000), sitting: named, deadline: opened.deadline, briefs: opened.briefs }, dir);
+      return goOn(opened);
+    }
+    if (state === "paying" || state === "opening") return notOpenYet(named, state, "Nothing was charged.");
+    throw new Error(charged);
   };
 
   /** Reads the service's answer to a paid request and, while it is still drawing the items, sends the same request again. */
@@ -296,7 +317,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       // The service says so itself when it refuses before it charges, and it answers 400 and 402 before it settles anything.
       if (/Nothing was charged/.test(said) || answer.status === 400 || answer.status === 402) {
         forgetSitting(account, network, mine, dir);
-        if (/Nothing was charged/.test(said)) return refused(answer.status, reply);
+        if (/Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
         throw new Error(`${said || `The desk answered ${answer.status}.`} Nothing was charged.`);
       }
       // 409 with the sitting named is the desk still taking the payment. Without one, the desk holds no sitting for the
@@ -324,10 +345,11 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       log("Sending the same request with the same payment again; nothing more is paid...");
       return follow(saved.request, saved.at, await send(saved.request));
     }
-    // A sitting still inside its time is gone on with: the desk opens no second one for the agent while it is.
+    // A sitting still inside its time is gone on with, and one not open yet is waited for: the service opens no second one for the agent meanwhile.
     if (saved?.sitting && (saved.deadline === undefined || saved.deadline > Date.now() / 1000)) {
-      const current = await briefsOf(network, chain.wallet, saved.sitting, fetcher);
-      if (current) return goOn(current);
+      const { opened, state } = await briefsOf(network, chain.wallet, saved.sitting, fetcher);
+      if (opened) return goOn(opened);
+      if (state === "paying" || state === "opening") return notOpenYet(saved.sitting, state, "Nothing was approved or paid.");
     }
 
     const holds = await chain.holdsAgent(BigInt(agentId));
@@ -345,10 +367,10 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     const signature = await chain.wallet.signMessage({ message: sittingMessage(network.chainId, agent, options.class, at) });
     const body = JSON.stringify({ agent, class: options.class, wallet: account, at, signature });
     // The request goes first with no payment. The service refuses a sitting it cannot open there, before the wallet
-    // approves or pays anything, and otherwise answers with its price.
+    // approves or pays anything. Its price in answer always means it would open the sitting.
     const asked = await ask(network, "/x402/exams", fetcher, { method: "POST", headers: { "content-type": "application/json" }, body });
     if (asked.response.status === 404) throw new Error(closed(network));
-    if (asked.response.status !== 402) return refused(asked.response.status, asked.body);
+    if (asked.response.status !== 402) return refused(asked.response.status, asked.body, "Nothing was approved or paid.");
     const price = offeredPrice(network, asked.response);
     if (price === undefined) {
       throw new Error(`The BrainChain service at ${hostOf(network)} offers no sitting for ${symbol} on ${parent.name} paid to ${network.exitDesk}, the only payment this release of brainchain-worker signs. Nothing was approved or paid.`);
@@ -357,7 +379,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     for (const rule of rules) log(`  ${rule}`);
     if (holds === undefined) log(`  This release names no ERC-8004 registry on ${parent.name}, so whether ${account} holds agent ${agentId} is left to the service, which checks before it charges.`);
     if (options.maxPrice !== undefined && price > options.maxPrice) throw new Error(`A sitting costs ${usdg(price)}, above --max-price ${formatUnits(options.maxPrice, 6)}. Nothing was approved or paid.`);
-    if (options.maxPrice === undefined && !dry) return void log(`Nothing was approved or paid. To sit, run this again with --max-price ${formatUnits(price, 6)}.`);
+    if (options.maxPrice === undefined && !dry) return void log(`The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price ${formatUnits(price, 6)}.`);
 
     let funds: Awaited<ReturnType<ExamChain["funds"]>>;
     try {
@@ -406,7 +428,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     // No payment left this machine: the payment could not be signed, or the service now refuses the request it had quoted.
     if (answer instanceof Error) throw new Error(`The payment could not be prepared: ${reason(answer).replace(/^Failed to create payment payload: /, "").replace(/\.$/, "")}. Nothing was paid.`);
     const turned: unknown = await answer.json().catch(() => undefined);
-    return refused(answer.status, isObject(turned) ? turned : {});
+    return refused(answer.status, isObject(turned) ? turned : {}, "Nothing was paid.");
   };
 
   const opened = await sitting();
@@ -517,10 +539,11 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
     id = saved.sitting;
   }
   const view = await read(network, `/exams/${id}`, fetcher, `The BrainChain service at ${hostOf(network)} has no sitting ${id}.`);
-  // Paid for, with its items still to be drawn: the service answers for it from the moment it holds the payment.
-  if (view.state === "opening") {
-    if (view.payment === "failed") return log(`Sitting ${id}: its payment did not go through, so nothing was charged and no sitting opens from it.`);
-    log(`Sitting ${id}: ${view.payment === "unconfirmed" ? "the service is confirming its payment on chain, and opens it once it has" : "paid for, opening"}`);
+  // The service answers for a sitting from the moment it holds its payment, with where it stands until it opens.
+  const unopened = beforeOpening(view);
+  if (unopened) {
+    if (unopened === "failed") return log(`Sitting ${id}: its payment did not settle, so nothing was charged and no sitting opens from it.`);
+    log(`Sitting ${id}: ${unopened === "paying" ? "the service is settling its payment, and opens it once it has" : "paid for, opening"}`);
     if (typeof view.reason === "string" && view.reason.trim()) log(`  Not open yet: ${printable(view.reason)}`);
     const sit = cli(`exam sit --agent-id ${saved?.agentId ?? "<id>"}`);
     return log(
@@ -570,6 +593,13 @@ export async function licences(network: Network, options: { agentId: string; log
   const held = Array.isArray(view.licences) ? view.licences.filter(isObject) : [];
   if (held.length === 0) return log(`Agent ${agentId} on ${parent.name} holds no licence. ${cli("exam info")} says what a sitting takes.`);
   log(`Licences of agent ${agentId} on ${parent.name}`);
+  // The epoch each state below is held to. A service that does not send it is left unquoted.
+  if (isObject(view.epoch)) {
+    const build = typeof view.epoch.build === "string" && view.epoch.build ? JSON.stringify(printable(view.epoch.build)) : "none declared";
+    log(`  Held to the id as BrainChain reads it now: controller ${printable(String(view.epoch.controller))}, build ${build}`);
+  } else if (view.epoch === null) {
+    log("  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
+  }
   for (const entry of held) log(`  ${licenceLine(entry)}`);
 }
 
@@ -613,6 +643,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
       `    cast send ${registry} "setAgentURI(uint256,string)" ${agentId} "${url}" --rpc-url ${rpc} --interactive`,
       "",
       "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
+      "  A build that starts with house: is read without that prefix.",
       "  A licence stands for the build declared when its sitting opened, so declare it before sitting: a change of build lapses the licence.",
       `    cast send ${registry} "setMetadata(uint256,string,bytes)" ${agentId} build "$(cast from-utf8 '<build>')" --rpc-url ${rpc} --interactive`,
     ].join("\n"),

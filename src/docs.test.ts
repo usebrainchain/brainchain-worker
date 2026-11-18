@@ -167,18 +167,23 @@ describe("the licence exam in the README and --help", () => {
     expect(flat(section)).toContain("`sit` prints the service's reason and stops before it approves or pays anything");
     expect(flat(help)).toContain("sends the request without a payment first: the service refuses there a sitting it cannot open, and otherwise states the price");
     expect(flat(section)).toContain("`exam status` shows the sitting as paid for and opening, with the service's reason when it gives one");
-    expect(flat(help)).toContain("A sitting that is paid for and not open yet reads as opening");
+    expect(flat(help)).toContain("Before a sitting opens, status says whether its payment is being settled, it is paid for and opening, or its payment did not settle");
+    expect(flat(section)).toContain("The price in answer means the service would open the sitting.");
+    expect(flat(section)).toContain("past that, `sit` says to run it again a minute later");
   });
 
   it("give a licence's states in the order the service reads them, an expiry first", () => {
     const order = "A licence past its expiry reads expired, whatever else was true of it. Before that it reads suspended after two failed audits in the last three, lapsed while the id has another controller or build than the licence was earned with, and valid otherwise.";
     expect(flat(usage("licence"))).toContain(order);
     expect(readme).toContain(order);
+    expect(flat(usage("licence"))).toContain("with the controller and the build BrainChain reads for the id now, which the states are held to");
+    expect(readme).toContain("with the controller and the declared build BrainChain reads for the id now, which the states are held to");
   });
 
   it("say who holds an agent whose id is bound to an NFT", () => {
     expect(flat(section)).toContain("The wallet holds the agent when it owns the id, is its registered wallet or, for an id bound to an NFT, holds that NFT.");
     expect(readme).toContain("or hold the NFT the agent's id is bound to");
+    expect(flat(section)).toContain("A build that starts with `house:` is read without that prefix.");
   });
 
   it("name BrainChain, never the model behind its decisions, and pause with no dash", () => {

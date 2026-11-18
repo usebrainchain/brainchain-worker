@@ -190,7 +190,7 @@ describe("exam sit", () => {
     expect(lines).toEqual([
       `A sitting for agent 501 in class code costs 5 USDG on Robinhood Chain, paid by ${wallet.address} over x402.`,
       ...RULES,
-      "Nothing was approved or paid. To sit, run this again with --max-price 5.",
+      "The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.",
     ]);
     // The price came with the answer to the request itself, sent once with the wallet's signature and no payment.
     expect(desk.unpaid).toHaveLength(1);
@@ -318,18 +318,24 @@ describe("exam sit", () => {
   it("keeps a sitting the service says is already paid for and opening, in place of paying for a second", async () => {
     const other: Hex = `0x${"0d".repeat(32)}`;
     const refusal = () => json({ error: "A sitting for agent 501 is already paid for and being opened. Send the request that paid for it again to read it. Nothing was charged.", sitting: other }, 409);
-    const told =
+    const told = (nothing: string) =>
       `A sitting for agent 501 is already paid for, and the service is opening it: ${MAINNET.service}/exams/${other}. Through the paid route only the request that paid for it reads its briefs, and that request is not kept here. ` +
-      `Once the sitting is open, \`${CLI} exam sit --agent-id 501\` reads the briefs with this wallet's signature and goes on with it. Nothing was charged.`;
-    // Told on the first request, as a worker whose folder was lost is.
+      `Once the sitting is open, \`${CLI} exam sit --agent-id 501\` reads the briefs with this wallet's signature and goes on with it. ${nothing}`;
+    // Until the sitting is open its briefs address answers 409 with where it stands.
+    const drawing = "The sitting is paid for and its items are being drawn. Send the request that paid for it again to read it; it is not charged twice.";
     let open = false;
-    const desk = service(MAINNET, { refuse: refusal, routes: { [`GET /exams/${other}/briefs`]: () => (open ? json({ ...view({ sitting: other }), briefs }) : json({ error: "No sitting with that id." }, 404)) } });
+    const routes = { [`GET /exams/${other}/briefs`]: () => (open ? json({ ...view({ sitting: other }), briefs }) : json({ error: drawing, sitting: other, state: "opening", payment: "paid", message: drawing }, 409)) };
+    // Told on the first request, as a worker whose folder was lost is.
+    const desk = service(MAINNET, { refuse: refusal, routes });
     const chain = chainFor({ usdg: 5_000_000n, allowance: 0n, eth: 10n ** 15n });
     const first = sitting(MAINNET, desk.fetcher, chain, { maxPrice: 5_000_000n });
-    await expect(first.run()).rejects.toThrow(told);
+    await expect(first.run()).rejects.toThrow(told("Nothing was charged."));
     expect(desk.seen).toEqual([]);
     for (const call of [chain.funds, chain.approve]) expect(call).not.toHaveBeenCalled();
     expect(first.saved()).toEqual([{ agentId: "501", class: "code", at: expect.any(Number), sitting: other }]);
+    // While it is still opening, the same command says so from the sitting it kept, and sends no request for a new one.
+    await expect(sitting(MAINNET, desk.fetcher, chain, { dir: first.dir, maxPrice: 5_000_000n }).run()).rejects.toThrow(told("Nothing was approved or paid."));
+    expect(desk.unpaid).toHaveLength(1);
     // Once it is open, the same command reads its briefs with the wallet's signature and goes on with it.
     open = true;
     const second = sitting(MAINNET, desk.fetcher, chain, { dir: first.dir });
@@ -337,30 +343,57 @@ describe("exam sit", () => {
     expect(second.lines[0]).toBe(`Agent 501 has sitting ${other} open until 2100-01-01T02:00:00Z, so this goes on with it and pays nothing.`);
     expect(desk.unpaid).toHaveLength(1);
 
-    // Or told only with the payment, when the service answered the first request with its plain offer: the payment is not kept.
-    const late = service(MAINNET, { paid: refusal });
+    // Or told with the payment, when another payment for the agent arrived after the offer: this one is not kept.
+    open = false;
+    const late = service(MAINNET, { paid: refusal, routes });
     const paying = sitting(MAINNET, late.fetcher, chainFor(), { maxPrice: 5_000_000n });
-    await expect(paying.run()).rejects.toThrow(told);
+    await expect(paying.run()).rejects.toThrow(told("Nothing was charged."));
     expect(late.seen).toHaveLength(1);
     expect(paying.saved()).toEqual([{ agentId: "501", class: "code", at: expect.any(Number), sitting: other }]);
+
+    // A payment still being settled reads as that.
+    const settling = service(MAINNET, { refuse: refusal, routes: { [`GET /exams/${other}/briefs`]: () => json({ error: "The payment for this sitting is being settled.", sitting: other, state: "paying", payment: "unconfirmed" }, 409) } });
+    await expect(sitting(MAINNET, settling.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(`A sitting for agent 501 is already being paid for, and the service is settling its payment: ${MAINNET.service}/exams/${other}.`);
   });
 
   it("goes on with a sitting the service says is open, when its briefs can be read with this wallet's signature", async () => {
     const error = `Agent 501 has a sitting open until 2100-01-01 02:00 UTC: ${MAINNET.service}/exams/${SITTING}. Nothing was charged.`;
-    const desk = service(MAINNET, { refuse: () => json({ error }, 409), routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
+    const refusal = () => json({ error, sitting: SITTING }, 409);
+    const desk = service(MAINNET, { refuse: refusal, routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
     const { run, lines, saved } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n });
     await run();
     expect(lines[0]).toBe(`Agent 501 has sitting ${SITTING} open until 2100-01-01T02:00:00Z, so this goes on with it and pays nothing.`);
     expect(saved()).toEqual([expect.objectContaining({ sitting: SITTING, deadline: DEADLINE })]);
     expect(desk.seen).toEqual([]);
     // Another wallet's sitting for the same agent cannot be read, so the service's words stand as they are.
-    const theirs = service(MAINNET, { refuse: () => json({ error }, 409), routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ error: "The signature is not the sitting wallet's signature of the briefs message." }, 403) } });
+    const theirs = service(MAINNET, { refuse: refusal, routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ error: "The signature is not the sitting wallet's signature of the briefs message." }, 403) } });
     const stranger = sitting(MAINNET, theirs.fetcher, chainFor(), { maxPrice: 5_000_000n });
     expect(await stranger.run().catch((e: Error) => e.message)).toBe(error);
     expect(stranger.saved()).toEqual([]);
+    // The sitting is taken from the field the service names it in, never read out of its sentence.
+    const unnamed = service(MAINNET, { refuse: () => json({ error }, 409), routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
+    expect(await sitting(MAINNET, unnamed.fetcher, chainFor(), { maxPrice: 5_000_000n }).run().catch((e: Error) => e.message)).toBe(error);
+    expect(unnamed.read.filter((path) => path.includes("/briefs"))).toEqual([]);
   });
 
-  it("passes on a refusal the desk makes only once it has the payment, in its own words, and keeps nothing of it", async () => {
+  it("says to run it again in a minute when the service has had too many unpaid requests from this address", async () => {
+    const limited = () => json({ error: "Too many requests from this address. Nothing was charged; try again in a minute." }, 429, { "retry-after": "60" });
+    const desk = service(MAINNET, { refuse: limited });
+    const chain = chainFor({ usdg: 5_000_000n, allowance: 0n, eth: 10n ** 15n });
+    const { run, saved } = sitting(MAINNET, desk.fetcher, chain, { maxPrice: 5_000_000n });
+    await expect(run()).rejects.toThrow(
+      `The service has had too many sitting requests from this address in the last minute, so it did not look at this one. Nothing was approved or paid. Run \`${CLI} exam sit --agent-id 501\` again in a minute.`,
+    );
+    for (const call of [chain.funds, chain.approve]) expect(call).not.toHaveBeenCalled();
+    expect(desk.seen).toEqual([]);
+    expect(saved()).toEqual([]);
+    // Turned away again once the price was read and the approval sent: the allowance stays, and nothing was paid.
+    const later = service(MAINNET, { refuse: (earlier) => (earlier === 0 ? undefined : limited()) });
+    await expect(sitting(MAINNET, later.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(/so it did not look at this one\. Nothing was paid\. Run /);
+    expect(later.seen).toEqual([]);
+  });
+
+  it("passes on a refusal that comes with the payment, when something changed after the offer, in the service's words, and keeps nothing of it", async () => {
     for (const [status, error] of [
       [403, `Wallet ${wallet.address} does not hold agent 501: it is neither its controller nor its registered wallet. Nothing was charged.`],
       [409, "Agent 501 holds a code licence until 2100-03-02 00:00 UTC. It may sit again from 2100-02-16 00:00 UTC. Nothing was charged."],
@@ -646,18 +679,19 @@ describe("exam status", () => {
     );
   });
 
-  it("shows a sitting that is paid for and not open yet as opening, with the service's reason, never as unknown", async () => {
-    const opening = (extra: Record<string, unknown> = {}) => ({ sitting: SITTING, state: "opening", payment: "paid", message: "The sitting is paid for and its items are being drawn.", ...extra });
+  it("shows a sitting before it opens by the state the service gives it, never as unknown", async () => {
+    const before = (state: string, payment: string, extra: Record<string, unknown> = {}) => ({ sitting: SITTING, state, payment, message: "The sitting is paid for and its items are being drawn.", ...extra });
     const unkept = `Through the paid route only the request that paid for the sitting reads its briefs. Once it is open, \`${CLI} exam sit --agent-id <id>\` reads them with the signature of the wallet sitting it, and goes on with it.`;
-    expect(await status(MAINNET, opening({ reason: "the pool has no item left to draw" }))).toEqual([`Sitting ${SITTING}: paid for, opening`, "  Not open yet: the pool has no item left to draw", unkept]);
-    expect(await status(MAINNET, opening({ payment: "unconfirmed" }))).toEqual([`Sitting ${SITTING}: the service is confirming its payment on chain, and opens it once it has`, unkept]);
-    // A payment the service gave up is kept beside the ones it took: nothing opens from it.
-    expect(await status(MAINNET, opening({ payment: "failed" }))).toEqual([`Sitting ${SITTING}: its payment did not go through, so nothing was charged and no sitting opens from it.`]);
+    expect(await status(MAINNET, before("opening", "paid", { reason: "the pool has no item left to draw" }))).toEqual([`Sitting ${SITTING}: paid for, opening`, "  Not open yet: the pool has no item left to draw", unkept]);
+    for (const payment of ["paying", "unconfirmed"]) expect(await status(MAINNET, before("paying", payment))).toEqual([`Sitting ${SITTING}: the service is settling its payment, and opens it once it has`, unkept]);
+    expect(await status(MAINNET, before("failed", "failed"))).toEqual([`Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it.`]);
+    // A sitting that closed without a pass reads failed too: it has its items, and no payment state beside it.
+    expect((await status(MAINNET, view({ state: "failed", closedAt: DEADLINE })))[0]).toBe(`Sitting ${SITTING} for agent 501, class code: failed at 2100-01-01T02:00:00Z`);
 
     // The wallet that still keeps the paying request is told to send it again.
     const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
     saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING, request: { body: "{}", header: ["payment-signature", "abc"] } }, dir);
-    expect(await status(MAINNET, opening(), { dir })).toEqual([
+    expect(await status(MAINNET, before("opening", "paid"), { dir })).toEqual([
       `Sitting ${SITTING}: paid for, opening`,
       `Run \`${CLI} exam sit --agent-id 501\` again: it sends the same request with the same payment, and nothing more is paid.`,
     ]);
@@ -679,15 +713,30 @@ describe("licence", () => {
       { class: "prose", state: "suspended", licence: signed({ accepted: 4 }), audits: { passed: 1, failed: 2 } },
       { class: "data", state: "lapsed", licence: signed(), audits: { passed: 0, failed: 0 } },
     ];
-    const desk = service(MAINNET, { routes: { "GET /licences/4663/501": () => json({ agent: { chainId: 4663, id: "501" }, licences: held }) } });
+    const epoch = { id: `0x${"cd".repeat(32)}`, controller: wallet.address, build: "atlas 2.1" };
+    const desk = service(MAINNET, { routes: { "GET /licences/4663/501": () => json({ agent: { chainId: 4663, id: "501" }, epoch, licences: held }) } });
     const lines: string[] = [];
     await licences(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
     expect(lines).toEqual([
       "Licences of agent 501 on Robinhood Chain",
+      `  Held to the id as BrainChain reads it now: controller ${wallet.address}, build "atlas 2.1"`,
       "  code  valid; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 2 passed, 0 failed",
       "  prose  suspended: two failed audits in the last three; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 4 of 5 accepted; audits: 1 passed, 2 failed",
       "  data  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 0 passed, 0 failed",
     ]);
+  });
+
+  it("says what the states are held to when the service reads no epoch or declares no build, and nothing where it sends none", async () => {
+    const held = [{ class: "code", state: "lapsed", licence: signed(), audits: { passed: 0, failed: 0 } }];
+    const second = async (epoch: unknown) => {
+      const lines: string[] = [];
+      const desk = service(MAINNET, { routes: { "GET /licences/4663/501": () => json({ licences: held, ...(epoch === undefined ? {} : { epoch }) }) } });
+      await licences(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
+      return lines[1];
+    };
+    expect(await second({ id: `0x${"cd".repeat(32)}`, controller: wallet.address, build: "" })).toBe(`  Held to the id as BrainChain reads it now: controller ${wallet.address}, build none declared`);
+    expect(await second(null)).toBe("  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
+    expect(await second(undefined)).toMatch(/^ {2}code {2}lapsed: /);
   });
 
   it("says when the agent holds none, and when the exam is not open", async () => {
@@ -736,6 +785,7 @@ describe("papers", () => {
         `    cast send ${MAINNET.identity} "setAgentURI(uint256,string)" 501 "${url}" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
         "",
         "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
+        "  A build that starts with house: is read without that prefix.",
         "  A licence stands for the build declared when its sitting opened, so declare it before sitting: a change of build lapses the licence.",
         `    cast send ${MAINNET.identity} "setMetadata(uint256,string,bytes)" 501 build "$(cast from-utf8 '<build>')" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
       ].join("\n"),

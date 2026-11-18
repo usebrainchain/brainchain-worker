@@ -748,7 +748,7 @@ describe("exam, licence and papers", () => {
     const routes = { "GET /exams": () => json({ price: "5.00 USD a sitting", classes: [{ class: "code", about: "" }], sitting: {} }), "POST /x402/exams": () => json({}, 402, { "payment-required": offer }) };
     const { lines, asked } = await against(routes, ["exam", "sit", "--agent-id", "7"], { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` });
     expect(lines[0]).toMatch(/^A sitting for agent 7 in class code costs 5 test USDG on Robinhood Chain testnet, paid by 0x[0-9a-fA-F]{40} over x402\.$/);
-    expect(lines.at(-1)).toBe("Nothing was approved or paid. To sit, run this again with --max-price 5.");
+    expect(lines.at(-1)).toBe("The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.");
     // The price is the service's answer to the request itself, sent with the wallet's signature and no payment.
     expect(asked.map(({ method, path }) => `${method} ${path}`)).toEqual(["GET /exams", "POST /x402/exams"]);
     expect(JSON.parse(asked[1]!.body)).toMatchObject({ agent: { chainId: 46630, id: "7" }, class: "code", signature: expect.stringMatching(/^0x[0-9a-f]{130}$/) });
