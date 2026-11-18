@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MAINNET, TESTNET } from "./network.js";
-import { fileStore, lock, openStore, privateDir, readWatched, writeWatched } from "./state.js";
+import { fileStore, forgetSitting, lock, openStore, privateDir, readSittings, readWatched, saveSitting, writeWatched, type SavedSitting } from "./state.js";
 
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -267,6 +267,44 @@ describe("writeWatched", () => {
     writeWatched("0xABC", { seen: 7n }, dir());
     expect(fsyncSync).toHaveBeenCalledOnce();
     expect(vi.mocked(fsyncSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(renameSync).mock.invocationCallOrder[0]!);
+  });
+});
+
+describe("saveSitting", () => {
+  const ADDRESS = "0x00000000000000000000000000000000000000C1";
+  const paid: SavedSitting = { agentId: "501", class: "code", at: 1_800_000_000, request: { body: '{"at":1800000000}', header: ["payment-signature", "abc"] } };
+  const open: SavedSitting = { agentId: "501", class: "code", at: 1_800_000_000, sitting: `0x${"5a".repeat(32)}`, deadline: 1_800_007_200, briefs: [{ index: 0, title: "Parse a duration", brief: "Write parse(text)." }] };
+
+  it("keeps one sitting for each agent and class, per wallet and network, in a file only its owner can read", () => {
+    const folder = dir();
+    expect(readSittings(ADDRESS, TESTNET, folder)).toEqual([]);
+    saveSitting(ADDRESS, TESTNET, paid, folder);
+    saveSitting(ADDRESS, TESTNET, { ...paid, agentId: "502" }, folder);
+    // The sitting the desk opened takes the place of the payment that bought it.
+    saveSitting(ADDRESS, TESTNET, open, folder);
+    expect(readSittings(ADDRESS, TESTNET, folder)).toEqual([{ ...paid, agentId: "502" }, open]);
+    expect(readSittings(ADDRESS, MAINNET, folder)).toEqual([]);
+    expect(readdirSync(folder)).toEqual([`${ADDRESS}.testnet.exam.json`]);
+    if (process.platform !== "win32") expect(statSync(join(folder, `${ADDRESS}.testnet.exam.json`)).mode & 0o777).toBe(0o600);
+    forgetSitting(ADDRESS, TESTNET, { agentId: "502", class: "code" }, folder);
+    expect(readSittings(ADDRESS, TESTNET, folder)).toEqual([open]);
+  });
+
+  it("is on disk before it replaces the last file, since a paid request leaves right after", () => {
+    vi.mocked(fsyncSync).mockClear();
+    vi.mocked(renameSync).mockClear();
+    saveSitting(ADDRESS, TESTNET, paid, dir());
+    expect(fsyncSync).toHaveBeenCalledOnce();
+    expect(vi.mocked(fsyncSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(renameSync).mock.invocationCallOrder[0]!);
+  });
+
+  it("reads none from a file that is not a list of sittings, and leaves out an entry that is not one", () => {
+    const folder = dir();
+    const file = join(folder, `${ADDRESS}.testnet.exam.json`);
+    writeFileSync(file, "{not json");
+    expect(readSittings(ADDRESS, TESTNET, folder)).toEqual([]);
+    writeFileSync(file, JSON.stringify([open, { agentId: 501, class: "code", at: 1 }, { ...paid, request: { body: "{}", header: ["only-a-name"] } }]));
+    expect(readSittings(ADDRESS, TESTNET, folder)).toEqual([open]);
   });
 });
 

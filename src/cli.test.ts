@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -62,7 +62,7 @@ describe("bondArgs", () => {
 });
 
 describe("help", () => {
-  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bond", "bridge", "buy-stake", "propose", "proposal", "watch", "credit", "dispute", "appeal", "leave", "withdraw"];
+  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bond", "bridge", "buy-stake", "propose", "proposal", "watch", "credit", "exam", "licence", "papers", "dispute", "appeal", "leave", "withdraw"];
 
   async function printed(argv: string[]): Promise<string> {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -124,12 +124,36 @@ describe("help", () => {
         [["dispute", "x"], `Usage: ${CLI} dispute <task>`],
         [["price"], `Usage: ${CLI} price <USDG>`],
         [["price", "lots"], "The price must be a number"],
+        [["exam"], `Usage: ${CLI} exam info, exam sit --agent-id <id>, exam submit --sitting <id> --item <n> --file <path>, or exam status`],
+        [["exam", "resit"], `Usage: ${CLI} exam info`],
+        [["exam", "info", "--dry"], `exam info has no --dry flag (see ${CLI} exam --help)`],
+        [["exam", "status", "--agent-id", "5"], "exam status has no --agent-id flag"],
+        [["exam", "sit"], "exam sit needs --agent-id: the agent's ERC-8004 id, a whole number"],
+        [["exam", "sit", "--agent-id", "0x5"], '--agent-id is a whole number, the agent\'s ERC-8004 id, not "0x5"'],
+        [["exam", "sit", "--agent-id", "5", "--class", "Code"], "--class is one of the classes"],
+        [["exam", "sit", "--agent-id", "5", "--max-price", "0"], "--max-price is the most the sitting may cost: USDG above zero with at most 6 decimals, such as --max-price 5"],
+        [["exam", "sit", "--agent-id", "5", "--max-price", "5.1234567"], "--max-price is the most the sitting may cost"],
+        [["exam", "sit", "--agent-id", "5", "--format", "json"], "--format and --timeout say how --exec is run, so they need it"],
+        [["exam", "sit", "--agent-id", "5", "--exec", "cat", "--timeout", "0"], "--timeout is the most minutes"],
+        [["exam", "submit", "--item", "1"], "exam submit needs --sitting: the sitting's id, as exam sit printed it"],
+        [["exam", "submit", "--sitting", `0x${"5a".repeat(32)}`, "--item", "12"], "exam submit needs --item: the item's number in the sitting, from 0"],
+        [["exam", "status", "--sitting", "0x12"], "--sitting is the sitting's id as exam sit printed it: 0x and 64 hex characters"],
+        [["licence"], "licence needs --agent-id: the agent's ERC-8004 id, a whole number"],
+        [["license"], "licence needs --agent-id"],
+        [["papers", "--agent-id", "-1"], '--agent-id is a whole number, the agent\'s ERC-8004 id, not "-1"'],
       ];
       for (const [argv, said] of refusals) await expect(main(argv), argv.join(" ")).rejects.toThrow(said);
       await expect(main(["run", "--exec", "cat"])).rejects.toThrow("Set BRAINCHAIN_WORKER_KEY");
+      for (const argv of [["exam", "sit", "--agent-id", "5"], ["exam", "status"]]) await expect(main(argv), argv.join(" ")).rejects.toThrow("Set BRAINCHAIN_WORKER_KEY");
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("takes license for licence, in a command and in its help", async () => {
+    expect(usage("license")).toBe(usage("licence"));
+    for (const argv of [["license", "--help"], ["help", "license"]]) expect(await printed(argv)).toBe(usage("licence"));
+    expect(parse("licence", ["--agent-id", "501"]).values.get("agent-id")).toBe("501");
   });
 
   it("prints only the command's own lines for each command", async () => {
@@ -673,6 +697,72 @@ describe("new-key --file", () => {
       log.mockRestore();
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("exam, licence and papers", () => {
+  const SITTING = `0x${"5a".repeat(32)}`;
+  const service = "https://brain.testnet.usebrainchain.com";
+  const json = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers });
+
+  /** Runs the CLI against a service that answers from `routes`, and returns what it printed and what it was asked. */
+  async function against(routes: Record<string, () => Response>, argv: string[], env: Record<string, string> = {}) {
+    const asked: { method: string; path: string; body: string }[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init);
+      const path = req.url.replace(service, "").split("?")[0]!;
+      asked.push({ method: req.method, path, body: await req.text() });
+      return routes[`${req.method} ${path}`]?.() ?? json({ error: "Not found." }, 404);
+    });
+    for (const name of ["BRAINCHAIN_WORKER_KEY", "BRAINCHAIN_WORKER_KEY_FILE", "BRAINCHAIN_NETWORK", "BRAINCHAIN_RPC_URL", "BRAINCHAIN_SERVICE_URL"]) vi.stubEnv(name, env[name] ?? "");
+    // A home of its own, so nothing here reads or writes the folder a real worker keeps its sittings in.
+    for (const name of ["HOME", "USERPROFILE"]) vi.stubEnv(name, mkdtempSync(path.join(tmpdir(), "brainchain-home-")));
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await main(argv);
+      return { lines: log.mock.calls.map((call) => String(call[0])), asked };
+    } finally {
+      log.mockRestore();
+      vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("read a sitting, an agent's licences and its Papers without a key, so a mistyped one does not stop them", async () => {
+    const env = { BRAINCHAIN_WORKER_KEY: "not-a-key" };
+    const sitting = { sitting: SITTING, agent: { id: "7" }, class: "code", state: "open", deadline: 4_102_452_000, items: [{ index: 0, title: "Parse a duration", state: "open" }] };
+    const status = await against({ [`GET /exams/${SITTING}`]: () => json(sitting) }, ["exam", "status", "--sitting", SITTING.toUpperCase().replace("0X", "0x")], env);
+    expect(status.lines[0]).toBe(`Sitting ${SITTING} for agent 7, class code: open until 2100-01-01T02:00:00Z`);
+    const held = await against({ "GET /licences/46630/7": () => json({ licences: [] }) }, ["license", "--agent-id", "7"], env);
+    expect(held.lines).toEqual([`Agent 7 on Robinhood Chain testnet holds no licence. \`${CLI} exam info\` says what a sitting takes.`]);
+    const file = await against({ "GET /papers/46630/7": () => json({ brainchain: { papers: { epoch: { number: 1, controller: ACCOUNT, build: "" }, licences: [] } } }) }, ["papers", "--agent-id", "7"], env);
+    expect(file.lines[0]).toBe(`Papers of agent 7 on Robinhood Chain testnet: ${service}/papers/46630/7`);
+    const info = await against({ "GET /exams": () => json({ price: "5.00 USD a sitting", classes: [{ class: "code", about: "Small Python functions." }], sitting: {} }) }, ["exam", "info"], env);
+    expect(info.lines.slice(0, 3)).toEqual(["The licence exam on BrainChain testnet", "  Price     5.00 USD a sitting", "  Class     code: Small Python functions."]);
+  });
+
+  it("shows a sitting's price with the worker's key and pays nothing without --max-price", async () => {
+    const offer = Buffer.from(
+      JSON.stringify({ x402Version: 2, accepts: [{ scheme: "exact", network: "eip155:46630", amount: "5000000", asset: TESTNET.deskUsdg.address, payTo: TESTNET.exitDesk, maxTimeoutSeconds: 300 }] }),
+    ).toString("base64");
+    const routes = { "GET /exams": () => json({ price: "5.00 USD a sitting", classes: [{ class: "code", about: "" }], sitting: {} }), "POST /x402/exams": () => json({}, 402, { "payment-required": offer }) };
+    const { lines, asked } = await against(routes, ["exam", "sit", "--agent-id", "7"], { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` });
+    expect(lines[0]).toMatch(/^A sitting for agent 7 in class code costs 5 test USDG on Robinhood Chain testnet, paid by 0x[0-9a-fA-F]{40} over x402\.$/);
+    expect(lines.at(-1)).toBe("Nothing was signed or paid. To sit, run this again with --max-price 5.");
+    expect(asked.map(({ method, path, body }) => `${method} ${path} ${body}`)).toEqual(["GET /exams ", "POST /x402/exams {}"]);
+  });
+
+  it("delivers an item's work from --file as it is, and refuses a file that is not text", async () => {
+    const folder = mkdtempSync(path.join(tmpdir(), "brainchain-work-"));
+    const work = path.join(folder, "item0.md");
+    writeFileSync(work, "```python\ndef f(x):\n    return x\n```\n");
+    const env = { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` };
+    const { lines, asked } = await against({ [`POST /exams/${SITTING}/items/0`]: () => json({ state: "submitted" }, 202) }, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", work], env);
+    expect(lines).toEqual([`Item 0 delivered (37 bytes). The desk judges it next: \`${CLI} exam status --sitting ${SITTING}\` shows the outcome.`]);
+    expect((JSON.parse(asked[0]!.body) as { text: string }).text).toBe("```python\ndef f(x):\n    return x\n```\n");
+    writeFileSync(work, Buffer.from([0xff, 0xfe, 0x00]));
+    await expect(against({}, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", work], env)).rejects.toThrow("The work is not valid UTF-8. Nothing was sent.");
+    await expect(against({}, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", path.join(folder, "none.md")], env)).rejects.toThrow(/none\.md, which could not be read \(ENOENT\)$/);
   });
 });
 

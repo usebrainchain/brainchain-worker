@@ -74,6 +74,11 @@ export interface Network {
   };
   /** The desk `exit` pays on BrainChain. Pinned here, since the service only names it and a transfer to the wrong address is gone. */
   exitDesk: Address;
+  /**
+   * The USDG the desk takes over x402 on the parent chain, at the same address: how a sitting of the licence exam
+   * is paid. A payment in it moves through Permit2. Pinned here, so the worker signs for no other token.
+   */
+  deskUsdg: { address: Address; symbol: string };
   /** Earlier sets. A wallet can still hold stake on their contracts and bonds on their boards' tasks, and task ids restart with each board. */
   retired?: { release: string; taskBoard: Address; staking: Address }[];
   /** The ERC-8004 identity registry on the parent chain, where `join --agent-id` checks the wallet holds the agent; mainnet only. */
@@ -146,6 +151,7 @@ export const TESTNET: Network = {
     gas: "Get Robinhood Chain testnet ETH at https://faucet.testnet.chain.robinhood.com",
   },
   exitDesk: "0xf848984c8A0D9E49Cc9C97380C62b34C6f3b97D1",
+  deskUsdg: { address: "0x1eC185467cA2D5d1c24f0EdCB91301Bca4d0a787", symbol: "test USDG" },
   contracts: {
     taskBoard: "0x7A7cC5D35A642CCc268C7B263fF800bc7eBD52A4",
     staking: "0x6aFC3EFB49CF9b14C2F7c6C4f6C0bb3eF0125e2b",
@@ -219,6 +225,7 @@ export const MAINNET: Network = {
     payment: { chainId: 8453, name: "Base", rpc: "https://mainnet.base.org", usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", price: 10_000n },
   },
   exitDesk: "0x97D558417c3D61f1074422AD843e1Db1E565b952",
+  deskUsdg: { address: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", symbol: "USDG" },
   retired: [
     // Its staking and bonds hold the BRAIN from before the move.
     { release: "3.5.0", taskBoard: "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211", staking: "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F" },

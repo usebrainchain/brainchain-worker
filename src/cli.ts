@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline/promises";
 import { verifyDecision } from "brainchain-verify";
@@ -19,9 +20,10 @@ import { buildCall, caseURI, createProposals, proposal, propose } from "./propos
 import { relayPrice } from "./relay.js";
 import { deliveries, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
 import { openStore, privateDir, readStakeMoves, readWatched, saveStakeMove, stateDir, writeWatched } from "./state.js";
-import { clearKeyFromEnvironment, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
+import { clearKeyFromEnvironment, expandHome, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
+import { createExamChain, examInfo, examSit, examStatus, examSubmit, licences, papers } from "./exam.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { CLI, cli } from "./invoked.js";
 import { createWork, execProblems, execRisks, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
@@ -185,6 +187,33 @@ const COMMAND_USAGE: Record<string, string> = {
                                             key and sends it. The line opens once the worker is proven on the
                                             board. --premium is the most the sponsor may charge per 30 days, in
                                             basis points (default 0, at most 200). Mainnet only.`,
+  exam: `  brainchain-worker exam info | exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--exec "<command>"] [--dry]
+                            | exam submit --sitting <id> --item <n> [--file <path>] | exam status [--sitting <id>]
+                                            BrainChain's licence exam, for an ERC-8004 agent this wallet holds.
+                                            info prints what a sitting is and costs. sit checks that the wallet
+                                            holds the agent's id, reads the price and stops there: it pays only
+                                            when --max-price covers the price. The payment is USDG on Robinhood
+                                            Chain over x402, after an approval for Permit2 that sit sends when
+                                            the wallet needs one, and it is not refunded. sit keeps the sitting
+                                            and prints its briefs and how to deliver them. With --exec it runs
+                                            the command once on each item, as run does on a task, and delivers
+                                            what it prints; --format and --timeout are run's. --dry does
+                                            everything short of signing and paying. A sitting that is paid for
+                                            and not open yet is asked for by the same sit command, with the same
+                                            payment and no new one. submit delivers one item's work from --file,
+                                            or from stdin without it. An item takes one delivery, so send
+                                            finished work. status prints the sitting's state, each item's
+                                            outcome and, on a pass, when the licence expires; without --sitting,
+                                            the sitting saved last.`,
+  licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
+                                            of each: valid, expired, suspended after two failed audits in the last
+                                            three, or lapsed because the id has another controller or build than
+                                            the licence was earned with. Needs no key. license is the same command.`,
+  papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Papers are, the file BrainChain signs for it, and what
+                                            they say now: the epoch its id is in, its record, its licences and its
+                                            ceiling. Then the two transactions the id's owner can send once, as
+                                            commands to copy: one points the id's URI at its Papers, and one
+                                            declares the build the agent runs. papers sends neither. Needs no key.`,
   dispute: `  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
                                             window. Jev rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
@@ -214,6 +243,9 @@ const EXAMPLES: Record<string, string> = {
   proposal: "brainchain-worker proposal 2",
   watch: "brainchain-worker watch --once",
   credit: "BRAINCHAIN_NETWORK=mainnet brainchain-worker credit --agent-id 501",
+  exam: "BRAINCHAIN_NETWORK=mainnet brainchain-worker exam sit --agent-id 501 --dry",
+  licence: "BRAINCHAIN_NETWORK=mainnet brainchain-worker licence --agent-id 501",
+  papers: "BRAINCHAIN_NETWORK=mainnet brainchain-worker papers --agent-id 501",
   dispute: "brainchain-worker dispute 12",
   appeal: "brainchain-worker appeal 12",
   leave: "brainchain-worker leave",
@@ -246,7 +278,8 @@ The command sees the worker's environment without any BRAINCHAIN_ variable, plus
 run restarts itself in place at start on Node.js 22.15 or later, so its own environment holds no key either.
 It runs as your user, so it can reach what your user can: see "Your command" in the README.
 Unfinished work is kept in ~/.config/brainchain-worker/<address>.<network>.json across restarts,
-and one run at a time works for each address on each network.
+and one run at a time works for each address on each network. A sitting of the licence exam is kept
+beside it, in <address>.<network>.exam.json.
 
 Docs: https://docs.usebrainchain.com/run-a-worker`;
 
@@ -272,12 +305,15 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   "buy-stake": { with: false, dry: true, yes: true },
   watch: { veto: true, once: true },
   credit: { "agent-id": false, premium: false },
+  exam: { "agent-id": false, class: false, "max-price": false, exec: false, format: false, timeout: false, dry: true, sitting: false, item: false, file: false },
+  licence: { "agent-id": false },
+  papers: { "agent-id": false },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true, yes: true },
   proposal: {},
   dispute: {},
   appeal: {},
 };
-const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1, bond: 2 };
+const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1, bond: 2, exam: 1 };
 
 /** A command's flags; a name from argv can match what every object inherits, such as constructor. */
 const flagsOf = (command: string) => (Object.hasOwn(FLAGS, command) ? FLAGS[command] : undefined);
@@ -327,7 +363,13 @@ export function asksHelp(command: string, args: string[]): boolean {
 
 /** One command's usage lines, or the whole text for anything else. A name from argv can match what every object inherits, such as constructor. */
 export function usage(command: string | undefined): string {
-  return command !== undefined && Object.hasOwn(COMMAND_USAGE, command) ? `Usage:\n${COMMAND_USAGE[command]}\n\nExample: ${EXAMPLES[command]}` : USAGE;
+  const name = named(command);
+  return name !== undefined && Object.hasOwn(COMMAND_USAGE, name) ? `Usage:\n${COMMAND_USAGE[name]}\n\nExample: ${EXAMPLES[name]}` : USAGE;
+}
+
+/** `license` is `licence` in the other spelling. */
+function named<T extends string | undefined>(command: T): T | "licence" {
+  return command === "license" ? "licence" : command;
 }
 
 interface Signer {
@@ -749,6 +791,98 @@ async function bondCommand(network: Network, positional: string[], yes: boolean)
   return bond(network, config, chain, args.task, { amount: args.amount, yes, ...terminal(), log: console.log });
 }
 
+/** The flags each part of `exam` takes: one parser reads them all, so a flag that belongs to another part is refused here. */
+const EXAM_FLAGS: Record<string, string[]> = {
+  info: [],
+  sit: ["agent-id", "class", "max-price", "exec", "format", "timeout", "dry"],
+  submit: ["sitting", "item", "file"],
+  status: ["sitting"],
+};
+
+/** An agent's ERC-8004 id from --agent-id, as the service takes it. */
+function agentIdOf(values: Map<string, string>, command: string): string {
+  const agentId = values.get("agent-id");
+  if (agentId === undefined) throw new UsageError(`${command} needs --agent-id: the agent's ERC-8004 id, a whole number`);
+  if (!/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError(`--agent-id is a whole number, the agent's ERC-8004 id, not "${agentId}"`);
+  return agentId;
+}
+
+function sittingOf(values: Map<string, string>): Hex | undefined {
+  const sitting = values.get("sitting");
+  if (sitting !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(sitting)) throw new UsageError("--sitting is the sitting's id as exam sit printed it: 0x and 64 hex characters");
+  return sitting?.toLowerCase() as Hex | undefined;
+}
+
+/** One item's work, from --file or from stdin when it is piped in, as the text it is. */
+async function workText(file: string | undefined): Promise<string> {
+  let bytes: Buffer;
+  if (file !== undefined) {
+    try {
+      bytes = readFileSync(expandHome(file));
+    } catch (error) {
+      throw new Error(`--file names ${expandHome(file)}, which could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
+    }
+  } else {
+    if (process.stdin.isTTY) throw new UsageError(`exam submit reads the work from --file <path>, or from stdin when it is piped in`);
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    bytes = Buffer.concat(chunks);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("The work is not valid UTF-8. Nothing was sent.");
+  }
+}
+
+async function examCommand(network: Network, action: string | undefined, values: Map<string, string>, switches: Set<string>): Promise<void> {
+  const takes = action !== undefined && Object.hasOwn(EXAM_FLAGS, action) ? EXAM_FLAGS[action] : undefined;
+  if (takes === undefined) throw new UsageError(`Usage: ${CLI} exam info, exam sit --agent-id <id>, exam submit --sitting <id> --item <n> --file <path>, or exam status`);
+  const extra = [...values.keys(), ...switches].find((flag) => !takes.includes(flag));
+  if (extra !== undefined) throw new UsageError(`exam ${action} has no --${extra} flag (see ${CLI} exam --help)`);
+  const log = (line: string) => console.log(line);
+  if (action === "info") return examInfo(network, { log });
+  if (action === "status") {
+    const sitting = sittingOf(values);
+    // Reading a sitting needs no key; only finding the one saved last needs to know whose it is.
+    return examStatus(network, { ...(sitting ? { sitting } : { account: signer().account.address }), log });
+  }
+  if (action === "submit") {
+    const sitting = sittingOf(values);
+    if (sitting === undefined) throw new UsageError("exam submit needs --sitting: the sitting's id, as exam sit printed it");
+    const item = values.get("item");
+    if (item === undefined || !/^\d$/.test(item)) throw new UsageError("exam submit needs --item: the item's number in the sitting, from 0");
+    const text = await workText(values.get("file"));
+    const { key, account } = signer();
+    return examSubmit(network, account, { sitting, item: Number(item), text, secrets: [key, key.slice(2)], log });
+  }
+  const agentId = agentIdOf(values, "exam sit");
+  const sat = values.get("class") ?? "code";
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(sat)) throw new UsageError(`--class is one of the classes ${cli("exam info")} lists, such as code`);
+  const max = values.get("max-price");
+  if (max !== undefined && (!/^\d{1,6}(\.\d{1,6})?$/.test(max) || Number(max) <= 0)) throw new UsageError("--max-price is the most the sitting may cost: USDG above zero with at most 6 decimals, such as --max-price 5");
+  if (!values.has("exec") && (values.has("format") || values.has("timeout"))) throw new UsageError("--format and --timeout say how --exec is run, so they need it");
+  const flags = values.has("exec") ? runFlags(values) : undefined;
+  const { key, account } = signer();
+  // Before anything is paid: the sitting is saved here, and a folder this user cannot write to would lose it.
+  privateDir(stateDir(), log);
+  if (flags) {
+    clearKeyFromEnvironment(key, log);
+    for (const problem of execProblems(flags.exec)) log(`warning: ${problem}, so --exec will fail on the first item`);
+  }
+  return examSit(network, createExamChain(network, account), {
+    agentId,
+    class: sat,
+    ...(max === undefined ? {} : { maxPrice: parseUnits(max, 6) }),
+    ...(flags ? { command: shellCommand(flags.exec) } : {}),
+    format: flags?.format ?? "prompt",
+    timeoutMs: (flags?.minutes ?? 20) * 60_000,
+    secrets: [key, key.slice(2)],
+    dry: switches.has("dry"),
+    log,
+  });
+}
+
 /** Where watch keeps its place: a key's place counts toward its watchtower mark, so each key has its own, apart from runs without one. */
 export const watchPlace = (log: Address, key: Address | undefined) => (key === undefined ? log : `${log}.${key}`);
 
@@ -779,7 +913,8 @@ export function watching(network: Network, address: Address | undefined, veto: b
 }
 
 export async function main(argv: string[]): Promise<void> {
-  const [command, ...rest] = argv;
+  const [given, ...rest] = argv;
+  const command = named(given);
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
     console.log(usage(rest[0]));
     return;
@@ -908,6 +1043,9 @@ export async function main(argv: string[]): Promise<void> {
     if (!/^\d{1,3}$/.test(premium) || Number(premium) > 200) throw new UsageError("--premium is in basis points per 30 days, from 0 to 200 (Priors' cap)");
     return credit(network, createCreditChain(network, signer().account), { agentId: BigInt(agentId), premiumBps: BigInt(premium), log: console.log });
   }
+  if (command === "exam") return examCommand(network, positional[0], values, switches);
+  if (command === "licence") return licences(network, { agentId: agentIdOf(values, command), log: console.log });
+  if (command === "papers") return papers(network, { agentId: agentIdOf(values, command), log: console.log });
   if (command === "watch") {
     const veto = switches.has("veto");
     const once = switches.has("once");

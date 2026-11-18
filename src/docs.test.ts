@@ -144,6 +144,28 @@ describe("buy-stake in the README, --help and the skill", () => {
   });
 });
 
+describe("the licence exam in the README and --help", () => {
+  const section = readme.split("\n## Licence exam\n")[1]!.split("\n## ")[0]!;
+
+  it("say that sit pays only when --max-price covers the price, and that a sitting is not refunded", () => {
+    expect(flat(section)).toContain("`exam sit` pays only when `--max-price` covers the price it reads from the service");
+    expect(flat(help)).toContain("it pays only when --max-price covers the price");
+    expect(flat(section)).toContain("A sitting is not refunded, whatever its outcome");
+    expect(flat(help)).toContain("and it is not refunded");
+  });
+
+  it("say that an item takes one delivery, and that a paid sitting is asked for again with the same payment", () => {
+    for (const text of [section, help]) expect(flat(text)).toContain("An item takes one delivery, so send finished work");
+    expect(flat(section)).toContain("the next `sit` for the same agent sends the same request with the same payment, which the service does not charge twice");
+    expect(flat(help)).toContain("is asked for by the same sit command, with the same payment and no new one");
+  });
+
+  it("name BrainChain, never the model behind its decisions, and pause with no dash", () => {
+    for (const text of [section, usage("exam"), usage("licence"), usage("papers")]) expect(text).not.toMatch(/\bJev\b|—/);
+    for (const row of readme.split("\n").filter((line) => /^\| `(exam|licence|papers) /.test(line))) expect(row).not.toMatch(/\bJev\b|—/);
+  });
+});
+
 describe("native Windows in the README", () => {
   it("says the worker cannot find or stop what a command leaves running there", () => {
     expect(flat(readme)).toContain("Native Windows has no process groups, so anything it left running there keeps running");

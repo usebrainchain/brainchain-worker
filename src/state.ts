@@ -149,6 +149,72 @@ function writeAtomic(file: string, text: string): void {
   renameSync(temp, file);
 }
 
+/** A sitting of the licence exam this wallet opened for one of its agents. */
+export interface SavedSitting {
+  agentId: string;
+  class: string;
+  /** Wall-clock seconds when the sitting was paid for. */
+  at: number;
+  /**
+   * The request and the payment header as they were sent, kept until the desk hands over the briefs: sent again,
+   * the desk answers them from the sitting they bought and never charges them twice.
+   */
+  request?: { body: string; header: [string, string] };
+  /** Known once the desk has answered. */
+  sitting?: Hex;
+  deadline?: number;
+  briefs?: { index: number; title: string; brief: string }[];
+}
+
+function isSitting(value: unknown): value is SavedSitting {
+  if (!isObject(value) || typeof value.agentId !== "string" || typeof value.class !== "string" || !isCount(value.at)) return false;
+  const { request, sitting, deadline, briefs } = value;
+  if (request !== undefined && !(isObject(request) && typeof request.body === "string" && Array.isArray(request.header) && request.header.length === 2 && request.header.every((part) => typeof part === "string"))) return false;
+  if (sitting !== undefined && !isHash(sitting)) return false;
+  if (deadline !== undefined && !isCount(deadline)) return false;
+  return briefs === undefined || (Array.isArray(briefs) && briefs.every((b) => isObject(b) && isCount(b.index) && typeof b.title === "string" && typeof b.brief === "string"));
+}
+
+const sittingsFile = (address: string, network: Network, dir: string) => join(dir, `${address}.${network.id}.exam.json`);
+
+/** The sittings a wallet has opened on one network, one for each agent and class; none when there is no file or it cannot be read. */
+export function readSittings(address: string, network: Network, dir = stateDir()): SavedSitting[] {
+  try {
+    const value: unknown = JSON.parse(readFileSync(sittingsFile(address, network, dir), "utf8"));
+    return Array.isArray(value) ? value.filter(isSitting) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSittings(address: string, network: Network, sittings: SavedSitting[], dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = sittingsFile(address, network, dir);
+  const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  const fd = openSync(temp, "w", 0o600);
+  try {
+    writeFileSync(fd, JSON.stringify(sittings));
+    // On disk before a paid request leaves, so a payment that was sent and never answered is found by the next run.
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temp, file);
+}
+
+const otherSittings = (address: string, network: Network, { agentId, class: sat }: Pick<SavedSitting, "agentId" | "class">, dir: string) =>
+  readSittings(address, network, dir).filter((saved) => saved.agentId !== agentId || saved.class !== sat);
+
+/** Keeps a sitting in place of the one saved for its agent and class. */
+export function saveSitting(address: string, network: Network, sitting: SavedSitting, dir = stateDir()): void {
+  writeSittings(address, network, [...otherSittings(address, network, sitting, dir), sitting], dir);
+}
+
+/** Drops the sitting saved for an agent and class: one the desk never charged for. */
+export function forgetSitting(address: string, network: Network, sitting: Pick<SavedSitting, "agentId" | "class">, dir = stateDir()): void {
+  writeSittings(address, network, otherSittings(address, network, sitting, dir), dir);
+}
+
 const empty = (board: string): State => ({ board: board.toLowerCase(), tasks: {}, done: [] });
 
 export function memoryStore(board = ""): Store {
