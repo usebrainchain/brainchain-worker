@@ -384,6 +384,9 @@ const identityAbi = parseAbi([
   "function ownerOf(uint256 tokenId) view returns (address)",
   "function getAgentWallet(uint256 agentId) view returns (address)",
 ]);
+const adapterAbi = parseAbi(["struct Binding { uint8 standard; address tokenContract; uint256 tokenId; }", "function bindingOf(uint256 agentId) view returns (Binding)"]);
+/** The adapter's code for ERC-721, the one standard whose token has a single holder. */
+const ERC721 = 0;
 
 export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
   const chain = chainOf(network);
@@ -543,8 +546,11 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       return sets.flatMap((s, i) => (stakes[i]!.staked > 0n || stakes[i]!.unstaking > 0n ? [{ ...s, w: stakes[i]! }] : []));
     },
     /**
-     * Whether this wallet owns the ERC-8004 agent `agentId` on the parent chain or is
-     * its registered wallet; undefined when the registry could not be read.
+     * Whether this wallet holds the ERC-8004 agent `agentId` on the parent chain, as the service reads it: it owns
+     * the id or is its registered wallet. An id a binding adapter owns is bound to an NFT, and only that NFT's
+     * holder holds it: a sale of the NFT leaves the id's registered wallet as it was, so that wallet proves
+     * nothing there. An id that does not exist, or is bound to a token no single account holds, is nobody's.
+     * Undefined when the registry could not be read.
      */
     async holdsAgent(agentId: bigint): Promise<boolean | undefined> {
       if (!network.identity || !network.bridge) return undefined;
@@ -553,7 +559,14 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       const read = (functionName: "ownerOf" | "getAgentWallet") =>
         parent.readContract({ address: network.identity!, abi: identityAbi, functionName, args: [agentId] });
       try {
-        return mine(await read("ownerOf")) || mine(await read("getAgentWallet"));
+        const owner = await read("ownerOf");
+        const adapter = network.identityAdapters?.find((known) => known.toLowerCase() === owner.toLowerCase());
+        if (adapter) {
+          const binding = await parent.readContract({ address: adapter, abi: adapterAbi, functionName: "bindingOf", args: [agentId] });
+          if (binding.standard !== ERC721) return false;
+          return mine(await parent.readContract({ address: binding.tokenContract, abi: identityAbi, functionName: "ownerOf", args: [binding.tokenId] }));
+        }
+        return mine(owner) || mine(await read("getAgentWallet"));
       } catch (error) {
         return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? false : undefined;
       }

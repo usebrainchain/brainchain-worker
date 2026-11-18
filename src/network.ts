@@ -83,6 +83,11 @@ export interface Network {
   retired?: { release: string; taskBoard: Address; staking: Address }[];
   /** The ERC-8004 identity registry on the parent chain, where `join --agent-id` checks the wallet holds the agent; mainnet only. */
   identity?: Address;
+  /**
+   * Contracts on the parent chain that own an id on behalf of the NFT it is bound to. An id one of them owns is
+   * held by that NFT's holder alone, as the service reads it.
+   */
+  identityAdapters?: Address[];
   /** Priors' credit pool and BrainChain's root identity in it, where `credit` signs its consent; mainnet only. */
   priors?: { pool: Address; root: bigint };
   /** The parent chain and its bridge contracts, where `bridge` moves funds in from. */
@@ -209,6 +214,7 @@ export const MAINNET: Network = {
     },
   },
   identity: "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+  identityAdapters: ["0x000000009d62675362a58911e3f32FEcf46F5E18"],
   priors: { pool: "0x281210097f0de7A8FB6F87310AF0f089c9C8DE21", root: 20423n },
   bridge: {
     chainId: 4663,
