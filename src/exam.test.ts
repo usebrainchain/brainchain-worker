@@ -684,9 +684,11 @@ describe("exam status", () => {
     const unkept = `Through the paid route only the request that paid for the sitting reads its briefs. Once it is open, \`${CLI} exam sit --agent-id <id>\` reads them with the signature of the wallet sitting it, and goes on with it.`;
     expect(await status(MAINNET, before("opening", "paid", { reason: "the pool has no item left to draw" }))).toEqual([`Sitting ${SITTING}: paid for, opening`, "  Not open yet: the pool has no item left to draw", unkept]);
     for (const payment of ["paying", "unconfirmed"]) expect(await status(MAINNET, before("paying", payment))).toEqual([`Sitting ${SITTING}: the service is settling its payment, and opens it once it has`, unkept]);
-    expect(await status(MAINNET, before("failed", "failed"))).toEqual([`Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it.`]);
-    // A sitting that closed without a pass reads failed too: it has its items, and no payment state beside it.
-    expect((await status(MAINNET, view({ state: "failed", closedAt: DEADLINE })))[0]).toBe(`Sitting ${SITTING} for agent 501, class code: failed at 2100-01-01T02:00:00Z`);
+    expect(await status(MAINNET, before("unpaid", "failed"))).toEqual([`Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it.`]);
+    // The state alone says it: a reply that leaves the payment's own state out reads the same.
+    expect(await status(MAINNET, { sitting: SITTING, state: "unpaid" })).toEqual([`Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it.`]);
+    // Failed is only ever a sitting that closed without a pass, whatever else the reply carries.
+    expect((await status(MAINNET, view({ state: "failed", closedAt: DEADLINE, payment: "paid" })))[0]).toBe(`Sitting ${SITTING} for agent 501, class code: failed at 2100-01-01T02:00:00Z`);
 
     // The wallet that still keeps the paying request is told to send it again.
     const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
@@ -714,29 +716,34 @@ describe("licence", () => {
       { class: "data", state: "lapsed", licence: signed(), audits: { passed: 0, failed: 0 } },
     ];
     const epoch = { id: `0x${"cd".repeat(32)}`, controller: wallet.address, build: "atlas 2.1" };
-    const desk = service(MAINNET, { routes: { "GET /licences/4663/501": () => json({ agent: { chainId: 4663, id: "501" }, epoch, licences: held }) } });
+    const desk = service(MAINNET, { routes: { "GET /licences/4663/501": () => json({ agent: { chainId: 4663, id: "501" }, registry: "read", epoch, licences: held }) } });
     const lines: string[] = [];
     await licences(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
     expect(lines).toEqual([
       "Licences of agent 501 on Robinhood Chain",
-      `  Held to the id as BrainChain reads it now: controller ${wallet.address}, build "atlas 2.1"`,
+      `  Held to the registry as BrainChain read it within the last minute: controller ${wallet.address}, build "atlas 2.1"`,
       "  code  valid; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 2 passed, 0 failed",
       "  prose  suspended: two failed audits in the last three; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 4 of 5 accepted; audits: 1 passed, 2 failed",
       "  data  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 0 passed, 0 failed",
     ]);
   });
 
-  it("says what the states are held to when the service reads no epoch or declares no build, and nothing where it sends none", async () => {
+  it("says when the registry could not be read and how old the states then are, and what they are held to otherwise", async () => {
     const held = [{ class: "code", state: "lapsed", licence: signed(), audits: { passed: 0, failed: 0 } }];
-    const second = async (epoch: unknown) => {
+    const second = async (extra: Record<string, unknown>) => {
       const lines: string[] = [];
-      const desk = service(MAINNET, { routes: { "GET /licences/4663/501": () => json({ licences: held, ...(epoch === undefined ? {} : { epoch }) }) } });
+      const desk = service(MAINNET, { routes: { "GET /licences/4663/501": () => json({ licences: held, ...extra }) } });
       await licences(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
       return lines[1];
     };
-    expect(await second({ id: `0x${"cd".repeat(32)}`, controller: wallet.address, build: "" })).toBe(`  Held to the id as BrainChain reads it now: controller ${wallet.address}, build none declared`);
-    expect(await second(null)).toBe("  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
-    expect(await second(undefined)).toMatch(/^ {2}code {2}lapsed: /);
+    const epoch = { id: `0x${"cd".repeat(32)}`, controller: wallet.address, build: "" };
+    expect(await second({ registry: "unreadable", epoch: null })).toBe("  The registry could not be read just now, so these states are from BrainChain's last own reading, up to ten minutes old.");
+    expect(await second({ registry: "read", epoch })).toBe(`  Held to the registry as BrainChain read it within the last minute: controller ${wallet.address}, build none declared`);
+    expect(await second({ registry: "read", epoch: null })).toBe("  Held to the registry as BrainChain read it within the last minute: no single account controls the id");
+    // A service that does not say whether it read the registry is quoted for what it does say, or not at all.
+    expect(await second({ epoch })).toBe(`  Held to the id as BrainChain reads it now: controller ${wallet.address}, build none declared`);
+    expect(await second({ epoch: null })).toBe("  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
+    expect(await second({})).toMatch(/^ {2}code {2}lapsed: /);
   });
 
   it("says when the agent holds none, and when the exam is not open", async () => {

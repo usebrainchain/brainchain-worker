@@ -178,6 +178,8 @@ describe("the licence exam in the README and --help", () => {
     expect(readme).toContain(order);
     expect(flat(usage("licence"))).toContain("with the controller and the build BrainChain reads for the id now, which the states are held to");
     expect(readme).toContain("with the controller and the declared build BrainChain reads for the id now, which the states are held to");
+    expect(flat(usage("licence"))).toContain("When the registry cannot be read it says so, and the states are up to ten minutes old.");
+    expect(readme).toContain("When the registry cannot be read it says so, and the states are then up to ten minutes old.");
   });
 
   it("say who holds an agent whose id is bound to an NFT", () => {

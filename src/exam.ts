@@ -179,18 +179,17 @@ function openedSitting(body: Record<string, unknown>): Opened | undefined {
 }
 
 /**
- * Whether the service is speaking of a sitting it holds a payment for and has not opened: `paying` while the payment
- * settles, `opening` once it is paid, `failed` when the payment did not settle. A sitting that closed without a pass
- * reads `failed` too, so the payment's own state beside it is what tells the two apart.
+ * Whether the service is speaking of a sitting it has a payment for and has not opened: `paying` while the payment
+ * settles, `opening` once it is paid, `unpaid` when the payment did not settle.
  */
-const beforeOpening = (body: Record<string, unknown>): "paying" | "opening" | "failed" | undefined =>
-  typeof body.payment === "string" && (body.state === "paying" || body.state === "opening" || body.state === "failed") ? body.state : undefined;
+const beforeOpening = (body: Record<string, unknown>): "paying" | "opening" | "unpaid" | undefined =>
+  body.state === "paying" || body.state === "opening" || body.state === "unpaid" ? body.state : undefined;
 
 /**
  * What the service says of a sitting when this wallet signs for its briefs, which it shows to the wallet sitting it
  * and to nobody else: the open sitting, where one that is not open yet stands, or nothing this wallet can use.
  */
-async function briefsOf(network: Network, wallet: ExamChain["wallet"], sitting: Hex, fetcher: typeof fetch): Promise<{ opened?: Opened; state?: "paying" | "opening" | "failed" }> {
+async function briefsOf(network: Network, wallet: ExamChain["wallet"], sitting: Hex, fetcher: typeof fetch): Promise<{ opened?: Opened; state?: "paying" | "opening" | "unpaid" }> {
   const at = Math.floor(Date.now() / 1000);
   const signature = await wallet.signMessage({ message: briefsMessage(network.chainId, sitting, at) });
   const { response, body } = await ask(network, `/exams/${sitting}/briefs?at=${at}&signature=${signature}`, fetcher);
@@ -542,7 +541,7 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
   // The service answers for a sitting from the moment it holds its payment, with where it stands until it opens.
   const unopened = beforeOpening(view);
   if (unopened) {
-    if (unopened === "failed") return log(`Sitting ${id}: its payment did not settle, so nothing was charged and no sitting opens from it.`);
+    if (unopened === "unpaid") return log(`Sitting ${id}: its payment did not settle, so nothing was charged and no sitting opens from it.`);
     log(`Sitting ${id}: ${unopened === "paying" ? "the service is settling its payment, and opens it once it has" : "paid for, opening"}`);
     if (typeof view.reason === "string" && view.reason.trim()) log(`  Not open yet: ${printable(view.reason)}`);
     const sit = cli(`exam sit --agent-id ${saved?.agentId ?? "<id>"}`);
@@ -593,12 +592,16 @@ export async function licences(network: Network, options: { agentId: string; log
   const held = Array.isArray(view.licences) ? view.licences.filter(isObject) : [];
   if (held.length === 0) return log(`Agent ${agentId} on ${parent.name} holds no licence. ${cli("exam info")} says what a sitting takes.`);
   log(`Licences of agent ${agentId} on ${parent.name}`);
-  // The epoch each state below is held to. A service that does not send it is left unquoted.
-  if (isObject(view.epoch)) {
+  // What each state below is held to: the registry as the service read it for this answer, or its last own reading
+  // when the registry could not be read. A service that says neither is left unquoted.
+  const reading = view.registry === "read" ? "the registry as BrainChain read it within the last minute" : "the id as BrainChain reads it now";
+  if (view.registry === "unreadable") {
+    log("  The registry could not be read just now, so these states are from BrainChain's last own reading, up to ten minutes old.");
+  } else if (isObject(view.epoch)) {
     const build = typeof view.epoch.build === "string" && view.epoch.build ? JSON.stringify(printable(view.epoch.build)) : "none declared";
-    log(`  Held to the id as BrainChain reads it now: controller ${printable(String(view.epoch.controller))}, build ${build}`);
+    log(`  Held to ${reading}: controller ${printable(String(view.epoch.controller))}, build ${build}`);
   } else if (view.epoch === null) {
-    log("  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
+    log(view.registry === "read" ? `  Held to ${reading}: no single account controls the id` : "  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
   }
   for (const entry of held) log(`  ${licenceLine(entry)}`);
 }

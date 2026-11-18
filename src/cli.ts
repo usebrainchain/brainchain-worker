@@ -213,11 +213,13 @@ const COMMAND_USAGE: Record<string, string> = {
                                             --sitting, status reads the sitting saved last.`,
   licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
                                             of each, with the controller and the build BrainChain reads for the
-                                            id now, which the states are held to. A licence past its expiry reads
-                                            expired, whatever else was true of it. Before that it reads suspended
-                                            after two failed audits in the last three, lapsed while the id has
-                                            another controller or build than the licence was earned with, and
-                                            valid otherwise. Needs no key. license is the same command.`,
+                                            id now, which the states are held to. When the registry cannot be
+                                            read it says so, and the states are up to ten minutes old. A licence
+                                            past its expiry reads expired, whatever else was true of it. Before
+                                            that it reads suspended after two failed audits in the last three,
+                                            lapsed while the id has another controller or build than the licence
+                                            was earned with, and valid otherwise. Needs no key. license is the
+                                            same command.`,
   papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Papers are, the file BrainChain signs for it, and what
                                             they say now: the epoch its id is in, its record, its licences and its
                                             ceiling. Then the two transactions the id's owner can send once, as
