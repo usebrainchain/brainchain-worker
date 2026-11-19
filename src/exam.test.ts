@@ -26,6 +26,9 @@ const LEVELS = [
   "Returns the right answer on every hidden case",
   "Returns a wrong answer on a hidden case, defines no function of the asked name, or answers by special-casing inputs",
 ];
+// The service's own words for what a sitting buys, and when its payment goes back.
+const REFUNDS =
+  "A sitting buys the judgments, whatever they say. One BrainChain cannot open after it is paid for, or cannot judge enough of to decide, is void: it does not count against the agent, and the payment goes back to the paying wallet.";
 const INFO = {
   pay: `${MAINNET.service}/x402/exams`,
   price: "5.00 USD a sitting, paid over x402 in USDG on Robinhood Chain",
@@ -41,7 +44,7 @@ const INFO = {
     licenceDays: 60,
     waitAfterFailingDays: 7,
     audits: "A licensed agent's work is audited now and then with a task it cannot tell from any other. 2 failed audits in the last 3 suspend the licence.",
-    refunds: "None. A sitting buys the judgments, whatever they say.",
+    refunds: REFUNDS,
   },
 };
 const RULES = [
@@ -52,7 +55,7 @@ const RULES = [
   "  Judges    work that answers every hidden case right is accepted when the judges accept it with at least 50% confidence, and work with a case wrong never is",
   "  Licence   lasts 60 days; after a failed sitting the agent waits 7 days before the next",
   "  Audits    A licensed agent's work is audited now and then with a task it cannot tell from any other. 2 failed audits in the last 3 suspend the licence.",
-  "  Refunds   None. A sitting buys the judgments, whatever they say.",
+  `  Refunds   ${REFUNDS}`,
 ];
 
 const briefs = [0, 1, 2, 3, 4].map((index) => ({ index, title: `Item ${index}`, brief: `Write f${index}(x).\n\nReturn only the function, in one Python code block.`, state: "open" }));
@@ -515,6 +518,28 @@ describe("exam sit", () => {
     expect(desk.unpaid).toHaveLength(1);
   });
 
+  it("says a kept payment's sitting is void, what that means and where to write, and keeps it no more", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
+    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, request: { body: "{}", header: ["payment-signature", "abc"] } }, dir);
+    const why = "BrainChain could not open this sitting after it was paid for, so it is void. It does not count against the agent, which may sit again, and the payment goes back to the paying wallet.";
+    const voided = (extra: Record<string, unknown> = { reason: why }) => json({ ...view({ state: "void", deadline: OPENED, closedAt: OPENED, items: [], ...extra }), briefs: [] });
+    const desk = service(MAINNET, { paid: () => voided() });
+    const email = "If the payment has not come back, write to hello@usebrainchain.com with the sitting's id.";
+    await expect(sitting(MAINNET, desk.fetcher, chainFor(), { dir }).run()).rejects.toThrow(`The sitting this payment bought, ${SITTING}, is void. ${why} ${email} Run \`${CLI} exam sit --agent-id 501\` again to sit.`);
+    expect(readSittings(wallet.address, MAINNET, dir)).toEqual([{ agentId: "501", class: "code", at: OPENED, sitting: SITTING }]);
+    // The payment is not sent again: the next run asks for a new sitting.
+    const next = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => voided() } });
+    await sitting(MAINNET, next.fetcher, chainFor(), { dir }).run();
+    expect(next.seen).toEqual([]);
+    expect(next.unpaid).toHaveLength(1);
+    // A service that gives no reason is quoted by its refunds rule.
+    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, request: { body: "{}", header: ["payment-signature", "abc"] } }, dir);
+    const bare = service(MAINNET, { paid: () => voided({}) });
+    expect(await sitting(MAINNET, bare.fetcher, chainFor(), { dir }).run().catch((e: Error) => e.message)).toContain(
+      `is void. BrainChain could not open it after it was paid for, or could not judge enough of it to decide, so it is void: it does not count against the agent, and the payment goes back to the paying wallet. ${email}`,
+    );
+  });
+
   it("only says what it would send for a kept payment under --dry", async () => {
     const desk = service(MAINNET);
     const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
@@ -704,6 +729,20 @@ describe("exam status", () => {
     expect(passed.at(-1)).toBe("Passed, with 4 of 5 accepted. The licence is valid until 2100-03-02T02:00:00Z, for as long as the agent's id keeps its controller and its build.");
     const failed = await status(MAINNET, view({ state: "failed", closedAt: DEADLINE, items: judged(3) }));
     expect(failed.at(-1)).toBe(`Failed, with 3 of 5 accepted; a pass takes 4. \`${CLI} exam info\` says how long the agent waits before the next sitting.`);
+  });
+
+  it("says a sitting is void, why, and where to write if its payment has not come back", async () => {
+    const why = "BrainChain could not judge enough of the delivered work to decide this sitting, so it is void. It does not count against the agent, which may sit again, and the payment goes back to the paying wallet.";
+    const items = judged(3).map((item, i) => (i > 2 ? { index: item.index, title: item.title, state: "void" } : item));
+    expect(await status(MAINNET, view({ state: "void", closedAt: DEADLINE, reason: why, items }))).toEqual([
+      `Sitting ${SITTING} for agent 501, class code: void at 2100-01-01T02:00:00Z`,
+      "  Item 0    accepted (12 of 12 hidden cases right, decision 4800): Item 0",
+      "  Item 1    accepted (12 of 12 hidden cases right, decision 4801): Item 1",
+      "  Item 2    accepted (12 of 12 hidden cases right, decision 4802): Item 2",
+      "  Item 3    not judged: BrainChain could not judge it: Item 3",
+      "  Item 4    not judged: BrainChain could not judge it: Item 4",
+      `${why} If the payment has not come back, write to hello@usebrainchain.com with the sitting's id.`,
+    ]);
   });
 
   it("reads the sitting saved last when none is named, and says when that one is paid for and not open yet", async () => {

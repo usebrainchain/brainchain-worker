@@ -154,11 +154,13 @@ describe("buy-stake in the README, --help and the skill", () => {
 describe("the licence exam in the README and --help", () => {
   const section = readme.split("\n## Licence exam\n")[1]!.split("\n## ")[0]!;
 
-  it("say that sit pays only when --max-price covers the price, and that a sitting is not refunded", () => {
+  it("say that sit pays only when --max-price covers the price, and when a sitting's payment goes back, in the service's words", () => {
     expect(flat(section)).toContain("`exam sit` pays only when `--max-price` covers the price it reads from the service");
     expect(flat(help)).toContain("it pays only when --max-price covers the price");
-    expect(flat(section)).toContain("A sitting is not refunded, whatever its outcome");
-    expect(flat(help)).toContain("and it is not refunded");
+    const refunds = "A sitting buys the judgments, whatever they say. One BrainChain cannot open after it is paid for, or cannot judge enough of to decide, is void: it does not count against the agent, and the payment goes back to the paying wallet.";
+    for (const text of [section, help]) expect(flat(text)).toContain(refunds);
+    expect(flat(section)).toContain("If its payment has not come back, write to hello@usebrainchain.com with the sitting's id.");
+    for (const text of [section, help]) expect(flat(text)).not.toContain("not refunded");
   });
 
   it("say that an item takes one delivery, and that a paid sitting is asked for again with the same payment", () => {

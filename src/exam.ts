@@ -103,6 +103,14 @@ async function read(network: Network, path: string, fetcher: typeof fetch, missi
 
 const closed = (network: Network) => `The licence exam is not open on ${network.name}.`;
 
+/**
+ * What a void sitting means for whoever paid for it: the service's reason, or its refunds rule when it gives none,
+ * and where to write if the payment has not come back. An operator sends it back by hand, so no time is promised.
+ */
+const voidNote = (view: Record<string, unknown>) =>
+  `${typeof view.reason === "string" && view.reason.trim() ? printable(view.reason).replace(/\.?$/, ".") : "BrainChain could not open it after it was paid for, or could not judge enough of it to decide, so it is void: it does not count against the agent, and the payment goes back to the paying wallet."} ` +
+  "If the payment has not come back, write to hello@usebrainchain.com with the sitting's id.";
+
 interface ExamInfo {
   price: string;
   classes: { class: string; about: string }[];
@@ -314,6 +322,11 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       if (answer.ok && named && (reply.state === "passed" || reply.state === "failed")) {
         saveSitting(account, network, { ...mine, at, sitting: named }, dir);
         throw new Error(`The sitting this payment bought, ${named}, has closed: ${reply.state}. ${cli(`exam status --sitting ${named}`)} shows each item's outcome.`);
+      }
+      // A sitting BrainChain could not open, or could not judge, is void: the payment is owed back, and the agent may sit again.
+      if (answer.ok && named && reply.state === "void") {
+        saveSitting(account, network, { ...mine, at, sitting: named }, dir);
+        throw new Error(`The sitting this payment bought, ${named}, is void. ${voidNote(reply)} Run ${again} again to sit.`);
       }
       const said = typeof reply.error === "string" ? printable(reply.error) : typeof reply.message === "string" ? printable(reply.message) : "";
       const aside = said ? ` (${said.replace(/\.$/, "")})` : "";
@@ -536,7 +549,9 @@ function itemLine(item: Record<string, unknown>, bar?: number): string {
           ? "missed: the sitting's time ran out first"
           : item.state === "open"
             ? "open"
-            : printable(String(item.state));
+            : item.state === "void"
+              ? "not judged: BrainChain could not judge it"
+              : printable(String(item.state));
   return `  Item ${String(item.index)}    ${outcome}: ${typeof item.title === "string" ? printable(item.title) : ""}`;
 }
 
@@ -570,7 +585,8 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
   }
   const items = Array.isArray(view.items) ? view.items.filter(isObject) : [];
   const agent = isObject(view.agent) && typeof view.agent.id === "string" ? ` for agent ${printable(view.agent.id)}` : "";
-  const state = view.state === "open" ? `open until ${date(view.deadline)}` : view.state === "passed" || view.state === "failed" ? `${view.state}${view.closedAt === undefined ? "" : ` at ${date(view.closedAt)}`}` : printable(String(view.state));
+  const closedAt = view.closedAt === undefined ? "" : ` at ${date(view.closedAt)}`;
+  const state = view.state === "open" ? `open until ${date(view.deadline)}` : view.state === "passed" || view.state === "failed" || view.state === "void" ? `${view.state}${closedAt}` : printable(String(view.state));
   log(`Sitting ${id}${agent}${typeof view.class === "string" ? `, class ${printable(view.class)}` : ""}: ${state}`);
   for (const item of items) log(itemLine(item, typeof view.barBps === "number" ? view.barBps : undefined));
   const accepted = `${items.filter((item) => item.accepted === true).length} of ${items.length} accepted`;
@@ -578,6 +594,7 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
     const licence = isObject(view.licence) && isObject(view.licence.licence) ? view.licence.licence : {};
     return log(`Passed, with ${accepted}. The licence is valid until ${date(licence.expiresAt)}, for as long as the agent's id keeps its controller and its build.`);
   }
+  if (view.state === "void") return log(voidNote(view));
   if (view.state === "failed") return log(`Failed, with ${accepted}${typeof view.passMark === "number" ? `; a pass takes ${view.passMark}` : ""}. ${cli("exam info")} says how long the agent waits before the next sitting.`);
   const open = items.filter((item) => item.state === "open").map((item) => String(item.index));
   if (open.length > 0) log(`Still to deliver: item${open.length === 1 ? "" : "s"} ${open.join(", ")}, each once, with ${cli(`exam submit --sitting ${id} --item <n> --file <path>`)}.`);
