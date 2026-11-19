@@ -11,7 +11,7 @@ import { erc20Abi, holdsAgent, PermanentError, reason, RECEIPT_MS, type HiredTas
 import { cli } from "./invoked.js";
 import { parentChainOf, rpcTransport, type Network } from "./network.js";
 import { when } from "./standing.js";
-import { forgetSitting, readSittings, saveSitting, stateDir, type SavedSitting } from "./state.js";
+import { forgetSitting, readSittings, saveSitting, saveWork, stateDir, type SavedSitting } from "./state.js";
 import { deliverable, loggedTitle, printable, stripAnsi, taskInput, taskPrompt, type Brief, type Command } from "./work.js";
 
 /** The canonical Permit2 contract, which an x402 payment in USDG moves through. */
@@ -371,7 +371,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       noted = true;
       if (Date.now() >= end) throw new Error(`The sitting is paid for, and the desk has not opened it yet${aside}. ${resend}`);
       log("The sitting is paid for and the desk is still opening it; asking again...");
-      await new Promise((resolve) => setTimeout(resolve, options.everyMs ?? 5_000));
+      await new Promise((resolve) => setTimeout(resolve, options.everyMs ?? 10_000));
     }
   };
 
@@ -508,8 +508,14 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       const item: Brief = { title, brief, ...grading };
       const input = options.format === "json" ? JSON.stringify(taskInput(task, item)) : taskPrompt(task, item);
       const text = await deliverable(command, input, { env: { BRAINCHAIN_TASK_ID: String(index) }, timeoutMs: Math.min(options.timeoutMs, seconds * 1000), secrets: options.secrets });
+      const bytes = toBytes(text).byteLength;
+      // Kept rather than lost, so the work can be cut down and delivered by hand while the sitting is open.
+      if (bytes > MAX_WORK_BYTES) {
+        const kept = saveWork(account, network, opened.sitting, index, text, dir);
+        throw new Error(`The work is ${bytes} bytes; at most ${MAX_WORK_BYTES} are accepted for an item. Nothing was sent. It is kept in ${kept}: cut it down and deliver it with ${cli(`exam submit --sitting ${opened.sitting} --item ${index} --file ${kept}`)}`);
+      }
       await deliver(network, chain.wallet, opened.sitting, index, text, fetcher);
-      log(`item ${index}: delivered (${toBytes(text).byteLength} bytes)`);
+      log(`item ${index}: delivered (${bytes} bytes)`);
     } catch (error) {
       left.push(index);
       log(`item ${index}: not delivered (${printable(reason(error)).replace(/\.$/, "")})`);

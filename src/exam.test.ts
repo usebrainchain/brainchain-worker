@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -437,6 +437,22 @@ describe("exam sit", () => {
     expect(saved()[0]).not.toHaveProperty("request");
   });
 
+  it("asks again for a sitting the desk is still opening every 10 seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const drawing = { message: "The sitting is paid for and its items are being drawn.", sitting: SITTING, state: "paid" };
+      const desk = service(MAINNET, { paid: (_sent, earlier) => (earlier < 1 ? json(drawing, 202) : opened()) });
+      const done = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n, everyMs: undefined, waitMs: 60_000 }).run();
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(desk.seen).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await done;
+      expect(desk.seen).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a payment the desk has not answered with a sitting, and the next run sends it again and pays nothing more", async () => {
     for (const first of [
       () => json({ error: "The sitting is paid for, but its items could not be drawn just now. It is retried until it opens; send the same request again to read it.", sitting: SITTING, state: "paid" }, 502),
@@ -625,7 +641,7 @@ describe("exam sit", () => {
       },
       kill: () => undefined,
     };
-    const { run, lines } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n, command, format: "json" });
+    const { run, lines, dir } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n, command, format: "json" });
     await run();
     expect(JSON.parse(inputs[2]!)).toEqual({
       task: "2",
@@ -637,8 +653,13 @@ describe("exam sit", () => {
     });
     expect(desk.delivered.map(({ item }) => item)).toEqual([0, 2, 4]);
     expect(lines).toContain("item 1: not delivered (The result contains the worker's private key, so it was not uploaded. Check what the command can read)");
-    // An item takes less than a task's result does, and what is over is never sent.
-    expect(lines).toContain("item 3: not delivered (The work is 48001 bytes; at most 48000 are accepted for an item. Nothing was sent)");
+    // An item takes less than a task's result does, and what is over is never sent: it is kept, for its owner alone, to cut down and deliver by hand.
+    const kept = join(dir, `${wallet.address}.mainnet.exam.${SITTING}.item3.txt`);
+    expect(lines).toContain(`item 3: not delivered (The work is 48001 bytes; at most 48000 are accepted for an item. Nothing was sent. It is kept in ${kept}: cut it down and deliver it with \`${CLI} exam submit --sitting ${SITTING} --item 3 --file ${kept}\`)`);
+    expect(readFileSync(kept, "utf8")).toBe("#".repeat(MAX_WORK_BYTES + 1));
+    if (process.platform !== "win32") expect(statSync(kept).mode & 0o777).toBe(0o600);
+    // The work that held the key is never kept.
+    expect(readdirSync(dir).filter((name) => name.endsWith(".txt"))).toEqual([`${wallet.address}.mainnet.exam.${SITTING}.item3.txt`]);
     expect(JSON.stringify(desk.delivered)).not.toContain(KEY.slice(2));
   });
 

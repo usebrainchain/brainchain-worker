@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { MAINNET, TESTNET } from "./network.js";
-import { fileStore, forgetSitting, lock, openStore, privateDir, readSittings, readWatched, saveSitting, writeWatched, type SavedSitting } from "./state.js";
+import { fileStore, forgetSitting, lock, openStore, privateDir, readSittings, readWatched, saveSitting, saveWork, writeWatched, type SavedSitting } from "./state.js";
 
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -307,6 +307,18 @@ describe("saveSitting", () => {
     saveSitting(ADDRESS, TESTNET, paid, dir());
     expect(fsyncSync).toHaveBeenCalledOnce();
     expect(vi.mocked(fsyncSync).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(renameSync).mock.invocationCallOrder[0]!);
+  });
+
+  it("keeps work too long to deliver beside the sittings, for its owner alone, where no read takes it for a sitting", () => {
+    const folder = dir();
+    const sitting: `0x${string}` = `0x${"5A".repeat(32)}`;
+    const file = saveWork(ADDRESS, TESTNET, sitting, 3, "def f(x):\n    return x\n", folder);
+    expect(file).toBe(join(folder, `${ADDRESS}.testnet.exam.0x${"5a".repeat(32)}.item3.txt`));
+    expect(readFileSync(file, "utf8")).toBe("def f(x):\n    return x\n");
+    if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
+    const warn = vi.fn();
+    expect(readSittings(ADDRESS, TESTNET, folder, warn)).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("moves a file that is not a sitting aside, and says where, rather than write over it", () => {

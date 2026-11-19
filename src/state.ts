@@ -211,20 +211,30 @@ export function readSittings(address: string, network: Network, dir = stateDir()
   });
 }
 
-/** Keeps a sitting in place of the one saved for its agent and class. */
-export function saveSitting(address: string, network: Network, sitting: SavedSitting, dir = stateDir()): void {
+/** Writes `text` to `file` in `dir` for its owner alone, on disk before it takes the place of what was there. */
+function writePrivate(dir: string, file: string, text: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = sittingFile(address, network, sitting, dir);
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   const fd = openSync(temp, "w", 0o600);
   try {
-    writeFileSync(fd, JSON.stringify(sitting));
-    // On disk before a paid request leaves, so a payment that was sent and never answered is found by the next run.
+    writeFileSync(fd, text);
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
   renameSync(temp, file);
+}
+
+/** Keeps a sitting in place of the one saved for its agent and class: on disk before a paid request leaves, so the next run finds a payment that was never answered. */
+export function saveSitting(address: string, network: Network, sitting: SavedSitting, dir = stateDir()): void {
+  writePrivate(dir, sittingFile(address, network, sitting, dir), JSON.stringify(sitting));
+}
+
+/** Keeps work for an item that is too long to deliver, beside the sittings, and returns where, for `exam submit --file`. */
+export function saveWork(address: string, network: Network, sitting: Hex, index: number, text: string, dir = stateDir()): string {
+  const file = join(dir, `${sittingsPrefix(address, network)}${sitting.toLowerCase()}.item${index}.txt`);
+  writePrivate(dir, file, text);
+  return file;
 }
 
 /** Drops the sitting saved for an agent and class. */
