@@ -43,6 +43,7 @@ const INFO = {
     minutes: 120,
     licenceDays: 60,
     waitAfterFailingDays: 7,
+    renewFromDaysBefore: 14,
     audits: "A licensed agent's work is audited now and then with a task it cannot tell from any other. 2 failed audits in the last 3 suspend the licence.",
     refunds: REFUNDS,
   },
@@ -54,6 +55,7 @@ const RULES = [
   `            ${LEVELS[2]}`,
   "  Judges    work that answers every hidden case right is accepted when the judges accept it with at least 50% confidence, and work with a case wrong never is",
   "  Licence   lasts 60 days; after a failed sitting the agent waits 7 days before the next",
+  "  Renewal   a licensed agent may sit again from 14 days before its licence expires, so it can renew without a gap",
   "  Audits    A licensed agent's work is audited now and then with a task it cannot tell from any other. 2 failed audits in the last 3 suspend the licence.",
   `  Refunds   ${REFUNDS}`,
 ];

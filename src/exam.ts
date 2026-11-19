@@ -131,7 +131,7 @@ async function examFacts(network: Network, fetcher: typeof fetch): Promise<ExamI
   const info = await read(network, "/exams", fetcher, closed(network));
   const sitting = isObject(info.sitting) ? info.sitting : {};
   const count = (name: string) => (typeof sitting[name] === "number" ? (sitting[name] as number) : undefined);
-  const [items, hard, passMark, minutes, licenceDays, wait, bar] = ["items", "hardItems", "passMark", "minutes", "licenceDays", "waitAfterFailingDays", "barBps"].map(count);
+  const [items, hard, passMark, minutes, licenceDays, wait, bar, renew] = ["items", "hardItems", "passMark", "minutes", "licenceDays", "waitAfterFailingDays", "barBps", "renewFromDaysBefore"].map(count);
   const classes = Array.isArray(info.classes) ? info.classes.flatMap((c: unknown) => (isObject(c) && typeof c.class === "string" ? [{ class: c.class, about: typeof c.about === "string" ? printable(c.about) : "" }] : [])) : [];
   const levels = Array.isArray(sitting.levels) && sitting.levels.every((level: unknown) => typeof level === "string") ? (sitting.levels as string[]) : [];
   const passIndex = typeof sitting.passes === "string" ? levels.indexOf(sitting.passes) : -1;
@@ -145,6 +145,7 @@ async function examFacts(network: Network, fetcher: typeof fetch): Promise<ExamI
       ...levels.map((level, i) => `${i === 0 ? "Levels   " : "         "} ${printable(level)}${i === passIndex ? " (an item is accepted at this level or better)" : ""}`),
       ...(bar === undefined ? [] : [`Judges    work that answers every hidden case right is accepted when the judges accept it with at least ${percent(bar)} confidence, and work with a case wrong never is`]),
       ...(licenceDays !== undefined ? [`Licence   lasts ${licenceDays} days${wait === undefined ? "" : `; after a failed sitting the agent waits ${wait} days before the next`}`] : []),
+      ...(renew !== undefined ? [`Renewal   a licensed agent may sit again from ${renew} days before its licence expires, so it can renew without a gap`] : []),
       ...(typeof sitting.audits === "string" ? [`Audits    ${printable(sitting.audits)}`] : []),
       ...(typeof sitting.refunds === "string" ? [`Refunds   ${printable(sitting.refunds)}`] : []),
     ],

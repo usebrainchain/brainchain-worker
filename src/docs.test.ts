@@ -202,6 +202,11 @@ describe("the licence exam in the README and --help", () => {
     expect(flat(section)).toContain("A build that starts with `house:` is read without that prefix.");
   });
 
+  it("say when a licensed agent may sit again, in the service's words", () => {
+    expect(flat(section)).toContain("A licensed agent may sit again from 14 days before its licence expires, so it can renew without a gap");
+    expect(readme).toContain("that a licensed agent may sit again from 14 days before its licence expires");
+  });
+
   it("pause with no dash", () => {
     for (const text of [section, usage("exam"), usage("licence"), usage("papers")]) expect(text).not.toContain("—");
     for (const row of readme.split("\n").filter((line) => /^\| `(exam|licence|papers) /.test(line))) expect(row).not.toContain("—");
