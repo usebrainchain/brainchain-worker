@@ -124,7 +124,7 @@ describe("help", () => {
         [["dispute", "x"], `Usage: ${CLI} dispute <task>`],
         [["price"], `Usage: ${CLI} price <USDG>`],
         [["price", "lots"], "The price must be a number"],
-        [["exam"], `Usage: ${CLI} exam info, exam sit --agent-id <id>, exam submit --sitting <id> --item <n> --file <path>, or exam status`],
+        [["exam"], `Usage: ${CLI} exam info, exam sit --agent-id <id>, exam submit --sitting <id> --item <n> [--file <path>], or exam status (see ${CLI} exam --help)`],
         [["exam", "resit"], `Usage: ${CLI} exam info`],
         [["exam", "info", "--dry"], `exam info has no --dry flag (see ${CLI} exam --help)`],
         [["exam", "status", "--agent-id", "5"], "exam status has no --agent-id flag"],
@@ -148,6 +148,26 @@ describe("help", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("prints the exam's help for each of its parts, wherever --help comes, and lists every flag each part takes", async () => {
+    for (const argv of [
+      ["exam", "--help"],
+      ["exam", "help"],
+      ["exam", "info", "--help"],
+      ["exam", "sit", "--help"],
+      ["exam", "sit", "-h"],
+      ["exam", "sit", "--agent-id", "26170", "--max-price", "0.90", "--help"],
+      ["exam", "submit", "--help"],
+      ["exam", "status", "-h"],
+    ]) {
+      expect(await printed(argv), argv.join(" ")).toBe(usage("exam"));
+    }
+    for (const argv of [["licence", "--agent-id", "26170", "--help"], ["papers", "-h"]]) expect(await printed(argv), argv.join(" ")).toBe(usage(argv[0]));
+    const lines = usage("exam").replace(/\s+/g, " ");
+    for (const flag of ["agent-id", "class", "max-price", "exec", "format", "timeout", "dry", "sitting", "item", "file"]) expect(lines).toContain(`--${flag}`);
+    expect(lines).toContain("exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry] [--exec \"<command>\"] [--format prompt|json] [--timeout <minutes>]");
+    expect(lines).toContain("exam submit --sitting <id> --item <n> [--file <path>], or with the work on stdin");
   });
 
   it("takes license for licence, in a command and in its help", async () => {

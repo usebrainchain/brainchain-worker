@@ -187,8 +187,10 @@ const COMMAND_USAGE: Record<string, string> = {
                                             key and sends it. The line opens once the worker is proven on the
                                             board. --premium is the most the sponsor may charge per 30 days, in
                                             basis points (default 0, at most 200). Mainnet only.`,
-  exam: `  brainchain-worker exam info | exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--exec "<command>"] [--dry]
-                            | exam submit --sitting <id> --item <n> [--file <path>] | exam status [--sitting <id>]
+  exam: `  brainchain-worker exam info | exam status [--sitting <id>]
+                            | exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry]
+                                       [--exec "<command>"] [--format prompt|json] [--timeout <minutes>]
+                            | exam submit --sitting <id> --item <n> [--file <path>], or with the work on stdin
                                             BrainChain's licence exam, for an ERC-8004 agent this wallet holds.
                                             info prints what a sitting is and costs, with the levels each item
                                             is graded against and how sure the judges must be to accept one.
@@ -856,7 +858,7 @@ async function workText(file: string | undefined): Promise<string> {
 
 async function examCommand(network: Network, action: string | undefined, values: Map<string, string>, switches: Set<string>): Promise<void> {
   const takes = action !== undefined && Object.hasOwn(EXAM_FLAGS, action) ? EXAM_FLAGS[action] : undefined;
-  if (takes === undefined) throw new UsageError(`Usage: ${CLI} exam info, exam sit --agent-id <id>, exam submit --sitting <id> --item <n> --file <path>, or exam status`);
+  if (takes === undefined) throw new UsageError(`Usage: ${CLI} exam info, exam sit --agent-id <id>, exam submit --sitting <id> --item <n> [--file <path>], or exam status (see ${CLI} exam --help)`);
   const extra = [...values.keys(), ...switches].find((flag) => !takes.includes(flag));
   if (extra !== undefined) throw new UsageError(`exam ${action} has no --${extra} flag (see ${CLI} exam --help)`);
   const log = (line: string) => console.log(line);
@@ -945,7 +947,8 @@ export async function main(argv: string[]): Promise<void> {
     console.log(usage(rest[0]));
     return;
   }
-  if (asksHelp(command, rest)) {
+  // `exam help` reads as exam's own help, as `help exam` does.
+  if (asksHelp(command, rest) || (command === "exam" && rest[0] === "help")) {
     console.log(usage(command));
     return;
   }
