@@ -1,8 +1,8 @@
 // The licence exam for an ERC-8004 agent the worker's wallet holds: what it is
 // and costs, a sitting opened for a payment over x402, each item delivered
 // once, and the outcome read back, with the agent's licences and its Papers.
-// The desk takes every message from the wallet that holds the agent's id, so
-// the worker's key signs them, and it pays in USDG on the chain the id is on.
+// The service takes every message from the wallet that holds the agent's id, so
+// the worker's key signs them, and the desk is paid in USDG on the chain the id is on.
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { createPublicClient, createWalletClient, keccak256, toBytes, type Address, type Hex, type PrivateKeyAccount } from "viem";
@@ -189,7 +189,7 @@ interface Opened {
   open: number[];
 }
 
-/** An open sitting with its briefs, as the desk hands it to the wallet sitting it; undefined for any other answer. */
+/** An open sitting with its briefs, as the service hands it to the wallet sitting it; undefined for any other answer. */
 function openedSitting(body: Record<string, unknown>): Opened | undefined {
   if (body.state !== "open" || typeof body.sitting !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(body.sitting) || typeof body.deadline !== "number" || !Array.isArray(body.briefs)) return undefined;
   const briefs = body.briefs.flatMap((b: unknown) => (isObject(b) && Number.isSafeInteger(b.index) && typeof b.title === "string" && typeof b.brief === "string" ? [{ index: b.index as number, title: b.title, brief: b.brief, state: b.state }] : []));
@@ -240,7 +240,7 @@ export interface SitOptions {
   fetcher?: typeof fetch;
   /** Where sittings are kept; the worker's own folder by default. */
   dir?: string;
-  /** How long a paid sitting the desk has not opened is asked for again, and how often. */
+  /** How long a paid sitting BrainChain has not opened is asked for again, and how often. */
   waitMs?: number;
   everyMs?: number;
   /** True once a stop was asked for: no item is started after it. */
@@ -357,8 +357,8 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       const aside = said ? ` (${said.replace(/\.$/, "")})` : "";
       // The service says so itself when it refuses before it charges, and it answers 400 and 402 before it settles anything.
       const untaken = /Nothing was charged/.test(said) || answer.status === 400 || answer.status === 402;
-      // 409 with the sitting named is the desk still taking the payment. Without one, the desk holds no sitting for the
-      // payment and will take it no more, so keeping it would only send it again for the same answer.
+      // 409 with the sitting named is the desk still taking the payment. Without one, BrainChain holds no sitting for the
+      // payment and the desk will take it no more, so keeping it would only send it again for the same answer.
       const dead = !untaken && answer.status === 409 && named === undefined;
       if (untaken || dead) {
         forgetSitting(account, network, mine, dir);
@@ -540,7 +540,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   log(`Not delivered: item${left.length === 1 ? "" : "s"} ${left.join(", ")}. Each can still be delivered once before ${date(opened.deadline)}, with ${submit(left[0]!)}.`);
 }
 
-/** Signs and sends the work for one item, which the desk takes once. */
+/** Signs and sends the work for one item, which the service takes once. */
 async function deliver(network: Network, wallet: ExamChain["wallet"], sitting: Hex, index: number, text: string, fetcher: typeof fetch): Promise<void> {
   const bytes = toBytes(text).byteLength;
   if (bytes > MAX_WORK_BYTES) throw new Error(`The work is ${bytes} bytes; at most ${MAX_WORK_BYTES} are accepted for an item. Nothing was sent`);

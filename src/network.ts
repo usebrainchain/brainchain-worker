@@ -10,7 +10,7 @@ export interface Network {
   name: string;
   chainId: number;
   rpc: string;
-  /** The BrainChain service, which keeps a worker's results and publishes each once Jev accepts it, or grades it for a house task. */
+  /** The BrainChain service, which keeps a worker's results and publishes each once BrainChain accepts it, or grades it for a house task. */
   service: string;
   /** First block of the deployment, where event scans start. */
   fromBlock: bigint;

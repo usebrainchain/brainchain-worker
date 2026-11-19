@@ -280,7 +280,7 @@ describe("saveSitting", () => {
     expect(readSittings(ADDRESS, TESTNET, folder)).toEqual([]);
     saveSitting(ADDRESS, TESTNET, paid, folder);
     saveSitting(ADDRESS, TESTNET, { ...paid, agentId: "502" }, folder);
-    // The sitting the desk opened takes the place of the payment that bought it.
+    // The sitting BrainChain opened takes the place of the payment that bought it.
     saveSitting(ADDRESS, TESTNET, open, folder);
     expect(readSittings(ADDRESS, TESTNET, folder)).toEqual([open, { ...paid, agentId: "502" }]);
     expect(readSittings(ADDRESS, MAINNET, folder)).toEqual([]);

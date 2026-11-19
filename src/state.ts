@@ -156,11 +156,11 @@ export interface SavedSitting {
   /** Wall-clock seconds when the sitting was paid for. */
   at: number;
   /**
-   * The request and the payment header as they were sent, kept until the desk hands over the briefs: sent again,
-   * the desk answers them from the sitting they bought and never charges them twice.
+   * The request and the payment header as they were sent, kept until the service hands over the briefs: sent again,
+   * the service answers them from the sitting they bought, and the desk never charges them twice.
    */
   request?: { body: string; header: [string, string] };
-  /** Known once the desk has answered. */
+  /** Known once the service has answered. */
   sitting?: Hex;
   deadline?: number;
 }

@@ -122,7 +122,7 @@ export interface WorkerChain {
   /** Tasks hired to this worker that wait for its result. */
   hired(): Promise<HiredTask[]>;
   ethBalance(): Promise<bigint>;
-  /** Uploads a result to the service, which publishes it once Jev accepts the work, or grades it for a house task. */
+  /** Uploads a result to the service, which publishes it once BrainChain accepts the work, or grades it for a house task. */
   publish(id: bigint, text: string): Promise<{ uri: string; hash: Hex }>;
   /** Sends the submit, hands its hash to `sent` before waiting for the receipt, and returns the hash once it succeeds. */
   submit(id: bigint, resultHash: Hex, resultURI: string, sent: (tx: Hex) => void): Promise<Hex>;
@@ -579,7 +579,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     held: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "held", args: [account.address] }),
     allowed: () => client.readContract({ ...board, functionName: "workerAllowed", args: [account.address] }),
     bond: () => client.readContract({ address: bonds, abi: bondsAbi, functionName: "bond" }),
-    /** Seconds between Jev allowing a worker and the worker being hireable. */
+    /** Seconds between BrainChain allowing a worker and the worker being hireable. */
     timelock: () => client.readContract({ address: executor, abi: executorAbi, functionName: "timelock" }),
     /** Approves `spender` for `amount` unless it already may take that much; the approval's hash, or undefined when none was needed. */
     async approve(token: Address, spender: Address, amount: bigint): Promise<Hex | undefined> {

@@ -473,7 +473,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
         : "This worker is past its application, so --name and --about are not used.",
     );
   }
-  // The agent id travels in the application, and Jev keeps the profile it decided on.
+  // The agent id travels in the application, and BrainChain keeps the profile it decided on.
   if (agentId !== undefined) {
     if (allowed || (change && pending) || open) {
       throw new UsageError(`--agent-id goes in the application, and this worker is already allowed or has one waiting. Run ${cli("join")} without it.`);
@@ -731,9 +731,9 @@ async function rehearsal({ exec, format, minutes }: ReturnType<typeof runFlags>)
 
 /**
  * Reads again, every few minutes until the worker can be hired, whether it can,
- * and returns the new answer when it changed. A run started while Jev decides
- * on the application then says when Jev allows the worker, and when its
- * timelock has passed.
+ * and returns the new answer when it changed. A run started while BrainChain
+ * decides on the application then says when BrainChain allows the worker, and
+ * when its timelock has passed.
  */
 export function hireWatch(first: string, check: () => Promise<string | undefined>, everyMs = HIREABLE_CHECK_MS, now = Date.now) {
   let last = first;

@@ -237,7 +237,7 @@ describe("exam sit", () => {
     expect(over.saved()).toEqual([]);
   });
 
-  it("checks the wallet holds the agent before it reads a price, and leaves that to the desk where no registry is named", async () => {
+  it("checks the wallet holds the agent before it reads a price, and leaves that to the service where no registry is named", async () => {
     const desk = service(MAINNET);
     const stranger = sitting(MAINNET, desk.fetcher, chainFor(undefined, false), { maxPrice: 5_000_000n });
     await expect(stranger.run()).rejects.toThrow(`${wallet.address} does not hold ERC-8004 agent 501 on Robinhood Chain: it is neither its controller nor its registered wallet. The service would refuse the sitting. Nothing was signed or paid.`);
@@ -449,7 +449,7 @@ describe("exam sit", () => {
     await expect(sitting(MAINNET, unreadable.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(/^agent\.id is the agent's ERC-8004 id, as a decimal string\. Nothing was charged\.$/);
   });
 
-  it("sends the same request with the same payment again while the desk draws the items", async () => {
+  it("sends the same request with the same payment again while BrainChain draws the items", async () => {
     const drawing = { message: "The sitting is paid for and its items are being drawn. Send the same request again to read them; it is not charged twice.", sitting: SITTING, state: "paid" };
     const desk = service(MAINNET, { paid: (_sent, earlier) => (earlier < 2 ? json(drawing, 202) : opened()) });
     const { run, lines, saved } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n });
@@ -477,7 +477,7 @@ describe("exam sit", () => {
     }
   });
 
-  it("keeps a payment the desk has not answered with a sitting, and the next run sends it again and pays nothing more", async () => {
+  it("keeps a payment the service has not answered with a sitting, and the next run sends it again and pays nothing more", async () => {
     for (const first of [
       () => json({ error: "The sitting is paid for, but its items could not be drawn just now. It is retried until it opens; send the same request again to read it.", sitting: SITTING, state: "paid" }, 502),
       () => {
