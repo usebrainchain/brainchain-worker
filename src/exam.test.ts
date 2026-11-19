@@ -674,6 +674,32 @@ describe("exam sit", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it("says why a kept sitting's briefs could not be read, with the clock to check when the service names the time", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
+    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING, deadline: DEADLINE }, dir);
+    const skewed = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ error: "at is the time the request was signed, within 600 seconds of now." }, 400) } });
+    await expect(sitting(MAINNET, skewed.fetcher, chainFor(), { dir }).run()).rejects.toThrow(
+      `The service did not show the briefs of sitting ${SITTING} (at is the time the request was signed, within 600 seconds of now). The service takes a signed request within ten minutes of its own clock, so check this computer's clock. Nothing was approved or paid.`,
+    );
+    expect(skewed.unpaid).toEqual([]);
+    const proxy = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => new Response("<html>bad gateway</html>", { status: 502 }) } });
+    await expect(sitting(MAINNET, proxy.fetcher, chainFor(), { dir }).run()).rejects.toThrow(`The service did not show the briefs of sitting ${SITTING} (it answered 502). Nothing was approved or paid.`);
+  });
+
+  it("says a sitting whose time ran out is closing, and runs nothing for it", async () => {
+    const past = Math.floor(Date.now() / 1000) - 60;
+    const desk = service(MAINNET, {
+      refuse: () => json({ error: "Agent 501 has a sitting open. Nothing was charged.", sitting: SITTING }, 409),
+      routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view({ deadline: past }), briefs }) },
+    });
+    const command: Command = { run: vi.fn(async () => "def f(x): return x"), kill: () => undefined };
+    await expect(sitting(MAINNET, desk.fetcher, chainFor(), { command }).run()).rejects.toThrow(
+      `Agent 501's sitting ${SITTING} ran out of time at ${new Date(past * 1000).toISOString().replace(/\.\d+Z$/, "Z")}, so nothing more can be delivered for it, and BrainChain closes it shortly. \`${CLI} exam status --sitting ${SITTING}\` shows each item's outcome.`,
+    );
+    expect(command.run).not.toHaveBeenCalled();
+    expect(desk.delivered).toEqual([]);
+  });
+
   it("prints the briefs of a sitting already open under --dry, and runs and delivers nothing", async () => {
     const desk = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
     const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));

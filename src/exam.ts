@@ -206,7 +206,12 @@ async function briefsOf(network: Network, wallet: ExamChain["wallet"], sitting: 
   const { response, body } = await ask(network, `/exams/${sitting}/briefs?at=${at}&signature=${signature}`, fetcher);
   if (response.ok) return { opened: openedSitting(body) };
   // Until a sitting is open its briefs address answers 409 with where it stands.
-  return response.status === 409 ? { state: beforeOpening(body) } : {};
+  if (response.status === 409) return { state: beforeOpening(body) };
+  // 403 is a sitting another wallet sits, and 404 one the service does not know: neither is this wallet's to go on with.
+  if (response.status === 403 || response.status === 404) return {};
+  const said = typeof body.error === "string" ? printable(body.error).replace(/\.$/, "") : `it answered ${response.status}`;
+  const clock = response.status === 400 ? " The service takes a signed request within ten minutes of its own clock, so check this computer's clock." : "";
+  throw new Error(`The service did not show the briefs of sitting ${sitting} (${said}).${clock} Nothing was approved or paid.`);
 }
 
 const failure = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
@@ -272,6 +277,10 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     }).catch(failure);
 
   const goOn = (current: Opened) => {
+    // The service keeps a sitting open until its next round closes it, which can be a little after its time ran out.
+    if (current.deadline <= Date.now() / 1000) {
+      throw new Error(`Agent ${agentId}'s sitting ${current.sitting} ran out of time at ${date(current.deadline)}, so nothing more can be delivered for it, and BrainChain closes it shortly. ${cli(`exam status --sitting ${current.sitting}`)} shows each item's outcome.`);
+    }
     log(`Agent ${agentId} has sitting ${current.sitting} open until ${date(current.deadline)}, so this goes on with it and pays nothing.`);
     return current;
   };
