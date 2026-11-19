@@ -715,11 +715,15 @@ export async function papers(network: Network, options: { agentId: string; log: 
   const units = (value: unknown) => (typeof value === "string" && /^\d{1,30}$/.test(value) ? money(BigInt(value)) : "?");
   log(`Papers of agent ${agentId} on ${parent.name}: ${url}`);
   log(`  Epoch     ${String(epoch.number ?? "?")}${typeof epoch.since === "number" ? `, since ${date(epoch.since)}` : ""}; controller ${printable(String(epoch.controller ?? "unknown"))}; build ${typeof epoch.build === "string" && epoch.build ? JSON.stringify(printable(epoch.build)) : "none declared"}`);
-  if (record) log(`  Record    ${String(record.entries)} entries: ${typeof record.url === "string" ? printable(record.url) : `${network.service}/agents/${parent.chainId}/${agentId}/record`}`);
+  if (record) log(`  Record    ${String(record.entries)} ${record.entries === 1 ? "entry" : "entries"}: ${typeof record.url === "string" ? printable(record.url) : `${network.service}/agents/${parent.chainId}/${agentId}/record`}`);
   else log("  Record    no entry yet");
   if (held.length === 0) log("  Licences  none");
   for (const entry of held) log(`  Licence   ${licenceLine(entry)}`);
-  if (ceiling) log(`  Ceiling   ${units(ceiling.units)} USD in flight at most (floor ${units(ceiling.floor)})${typeof ceiling.halvedUntil === "number" ? `, halved until ${date(ceiling.halvedUntil)}` : ""}`);
+  // What the agent's record earns it: how much paid work it may hold at once, which a refusal upheld on a dispute halves for a while.
+  if (ceiling) {
+    const halved = typeof ceiling.halvedUntil === "number" ? `; halved until ${date(ceiling.halvedUntil)}, after a refusal upheld on a dispute` : "";
+    log(`  Ceiling   the agent may hold at most ${units(ceiling.units)} USD of paid work in flight at once, and never less than ${units(ceiling.floor)} USD${halved}`);
+  }
   else log("  Ceiling   not stated");
   log(`  Card      ${url}/card.svg`);
   if (typeof signed.verify === "string") log(`  Check     ${printable(signed.verify)}`);
@@ -732,20 +736,28 @@ export async function papers(network: Network, options: { agentId: string; log: 
   }
   const registry = network.identity ?? "<identity registry>";
   const rpc = network.bridge?.rpc ?? network.proofs.rpc;
+  // A valid licence stands for the build the id declares now, so declaring another is no suggestion to make.
+  const licensed = held.some((entry) => entry.state === "valid");
   log(
     [
       "",
-      `Two transactions the id's owner can send once, on ${parent.name}. Both are optional, and this command sends neither.`,
+      licensed
+        ? `A transaction the id's owner can send once, on ${parent.name}. It is optional, and this command does not send it.`
+        : `Two transactions the id's owner can send once, on ${parent.name}. Both are optional, and this command sends neither.`,
       ...(network.identity ? [] : [`This release names no ERC-8004 registry on ${parent.name}: put the registry the id is on in place of <identity registry>.`]),
-      "They are written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.",
+      `${licensed ? "It is" : "They are"} written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.`,
       "",
       "  Point the id's URI at its Papers, so the record shows wherever the id's token is shown:",
       `    cast send ${registry} "setAgentURI(uint256,string)" ${agentId} "${url}" --rpc-url ${rpc} --interactive`,
       "",
-      "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
-      "  A build that starts with house: is read without that prefix.",
-      "  A licence stands for the build declared when its sitting opened, so declare it before sitting: a change of build lapses the licence.",
-      `    cast send ${registry} "setMetadata(uint256,string,bytes)" ${agentId} build "$(cast from-utf8 '<build>')" --rpc-url ${rpc} --interactive`,
+      ...(licensed
+        ? ["  The agent's licence stands for the build the id declares now. Declaring another build lapses the licence."]
+        : [
+            "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
+            "  A build that starts with house: is read without that prefix.",
+            "  A licence stands for the build declared when its sitting opened, so declare it before sitting: a change of build lapses the licence.",
+            `    cast send ${registry} "setMetadata(uint256,string,bytes)" ${agentId} build "$(cast from-utf8 '<build>')" --rpc-url ${rpc} --interactive`,
+          ]),
     ].join("\n"),
   );
 }

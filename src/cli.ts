@@ -232,9 +232,10 @@ const COMMAND_USAGE: Record<string, string> = {
                                             they say now: the epoch its id is in, its record, its licences and its
                                             ceiling. Then the two transactions the id's owner can send once, as
                                             commands to copy: one points the id's URI at its Papers, and one
-                                            declares the build the agent runs. papers sends neither, and prints
-                                            neither for an id bound to an NFT, whose holder controls it. Needs no
-                                            key.`,
+                                            declares the build the agent runs, until the agent holds a valid
+                                            licence: then declaring another build lapses it, and papers says so
+                                            instead. papers sends neither, and prints neither for an id bound to
+                                            an NFT, whose holder controls it. Needs no key.`,
   dispute: `  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
                                             window. BrainChain rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the

@@ -1002,7 +1002,8 @@ describe("papers", () => {
   const file = (papersOf: unknown) => json({ type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1", name: "Atlas", brainchain: { papers: papersOf, signed: "BrainChain papers\n{}", signature: "0x04" } });
 
   it("prints where the Papers are and what they say, then the two transactions as commands to copy, and sends nothing", async () => {
-    const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file(signed) } });
+    const unlicensed = { ...signed, licences: [{ ...signed.licences[0], state: "lapsed" }] };
+    const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file(unlicensed) } });
     const lines: string[] = [];
     await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
     const url = `${MAINNET.service}/papers/4663/501`;
@@ -1010,8 +1011,8 @@ describe("papers", () => {
       `Papers of agent 501 on Robinhood Chain: ${url}`,
       `  Epoch     2, since 2099-12-31T00:00:00Z; controller ${wallet.address}; build "atlas 2.1"`,
       `  Record    31 entries: ${MAINNET.service}/agents/4663/501/record`,
-      "  Licence   code  valid; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 1 passed, 0 failed",
-      "  Ceiling   2.50 USD in flight at most (floor 1.00), halved until 2100-01-31T00:00:00Z",
+      "  Licence   code  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 1 passed, 0 failed",
+      "  Ceiling   the agent may hold at most 2.50 USD of paid work in flight at once, and never less than 1.00 USD; halved until 2100-01-31T00:00:00Z, after a refusal upheld on a dispute",
       `  Card      ${url}/card.svg`,
       "  Check     npx brainchain-verify mainnet --record 501",
     ]);
@@ -1032,6 +1033,18 @@ describe("papers", () => {
     );
     expect(lines).toHaveLength(8);
     expect(desk.read).toEqual(["/papers/4663/501"]);
+  });
+
+  it("suggests no new build once the agent holds a valid licence, and says another build lapses it", async () => {
+    const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file({ ...signed, record: { ...signed.record, entries: 1 } }) } });
+    const lines: string[] = [];
+    await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
+    expect(lines[2]).toBe(`  Record    1 entry: ${MAINNET.service}/agents/4663/501/record`);
+    const advice = lines.at(-1)!;
+    expect(advice).not.toContain("setMetadata");
+    expect(advice).toContain("A transaction the id's owner can send once, on Robinhood Chain. It is optional, and this command does not send it.");
+    expect(advice).toContain('"setAgentURI(uint256,string)"');
+    expect(advice.split("\n").at(-1)).toBe("  The agent's licence stands for the build the id declares now. Declaring another build lapses the licence.");
   });
 
   it("says an id bound to an NFT is controlled by the token's holder, and prints no registry calls for it", async () => {
