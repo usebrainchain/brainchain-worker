@@ -48,7 +48,7 @@ const TARGETS = Object.keys(GOVERNED) as Target[];
 
 /** What the brain reads from a proposal's URI, cut to the lengths it keeps, in UTF-16 units as a JavaScript string counts them. */
 export const LIMITS = { title: 120, rationale: 1_500, current: 300, proposed: 300 } as const;
-/** The most the brain reads of a whole case as JSON; past it, the case reads as blank and BrainChain decides on the call alone. */
+/** The most the brain reads of a whole case as JSON; past it, the case reads as blank and Jev is asked about the call alone. */
 export const CASE_BYTES = 4_096;
 
 const proposalsAbi = parseAbi([
