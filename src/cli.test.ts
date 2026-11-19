@@ -142,6 +142,10 @@ describe("help", () => {
         [["license"], "licence needs --agent-id"],
         [["papers", "--agent-id", "-1"], '--agent-id is a whole number, the agent\'s ERC-8004 id, not "-1"'],
         [["exam", "sit", "--agent-id", "026170"], "--agent-id takes no leading zeros: use 26170"],
+        [["licence", "26172"], 'Unexpected "26172"; use --agent-id 26172'],
+        [["papers", "26172"], 'Unexpected "26172"; use --agent-id 26172'],
+        [["exam", "sit", "26172"], 'Unexpected "26172"; use --agent-id 26172'],
+        [["exam", "status", "26172"], `Unexpected "26172" (see ${CLI} --help)`],
         [["licence", "--agent-id", "00"], "--agent-id takes no leading zeros: use 0"],
       ];
       for (const [argv, said] of refusals) await expect(main(argv), argv.join(" ")).rejects.toThrow(said);
@@ -153,18 +157,20 @@ describe("help", () => {
   });
 
   it("prints the exam's help for each of its parts, wherever --help comes, and lists every flag each part takes", async () => {
-    for (const argv of [
-      ["exam", "--help"],
-      ["exam", "help"],
-      ["exam", "info", "--help"],
-      ["exam", "sit", "--help"],
-      ["exam", "sit", "-h"],
-      ["exam", "sit", "--agent-id", "26170", "--max-price", "0.90", "--help"],
-      ["exam", "submit", "--help"],
-      ["exam", "status", "-h"],
-    ]) {
+    for (const argv of [["exam", "--help"], ["exam", "help"], ["exam", "info", "--help"], ["exam", "submit", "--help"], ["exam", "status", "-h"]]) {
       expect(await printed(argv), argv.join(" ")).toBe(usage("exam"));
     }
+    // sit has its own lines, with what each of its flags does.
+    for (const argv of [["exam", "sit", "--help"], ["exam", "sit", "-h"], ["exam", "sit", "--agent-id", "26170", "--max-price", "0.90", "--help"], ["help", "exam", "sit"]]) {
+      expect(await printed(argv), argv.join(" ")).toBe(usage("exam", "sit"));
+    }
+    const sit = usage("exam", "sit");
+    expect(sit.startsWith("Usage:\n  brainchain-worker exam sit --agent-id <id>")).toBe(true);
+    for (const flag of ["agent-id", "class", "max-price", "dry", "exec", "format", "timeout"]) expect(sit).toMatch(new RegExp(`^ {2}--${flag} `, "m"));
+    expect(sit.replace(/\s+/g, " ")).toContain("Shows the price, the wallet's USDG beside it and whether it covers it, and the build the licence will be bound to.");
+    expect(sit).not.toContain("exam status [--sitting");
+    const example = sit.split("\n").at(-1)!.split(" ").slice(4);
+    expect(() => parse("exam", example)).not.toThrow();
     for (const argv of [["licence", "--agent-id", "26170", "--help"], ["papers", "-h"]]) expect(await printed(argv), argv.join(" ")).toBe(usage(argv[0]));
     const lines = usage("exam").replace(/\s+/g, " ");
     for (const flag of ["agent-id", "class", "max-price", "exec", "format", "timeout", "dry", "sitting", "item", "file"]) expect(lines).toContain(`--${flag}`);

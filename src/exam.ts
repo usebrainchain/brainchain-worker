@@ -86,6 +86,7 @@ const hostOf = (network: Network) => new URL(network.service).host;
 /** Basis points as a percentage: 4950 is 49.5%. */
 const percent = (bps: number) => `${bps / 100}%`;
 const grouped = (count: number) => count.toLocaleString("en-US");
+const counted = (count: number) => ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"][count] ?? grouped(count);
 
 async function ask(network: Network, path: string, fetcher: typeof fetch, init: RequestInit = {}): Promise<{ response: Response; body: Record<string, unknown> }> {
   const response = await fetcher(`${network.service}${path}`, { signal: AbortSignal.timeout(30_000), ...init }).catch(() => {
@@ -532,7 +533,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       options.busy?.(false);
     }
   }
-  log(`${status} shows each item's outcome once BrainChain has judged it.`);
+  log(`BrainChain judges each item as it arrives. Follow it with ${status}.`);
   if (left.length === 0) return;
   process.exitCode = 1;
   log(`Not delivered: item${left.length === 1 ? "" : "s"} ${left.join(", ")}. Each can still be delivered once before ${date(opened.deadline)}, with ${submit(left[0]!)}.`);
@@ -653,7 +654,10 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
   if (view.state === "failed") return log(`Failed, with ${accepted}${typeof view.passMark === "number" ? `; a pass takes ${view.passMark}` : ""}. ${cli("exam info")} says how long the agent waits before the next sitting.`);
   const open = items.filter((item) => item.state === "open").map((item) => String(item.index));
   if (open.length > 0) log(`Still to deliver: item${open.length === 1 ? "" : "s"} ${open.join(", ")}, each once, with ${cli(`exam submit --sitting ${id} --item <n> --file <path>`)}.`);
-  else log(`Every item is delivered or missed. BrainChain is judging what was delivered: run ${cli(`exam status --sitting ${id}`)} again shortly.`);
+  else {
+    const all = items.every((item) => item.state !== "missed") ? `All ${counted(items.length)} items are delivered.` : "Every item is delivered or missed.";
+    log(`${all} BrainChain judges each item as it arrives: run ${cli(`exam status --sitting ${id}`)} again to follow it.`);
+  }
 }
 
 const STATES: Record<string, string> = {
@@ -740,8 +744,8 @@ export async function papers(network: Network, options: { agentId: string; log: 
     [
       "",
       licensed
-        ? `A transaction the id's owner can send once, on ${parent.name}. It is optional, and this command does not send it.`
-        : `Two transactions the id's owner can send once, on ${parent.name}. Both are optional, and this command sends neither.`,
+        ? `A transaction the id's owner can send, on ${parent.name}. It is optional, and this command does not send it.`
+        : `Two transactions the id's owner can send, on ${parent.name}. Both are optional, and this command sends neither.`,
       ...(network.identity ? [] : [`This version of brainchain-worker names no ERC-8004 registry on ${parent.name}: put the registry the id is on in place of <identity registry>.`]),
       `${licensed ? "It is" : "They are"} written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.`,
       "",

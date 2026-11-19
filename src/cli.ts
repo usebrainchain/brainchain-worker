@@ -215,7 +215,7 @@ const COMMAND_USAGE: Record<string, string> = {
                                             license is the same command.`,
   papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Papers are, the file BrainChain signs for it, and what
                                             they say now: the epoch its id is in, its record, its licences and its
-                                            ceiling. Then the two transactions the id's owner can send once, as
+                                            ceiling. Then the two transactions the id's owner can send, as
                                             commands to copy: one points the id's URI at its Papers, and one
                                             declares the build the agent runs. Once the agent holds a valid
                                             licence, papers prints only the first and says that declaring another
@@ -233,6 +233,27 @@ const COMMAND_USAGE: Record<string, string> = {
 };
 
 /** One line each command's own --help ends with. */
+/** exam sit's own lines, with what each of its flags does. */
+const SIT_USAGE = `Usage:
+  brainchain-worker exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry]
+                             [--exec "<command>"] [--format prompt|json] [--timeout <minutes>]
+                                            Open a sitting of BrainChain's licence exam for an ERC-8004 agent this
+                                            wallet holds. sit first shows the price and pays nothing.
+  --agent-id <id>                           The agent's ERC-8004 id: a whole number, with no leading zeros.
+  --class <class>                           The class to sit, code by default. exam info lists the classes.
+  --max-price <USDG>                        The most the sitting may cost, such as 0.90. sit pays only when it
+                                            covers the price.
+  --dry                                     Shows the price, the wallet's USDG beside it and whether it covers it,
+                                            and the build the licence will be bound to. Approves and pays nothing.
+  --exec "<command>"                        Runs the command once on each item, as run does on a task, and
+                                            delivers what it prints. Without it, sit prints the briefs, and exam
+                                            submit delivers each item.
+  --format prompt|json                      How --exec gets each item on stdin: as a prompt, or as JSON. prompt by
+                                            default.
+  --timeout <minutes>                       The most minutes --exec may spend on one item, 20 by default.
+
+Example: BRAINCHAIN_NETWORK=mainnet brainchain-worker exam sit --agent-id 501 --max-price 0.90 --dry`;
+
 const EXAMPLES: Record<string, string> = {
   "new-key": "brainchain-worker new-key --file ~/.brainchain/worker.key",
   join: 'brainchain-worker join --name "Atlas" --about "Summaries, data extraction and code review" --price 0.30',
@@ -349,7 +370,12 @@ export function parse(command: string, args: string[]): { positional: string[]; 
     if (value === undefined || (inline === undefined && value.startsWith("--"))) throw new UsageError(`--${name} needs a value`);
     values.set(name, value);
   }
-  if (positional.length > (POSITIONAL[command] ?? 0)) throw new UsageError(`Unexpected "${positional.at(-1)}" (see ${CLI} --help)`);
+  if (positional.length > (POSITIONAL[command] ?? 0)) {
+    const extra = positional.at(-1)!;
+    // A bare number where an agent id goes is that id without its flag.
+    const takesId = Object.hasOwn(known, "agent-id") && (command !== "exam" || positional[0] === "sit");
+    throw new UsageError(takesId && /^\d+$/.test(extra) ? `Unexpected "${extra}"; use --agent-id ${extra}` : `Unexpected "${extra}" (see ${CLI} --help)`);
+  }
   return { positional, values, switches };
 }
 
@@ -369,8 +395,9 @@ export function asksHelp(command: string, args: string[]): boolean {
 }
 
 /** One command's usage lines, or the whole text for anything else. A name from argv can match what every object inherits, such as constructor. */
-export function usage(command: string | undefined): string {
+export function usage(command: string | undefined, part?: string): string {
   const name = canonical(command);
+  if (name === "exam" && part === "sit") return SIT_USAGE;
   return name !== undefined && Object.hasOwn(COMMAND_USAGE, name) ? `Usage:\n${COMMAND_USAGE[name]}\n\nExample: ${EXAMPLES[name]}` : USAGE;
 }
 
@@ -931,12 +958,12 @@ export async function main(argv: string[]): Promise<void> {
   const [given, ...rest] = argv;
   const command = canonical(given);
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    console.log(usage(rest[0]));
+    console.log(usage(rest[0], rest[1]));
     return;
   }
   // `exam help` reads as exam's own help, as `help exam` does.
   if (asksHelp(command, rest) || (command === "exam" && rest[0] === "help")) {
-    console.log(usage(command));
+    console.log(usage(command, rest[0]));
     return;
   }
   if (command === "--version" || command === "-v") {

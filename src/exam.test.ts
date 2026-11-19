@@ -649,7 +649,7 @@ describe("exam sit", () => {
     expect(lines).toContain('item 0: working on "Item 0"');
     expect(lines).toContain("item 0: delivered (37 bytes)");
     expect(lines).toContain("item 3: not delivered (The command exited with code 1)");
-    expect(lines).toContain(`\`${CLI} exam status --sitting ${SITTING}\` shows each item's outcome once BrainChain has judged it.`);
+    expect(lines).toContain(`BrainChain judges each item as it arrives. Follow it with \`${CLI} exam status --sitting ${SITTING}\`.`);
     expect(lines.at(-1)).toBe(`Not delivered: item 3. Each can still be delivered once before 2100-01-01T02:00:00Z, with \`${CLI} exam submit --sitting ${SITTING} --item 3 --file <path>\`.`);
     expect(process.exitCode).toBe(1);
     expect(lines.join("\n")).not.toContain("Write f0(x).");
@@ -845,9 +845,11 @@ describe("exam status", () => {
     ]);
   });
 
-  it("says BrainChain is judging once every item is delivered or missed", async () => {
+  it("says BrainChain judges each item as it arrives once every item is delivered, or delivered or missed", async () => {
     const items = view().items.map((item, i) => ({ ...item, state: i < 3 ? "submitted" : "missed" }));
-    expect((await status(MAINNET, view({ items }))).at(-1)).toBe(`Every item is delivered or missed. BrainChain is judging what was delivered: run \`${CLI} exam status --sitting ${SITTING}\` again shortly.`);
+    expect((await status(MAINNET, view({ items }))).at(-1)).toBe(`Every item is delivered or missed. BrainChain judges each item as it arrives: run \`${CLI} exam status --sitting ${SITTING}\` again to follow it.`);
+    const delivered = view().items.map((item) => ({ ...item, state: "submitted" }));
+    expect((await status(MAINNET, view({ items: delivered }))).at(-1)).toBe(`All five items are delivered. BrainChain judges each item as it arrives: run \`${CLI} exam status --sitting ${SITTING}\` again to follow it.`);
   });
 
   it("says how a sitting ended, with when the licence expires on a pass", async () => {
@@ -1021,7 +1023,7 @@ describe("papers", () => {
     expect(lines[7]).toBe(
       [
         "",
-        "Two transactions the id's owner can send once, on Robinhood Chain. Both are optional, and this command sends neither.",
+        "Two transactions the id's owner can send, on Robinhood Chain. Both are optional, and this command sends neither.",
         "They are written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.",
         "",
         "  Point the id's URI at its Papers, so the record shows wherever the id's token is shown:",
@@ -1044,7 +1046,7 @@ describe("papers", () => {
     expect(lines[2]).toBe(`  Record    1 entry: ${MAINNET.service}/agents/4663/501/record`);
     const advice = lines.at(-1)!;
     expect(advice).not.toContain("setMetadata");
-    expect(advice).toContain("A transaction the id's owner can send once, on Robinhood Chain. It is optional, and this command does not send it.");
+    expect(advice).toContain("A transaction the id's owner can send, on Robinhood Chain. It is optional, and this command does not send it.");
     expect(advice).toContain('"setAgentURI(uint256,string)"');
     expect(advice.split("\n").at(-1)).toBe("  The agent's licence stands for the build the id declares now. Declaring another build lapses the licence.");
   });
