@@ -187,38 +187,23 @@ const COMMAND_USAGE: Record<string, string> = {
                                             key and sends it. The line opens once the worker is proven on the
                                             board. --premium is the most the sponsor may charge per 30 days, in
                                             basis points (default 0, at most 200). Mainnet only.`,
-  exam: `  brainchain-worker exam info | exam status [--sitting <id>]
-                            | exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry]
-                                       [--exec "<command>"] [--format prompt|json] [--timeout <minutes>]
-                            | exam submit --sitting <id> --item <n> [--file <path>], or with the work on stdin
+  exam: `  brainchain-worker exam info | sit | submit | status
                                             BrainChain's licence exam, for an ERC-8004 agent this wallet holds.
-                                            info prints what a sitting is and costs, with the levels each item
-                                            is graded against and how sure the judges must be to accept one.
-                                            sit checks that the wallet holds the agent's id and sends the
-                                            request without a payment first: the service refuses there a
-                                            sitting it cannot open, and otherwise states the price. sit stops
-                                            at the price: it pays only when --max-price covers the price. An
-                                            agent that already has a sitting open goes on with that one. The
-                                            payment is USDG on Robinhood Chain over x402, after an approval for
-                                            Permit2 that sit sends when the wallet needs one. The fee pays for
-                                            the sitting, pass or fail. If BrainChain cannot open a paid
-                                            sitting, or cannot judge enough of it to decide, the sitting is
-                                            void: it does not count against the agent, and the payment goes
-                                            back to the paying wallet. status says when a sitting is void. sit
-                                            keeps the sitting and prints its briefs and how to deliver them.
-                                            With --exec it runs the command once on each item, as run does on a
-                                            task, with the levels the service states, and delivers what it
-                                            prints; --format and --timeout are run's. --dry does everything
-                                            short of the approval and the payment, and with a sitting already
-                                            open it prints the briefs and runs and delivers nothing. A sitting
-                                            that is paid for and not open yet is asked for by the same sit
-                                            command, with the same payment and no new one. submit delivers one
-                                            item's work from --file, or from stdin without it. An item takes
-                                            one delivery, so send finished work. status prints the sitting's
-                                            state, each item's outcome and, on a pass, when the licence
-                                            expires. Before a sitting opens, status says whether its payment is
-                                            being settled, it is paid for and opening, or its payment did not
-                                            settle. Without --sitting, status reads the sitting saved last.`,
+    exam info                               What a sitting is and costs, and how its items are judged.
+    exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry]
+             [--exec "<command>"] [--format prompt|json] [--timeout <minutes>]
+                                            Shows the price, and pays only when --max-price covers it. Then prints
+                                            the briefs, or with --exec runs the command once on each item and
+                                            delivers what it prints. --dry approves and pays nothing.
+    exam submit --sitting <id> --item <n> [--file <path>]
+                                            Delivers one item's work, from --file or from stdin. An item takes one
+                                            delivery, so send finished work.
+    exam status [--sitting <id>]            Each item's outcome; without --sitting, the sitting saved last.
+                                            The judges are the models on BrainChain's panel, Jev among them. The fee
+                                            pays for the sitting, pass or fail. If BrainChain cannot open a paid
+                                            sitting, or cannot judge enough of it to decide, the sitting is void: it
+                                            does not count against the agent, and the payment goes back to the
+                                            paying wallet. See "Licence exam" in the README.`,
   licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
                                             of each, with the controller and the build BrainChain reads for the
                                             id now, which the states are held to. When the registry cannot be
@@ -232,10 +217,10 @@ const COMMAND_USAGE: Record<string, string> = {
                                             they say now: the epoch its id is in, its record, its licences and its
                                             ceiling. Then the two transactions the id's owner can send once, as
                                             commands to copy: one points the id's URI at its Papers, and one
-                                            declares the build the agent runs, until the agent holds a valid
-                                            licence: then declaring another build lapses it, and papers says so
-                                            instead. papers sends neither, and prints neither for an id bound to
-                                            an NFT, whose holder controls it. Needs no key.`,
+                                            declares the build the agent runs. Once the agent holds a valid
+                                            licence, papers prints only the first and says that declaring another
+                                            build lapses the licence. papers sends neither, and prints neither for
+                                            an id bound to an NFT, whose holder controls it. Needs no key.`,
   dispute: `  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
                                             window. BrainChain rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the

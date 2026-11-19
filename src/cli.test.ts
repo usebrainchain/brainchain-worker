@@ -169,7 +169,7 @@ describe("help", () => {
     const lines = usage("exam").replace(/\s+/g, " ");
     for (const flag of ["agent-id", "class", "max-price", "exec", "format", "timeout", "dry", "sitting", "item", "file"]) expect(lines).toContain(`--${flag}`);
     expect(lines).toContain("exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry] [--exec \"<command>\"] [--format prompt|json] [--timeout <minutes>]");
-    expect(lines).toContain("exam submit --sitting <id> --item <n> [--file <path>], or with the work on stdin");
+    expect(lines).toContain("exam submit --sitting <id> --item <n> [--file <path>] Delivers one item's work, from --file or from stdin.");
   });
 
   it("takes license for licence, in a command and in its help", async () => {

@@ -156,32 +156,35 @@ describe("the licence exam in the README and --help", () => {
 
   it("say that sit pays only when --max-price covers the price, and when a sitting's payment goes back, in the service's words", () => {
     expect(flat(section)).toContain("`exam sit` pays only when `--max-price` covers the price it reads from the service");
-    expect(flat(help)).toContain("it pays only when --max-price covers the price");
+    expect(flat(usage("exam"))).toContain("Shows the price, and pays only when --max-price covers it.");
     const refunds = "The fee pays for the sitting, pass or fail. If BrainChain cannot open a paid sitting, or cannot judge enough of it to decide, the sitting is void: it does not count against the agent, and the payment goes back to the paying wallet.";
-    for (const text of [section, help]) expect(flat(text)).toContain(refunds);
+    for (const text of [section, usage("exam")]) expect(flat(text)).toContain(refunds);
     expect(flat(section)).toContain("If its payment has not come back, write to hello@usebrainchain.com with the sitting's id.");
     for (const text of [section, help]) expect(flat(text)).not.toContain("not refunded");
   });
 
-  it("say that an item takes one delivery, and that a paid sitting is asked for again with the same payment", () => {
-    for (const text of [section, help]) expect(flat(text)).toContain("An item takes one delivery, so send finished work");
-    expect(readme).toContain(`An item takes one delivery, of at most ${MAX_WORK_BYTES.toLocaleString("en-US")} bytes.`);
-    expect(flat(section)).toContain("the next `sit` for the same agent sends the same request with the same payment, which the service does not charge twice");
-    expect(flat(help)).toContain("is asked for by the same sit command, with the same payment and no new one");
+  it("keep exam's help to a line for each part and what a user needs, and leave the rest to the README", () => {
+    const lines = usage("exam").split("\n").slice(1, -2);
+    expect(lines.length).toBeLessThanOrEqual(18);
+    for (const part of ["info", "sit", "submit", "status"]) expect(lines.filter((line) => line.startsWith(`    exam ${part}`))).toHaveLength(1);
+    expect(flat(usage("exam"))).toContain("The judges are the models on BrainChain's panel, Jev among them.");
+    expect(flat(usage("exam"))).toContain('See "Licence exam" in the README.');
   });
 
-  it("say that the service refuses a sitting before anything is approved or paid, and that an opening sitting reads as opening", () => {
-    expect(flat(section)).toContain("`sit` first sends the request without a payment, and the service refuses there a sitting it cannot open");
+  it("say that an item takes one delivery, and that a paid sitting is asked for again with the same payment", () => {
+    for (const text of [section, usage("exam")]) expect(flat(text)).toContain("An item takes one delivery, so send finished work");
+    expect(readme).toContain(`An item takes one delivery, of at most ${MAX_WORK_BYTES.toLocaleString("en-US")} bytes.`);
+    expect(flat(section)).toContain("the next `sit` for the same agent sends the same request with the same payment, which the desk does not charge twice");
+  });
+
+  it("say that the service turns down a sitting before anything is paid, and that a quoted price means it will open", () => {
+    expect(flat(section)).toContain("`sit` first sends the request without a payment, and the service turns down a sitting it cannot open before anything is paid");
     expect(flat(section)).toContain("`sit` prints the service's reason and stops before it approves or pays anything");
-    expect(flat(help)).toContain("sends the request without a payment first: the service refuses there a sitting it cannot open, and otherwise states the price");
-    expect(flat(section)).toContain("`exam status` shows the sitting as paid for and opening, with the service's reason when it gives one");
-    expect(flat(help)).toContain("Before a sitting opens, status says whether its payment is being settled, it is paid for and opening, or its payment did not settle");
-    expect(flat(section)).toContain("The price in answer means the service would open the sitting.");
+    expect(flat(section)).toContain("A quoted price means the service will open it.");
     expect(flat(section)).toContain("past that, `sit` says to run it again a minute later");
   });
 
   it("say that the judges' bar is printed, and that a judged item shows how sure they were", () => {
-    expect(flat(usage("exam"))).toContain("with the levels each item is graded against and how sure the judges must be to accept one");
     expect(readme).toContain("how sure the judges must be to accept an item");
     expect(readme).toContain("the judges' answer and how sure they were of it, so an item refused with every case right explains itself");
   });
@@ -199,7 +202,7 @@ describe("the licence exam in the README and --help", () => {
   it("say who holds an agent whose id is bound to an NFT", () => {
     expect(flat(section)).toContain("The wallet holds the agent when it owns the id, is its registered wallet or, for an id bound to an NFT, holds that NFT.");
     expect(readme).toContain("or hold the NFT the agent's id is bound to");
-    expect(flat(section)).toContain("A build that starts with `house:` is read without that prefix.");
+    expect(flat(section)).toContain("A build that starts with `house:`, a prefix BrainChain keeps for the agents it runs itself, is read without it.");
   });
 
   it("say who the judges are where they first come up", () => {
