@@ -234,6 +234,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   const { log, agentId, dry, command } = options;
   const fetcher = options.fetcher ?? fetch;
   const dir = options.dir ?? stateDir();
+  const warn = (message: string) => log(`warning: ${message}`);
   const account = chain.wallet.address;
   const parent = identityChain(network);
   const { symbol } = network.deskUsdg;
@@ -287,7 +288,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     if (named === undefined) throw new Error(charged);
     const { opened, state } = await briefsOf(network, chain.wallet, named, fetcher);
     if (opened) {
-      saveSitting(account, network, { ...mine, at: Math.floor(Date.now() / 1000), sitting: named, deadline: opened.deadline, briefs: opened.briefs }, dir);
+      saveSitting(account, network, { ...mine, at: Math.floor(Date.now() / 1000), sitting: named, deadline: opened.deadline }, dir);
       return goOn(opened);
     }
     if (state === "paying" || state === "opening") return notOpenYet(named, state, "Nothing was charged.");
@@ -304,7 +305,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       const reply = isObject(body) ? body : {};
       const opened = answer.ok ? openedSitting(reply) : undefined;
       if (opened) {
-        saveSitting(account, network, { ...mine, at, sitting: opened.sitting, deadline: opened.deadline, briefs: opened.briefs }, dir);
+        saveSitting(account, network, { ...mine, at, sitting: opened.sitting, deadline: opened.deadline }, dir);
         log(`Sitting ${opened.sitting} is open until ${date(opened.deadline)}.`);
         return opened;
       }
@@ -340,7 +341,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
 
   /** The sitting to work on: one already paid for, one still open, or a new one. Undefined when this run stops short of one. */
   const sitting = async (): Promise<Opened | undefined> => {
-    const saved = readSittings(account, network, dir).find((s) => s.agentId === agentId && s.class === options.class);
+    const saved = readSittings(account, network, dir, warn).find((s) => s.agentId === agentId && s.class === options.class);
     if (saved?.request) {
       log(`A sitting for agent ${agentId} was paid for at ${date(saved.at)}, and the desk had not opened it.`);
       if (dry) return void log("dry run: nothing sent. Without --dry, the same request is sent again with the same payment, and nothing more is paid.");
@@ -546,7 +547,7 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
   let id = options.sitting;
   let saved: SavedSitting | undefined;
   if (id === undefined) {
-    saved = readSittings(options.account!, network, options.dir ?? stateDir()).sort((a, b) => b.at - a.at)[0];
+    saved = readSittings(options.account!, network, options.dir ?? stateDir(), (message) => log(`warning: ${message}`)).sort((a, b) => b.at - a.at)[0];
     if (!saved) throw new Error(`No sitting is saved for ${options.account} on ${network.name}. Name one with --sitting <id>, or open one with ${cli("exam sit --agent-id <id>")}.`);
     if (!saved.sitting) {
       throw new Error(`The sitting for agent ${saved.agentId} was paid for at ${date(saved.at)}, and the service has not answered for it. Run ${cli(`exam sit --agent-id ${saved.agentId}`)} again: it sends the same request with the same payment, and nothing more is paid.`);

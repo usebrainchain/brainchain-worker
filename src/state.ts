@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, copyFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, copyFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -163,37 +163,62 @@ export interface SavedSitting {
   /** Known once the desk has answered. */
   sitting?: Hex;
   deadline?: number;
-  briefs?: { index: number; title: string; brief: string }[];
 }
 
 function isSitting(value: unknown): value is SavedSitting {
   if (!isObject(value) || typeof value.agentId !== "string" || typeof value.class !== "string" || !isCount(value.at)) return false;
-  const { request, sitting, deadline, briefs } = value;
+  const { request, sitting, deadline } = value;
   if (request !== undefined && !(isObject(request) && typeof request.body === "string" && Array.isArray(request.header) && request.header.length === 2 && request.header.every((part) => typeof part === "string"))) return false;
   if (sitting !== undefined && !isHash(sitting)) return false;
-  if (deadline !== undefined && !isCount(deadline)) return false;
-  return briefs === undefined || (Array.isArray(briefs) && briefs.every((b) => isObject(b) && isCount(b.index) && typeof b.title === "string" && typeof b.brief === "string"));
+  return deadline === undefined || isCount(deadline);
 }
 
-const sittingsFile = (address: string, network: Network, dir: string) => join(dir, `${address}.${network.id}.exam.json`);
+const sittingsPrefix = (address: string, network: Network) => `${address}.${network.id}.exam.`;
+/** Each agent and class has a file of its own, so runs for different agents never write over each other's payment. */
+const sittingFile = (address: string, network: Network, { agentId, class: sat }: Pick<SavedSitting, "agentId" | "class">, dir: string) =>
+  join(dir, `${sittingsPrefix(address, network)}${agentId}.${sat}.json`);
 
-/** The sittings a wallet has opened on one network, one for each agent and class; none when there is no file or it cannot be read. */
-export function readSittings(address: string, network: Network, dir = stateDir()): SavedSitting[] {
+/**
+ * The sittings a wallet has opened on one network, one for each agent and class. A file that is not a sitting is
+ * moved aside, never written over: it may hold a payment.
+ */
+export function readSittings(address: string, network: Network, dir = stateDir(), warn: (message: string) => void = console.warn): SavedSitting[] {
+  let names: string[];
   try {
-    const value: unknown = JSON.parse(readFileSync(sittingsFile(address, network, dir), "utf8"));
-    return Array.isArray(value) ? value.filter(isSitting) : [];
-  } catch {
-    return [];
+    names = readdirSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
+  const prefix = sittingsPrefix(address, network);
+  return names.flatMap((name) => {
+    if (!name.startsWith(prefix) || !name.endsWith(".json")) return [];
+    const file = join(dir, name);
+    const text = readIfThere(file);
+    if (text === undefined) return [];
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      value = undefined;
+    }
+    if (isSitting(value) && sittingFile(address, network, value, dir) === file) return [value];
+    // To the millisecond, so a file damaged again soon after never takes the place of the first.
+    const aside = `${file}.corrupt-${new Date().toISOString().replace(/[-:]/g, "")}`;
+    renameSync(file, aside);
+    warn(`${file} could not be read as a saved sitting, so it was moved to ${aside}`);
+    return [];
+  });
 }
 
-function writeSittings(address: string, network: Network, sittings: SavedSitting[], dir: string): void {
+/** Keeps a sitting in place of the one saved for its agent and class. */
+export function saveSitting(address: string, network: Network, sitting: SavedSitting, dir = stateDir()): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = sittingsFile(address, network, dir);
+  const file = sittingFile(address, network, sitting, dir);
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   const fd = openSync(temp, "w", 0o600);
   try {
-    writeFileSync(fd, JSON.stringify(sittings));
+    writeFileSync(fd, JSON.stringify(sitting));
     // On disk before a paid request leaves, so a payment that was sent and never answered is found by the next run.
     fsyncSync(fd);
   } finally {
@@ -202,17 +227,9 @@ function writeSittings(address: string, network: Network, sittings: SavedSitting
   renameSync(temp, file);
 }
 
-const otherSittings = (address: string, network: Network, { agentId, class: sat }: Pick<SavedSitting, "agentId" | "class">, dir: string) =>
-  readSittings(address, network, dir).filter((saved) => saved.agentId !== agentId || saved.class !== sat);
-
-/** Keeps a sitting in place of the one saved for its agent and class. */
-export function saveSitting(address: string, network: Network, sitting: SavedSitting, dir = stateDir()): void {
-  writeSittings(address, network, [...otherSittings(address, network, sitting, dir), sitting], dir);
-}
-
-/** Drops the sitting saved for an agent and class: one the desk never charged for. */
+/** Drops the sitting saved for an agent and class. */
 export function forgetSitting(address: string, network: Network, sitting: Pick<SavedSitting, "agentId" | "class">, dir = stateDir()): void {
-  writeSittings(address, network, otherSittings(address, network, sitting, dir), dir);
+  rmSync(sittingFile(address, network, sitting, dir), { force: true });
 }
 
 const empty = (board: string): State => ({ board: board.toLowerCase(), tasks: {}, done: [] });

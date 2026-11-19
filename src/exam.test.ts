@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -285,7 +285,7 @@ describe("exam sit", () => {
     const payment = JSON.parse(Buffer.from(desk.seen[0]!.header, "base64").toString("utf8")) as { accepted: Record<string, string>; payload: { permit2Authorization: { from: string } } };
     expect(payment.accepted).toMatchObject({ network: "eip155:4663", amount: PRICE, asset: MAINNET.deskUsdg.address, payTo: MAINNET.exitDesk });
     expect(payment.payload.permit2Authorization.from).toBe(wallet.address);
-    expect(saved()).toEqual([{ agentId: "501", class: "code", at: sent.at, sitting: SITTING, deadline: DEADLINE, briefs: briefs.map(({ index, title, brief }) => ({ index, title, brief })) }]);
+    expect(saved()).toEqual([{ agentId: "501", class: "code", at: sent.at, sitting: SITTING, deadline: DEADLINE }]);
 
     expect(lines.slice(1 + RULES.length, 6 + RULES.length)).toEqual([
       "  Permit2, which an x402 payment in USDG moves through, may spend 0 USDG of the wallet's. sit first approves 5 USDG for it, which takes a little ETH on Robinhood Chain.",
@@ -502,6 +502,19 @@ describe("exam sit", () => {
     expect(readSittings(wallet.address, MAINNET, dir)).toEqual([]);
   });
 
+  it("moves a damaged saved sitting aside and says so, never writing over it", async () => {
+    const desk = service(MAINNET);
+    const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
+    const file = join(dir, `${wallet.address}.mainnet.exam.501.code.json`);
+    writeFileSync(file, '{"agentId":"501","class":"code","at":');
+    const { run, lines } = sitting(MAINNET, desk.fetcher, chainFor(), { dir });
+    await run();
+    const aside = readdirSync(dir).filter((name) => name.includes(".corrupt-"));
+    expect(aside).toHaveLength(1);
+    expect(lines[0]).toBe(`warning: ${file} could not be read as a saved sitting, so it was moved to ${join(dir, aside[0]!)}`);
+    expect(desk.unpaid).toHaveLength(1);
+  });
+
   it("only says what it would send for a kept payment under --dry", async () => {
     const desk = service(MAINNET);
     const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
@@ -593,7 +606,7 @@ describe("exam sit", () => {
     const left = briefs.map((b) => (b.index < 3 ? { ...b, state: "judged" } : b));
     const desk = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs: left }) } });
     const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
-    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING, deadline: DEADLINE, briefs: [] }, dir);
+    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING, deadline: DEADLINE }, dir);
     const ran: string[] = [];
     const command: Command = { run: async (_input, env) => (ran.push(env.BRAINCHAIN_TASK_ID!), "def f(x): return x"), kill: () => undefined };
     const chain = chainFor();

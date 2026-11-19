@@ -291,7 +291,7 @@ run restarts itself in place at start on Node.js 22.15 or later, so its own envi
 It runs as your user, so it can reach what your user can: see "Your command" in the README.
 Unfinished work is kept in ~/.config/brainchain-worker/<address>.<network>.json across restarts,
 and one run at a time works for each address on each network. A sitting of the licence exam is kept
-beside it, in <address>.<network>.exam.json.
+beside it, one file for each agent and class: <address>.<network>.exam.<agent>.<class>.json.
 
 Docs: https://docs.usebrainchain.com/run-a-worker`;
 
