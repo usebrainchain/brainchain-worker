@@ -627,6 +627,28 @@ describe("exam sit", () => {
     expect(desk.unpaid).toEqual([]);
   });
 
+  it("starts no item once a stop is asked for, and says it is busy from an item's command to its delivery", async () => {
+    const desk = service(MAINNET);
+    const told: string[] = [];
+    let stopping = false;
+    const command: Command = {
+      run: async (_input, env) => {
+        told.push(`run ${env.BRAINCHAIN_TASK_ID}`);
+        // Ctrl-C while the first item's command runs.
+        stopping = true;
+        return "def f(x): return x";
+      },
+      kill: () => undefined,
+    };
+    const { run, lines } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n, command, stopping: () => stopping, busy: (working) => void told.push(working ? "busy" : "idle") });
+    await run();
+    expect(told).toEqual(["busy", "run 0", "idle"]);
+    expect(desk.delivered.map(({ item }) => item)).toEqual([0]);
+    for (const index of [1, 2, 3, 4]) expect(lines).toContain(`item ${index}: not started, since this run is stopping`);
+    expect(lines.at(-1)).toMatch(/^Not delivered: items 1, 2, 3, 4\. Each can still be delivered once before/);
+    expect(process.exitCode).toBe(1);
+  });
+
   it("prints the briefs of a sitting already open under --dry, and runs and delivers nothing", async () => {
     const desk = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
     const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));

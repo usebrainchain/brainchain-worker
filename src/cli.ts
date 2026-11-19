@@ -23,7 +23,7 @@ import { openStore, privateDir, readStakeMoves, readWatched, saveStakeMove, stat
 import { clearKeyFromEnvironment, expandHome, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
-import { createExamChain, examInfo, examSit, examStatus, examSubmit, licences, papers } from "./exam.js";
+import { createExamChain, examInfo, examSit, examStatus, examSubmit, licences, papers, type SitOptions } from "./exam.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { CLI, cli } from "./invoked.js";
 import { createWork, execProblems, execRisks, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
@@ -883,15 +883,22 @@ async function examCommand(network: Network, action: string | undefined, values:
   const { key, account } = signer();
   // Before anything is paid: the sitting is saved here, and a folder this user cannot write to would lose it.
   privateDir(stateDir(), log);
+  let exec: Pick<SitOptions, "command" | "stopping" | "busy"> = {};
   if (flags) {
     clearKeyFromEnvironment(key, log);
     for (const problem of execProblems(flags.exec)) log(`warning: ${problem}, so --exec will fail on the first item`);
+    // As run does: the command runs in a process group of its own, which Ctrl-C does not reach, so a stop here ends it.
+    const command = shellCommand(flags.exec);
+    let busy = false;
+    const stop = stopper({ busy: () => busy, kill: command.kill, log, exit: (code) => process.exit(code || process.exitCode) });
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop.signal);
+    exec = { command, stopping: stop.stopping, busy: (working) => void (busy = working) };
   }
   return examSit(network, createExamChain(network, account), {
     agentId,
     class: sat,
     ...(max === undefined ? {} : { maxPrice: parseUnits(max, 6) }),
-    ...(flags ? { command: shellCommand(flags.exec) } : {}),
+    ...exec,
     format: flags?.format ?? "prompt",
     timeoutMs: (flags?.minutes ?? 20) * 60_000,
     secrets: [key, key.slice(2)],

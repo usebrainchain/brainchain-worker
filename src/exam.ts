@@ -230,6 +230,10 @@ export interface SitOptions {
   /** How long a paid sitting the desk has not opened is asked for again, and how often. */
   waitMs?: number;
   everyMs?: number;
+  /** True once a stop was asked for: no item is started after it. */
+  stopping?: () => boolean;
+  /** Told when an item's command starts and when its delivery is done, so a stop waits for that and no longer. */
+  busy?: (working: boolean) => void;
 }
 
 /**
@@ -462,6 +466,11 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   const left: number[] = [];
   for (const { index, title, brief } of opened.briefs) {
     if (!opened.open.includes(index)) continue;
+    if (options.stopping?.()) {
+      left.push(index);
+      log(`item ${index}: not started, since this run is stopping`);
+      continue;
+    }
     const seconds = opened.deadline - Math.floor(Date.now() / 1000) - MARGIN_SEC;
     if (seconds <= 0) {
       left.push(index);
@@ -469,6 +478,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       continue;
     }
     log(`item ${index}: working on ${loggedTitle(title)}`);
+    options.busy?.(true);
     try {
       // The command reads an item as it reads a hired task, with the item's index as the task and the sitting's deadline as its own.
       const task: HiredTask = { id: BigInt(index), deadline: BigInt(opened.deadline), briefURI: "", briefHash: "0x" };
@@ -480,6 +490,8 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     } catch (error) {
       left.push(index);
       log(`item ${index}: not delivered (${printable(reason(error)).replace(/\.$/, "")})`);
+    } finally {
+      options.busy?.(false);
     }
   }
   log(`${status} shows each item's outcome once the desk has judged it.`);

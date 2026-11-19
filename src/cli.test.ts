@@ -761,6 +761,27 @@ describe("exam, licence and papers", () => {
     expect(await against(routes, ["exam", "sit", "--agent-id", "7", "--max-price", "5"], env).catch((e: Error) => e.message)).toBe(error);
   });
 
+  it("listens for Ctrl-C, SIGTERM and SIGHUP with --exec, as run does, so a stop reaches the command", async () => {
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+    const before = new Map(signals.map((signal) => [signal, process.listeners(signal)]));
+    // The restart that clears the key from the environment cannot happen inside a test, so it fails and is warned of.
+    const execve = process.execve
+      ? vi.spyOn(process, "execve").mockImplementation(() => {
+          throw new Error("no restart in a test");
+        })
+      : undefined;
+    const sitting = { price: "5.00 USD a sitting", classes: [{ class: "code", about: "" }], sitting: { levels: ["right", "wrong"], passes: "right" } };
+    const error = "Agent 7 holds a code licence until 2100-03-02 00:00 UTC. It may sit again from 2100-02-16 00:00 UTC. Nothing was charged.";
+    const routes = { "GET /exams": () => json(sitting), "POST /x402/exams": () => json({ error }, 409) };
+    try {
+      await expect(against(routes, ["exam", "sit", "--agent-id", "7", "--exec", "cat"], { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` })).rejects.toThrow(error);
+      for (const signal of signals) expect(process.listeners(signal).length, signal).toBe(before.get(signal)!.length + 1);
+    } finally {
+      execve?.mockRestore();
+      for (const signal of signals) for (const listener of process.listeners(signal)) if (!before.get(signal)!.includes(listener)) process.off(signal, listener);
+    }
+  });
+
   it("shows a sitting that is paid for and not open yet as opening", async () => {
     const opening = { sitting: SITTING, state: "opening", payment: "paid", reason: "the pool has no item left to draw", message: "The sitting is paid for and its items are being drawn." };
     const { lines } = await against({ [`GET /exams/${SITTING}`]: () => json(opening) }, ["exam", "status", "--sitting", SITTING]);
