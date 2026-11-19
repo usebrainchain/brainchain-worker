@@ -307,8 +307,12 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     throw new Error(charged);
   };
 
-  /** Reads the service's answer to a paid request and, while it is still drawing the items, sends the same request again. */
-  const follow = async (request: NonNullable<SavedSitting["request"]>, at: number, first: Response | Error): Promise<Opened> => {
+  /**
+   * Reads the service's answer to a paid request and, while it is still drawing the items, sends the same request
+   * again. A `kept` request, sent by an earlier run, that the desk never took is forgotten, and undefined says so:
+   * this run goes on to ask for a new sitting.
+   */
+  const follow = async (request: NonNullable<SavedSitting["request"]>, at: number, first: Response | Error, kept = false): Promise<Opened | undefined> => {
     const end = Date.now() + (options.waitMs ?? 180_000);
     let noted = false;
     for (let answer = first; ; answer = await send(request)) {
@@ -335,16 +339,18 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       const said = typeof reply.error === "string" ? printable(reply.error) : typeof reply.message === "string" ? printable(reply.message) : "";
       const aside = said ? ` (${said.replace(/\.$/, "")})` : "";
       // The service says so itself when it refuses before it charges, and it answers 400 and 402 before it settles anything.
-      if (/Nothing was charged/.test(said) || answer.status === 400 || answer.status === 402) {
-        forgetSitting(account, network, mine, dir);
-        if (/Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
-        throw new Error(`${said || `The desk answered ${answer.status}.`} Nothing was charged.`);
-      }
+      const untaken = /Nothing was charged/.test(said) || answer.status === 400 || answer.status === 402;
       // 409 with the sitting named is the desk still taking the payment. Without one, the desk holds no sitting for the
       // payment and will take it no more, so keeping it would only send it again for the same answer.
-      if (answer.status === 409 && named === undefined) {
+      const dead = !untaken && answer.status === 409 && named === undefined;
+      if (untaken || dead) {
         forgetSitting(account, network, mine, dir);
-        throw new Error(`The desk holds no sitting for that payment and takes it no more${aside}. It is no longer kept: run ${again} again to sit.`);
+        // A refusal that names a sitting is about the one the agent already has.
+        if (named && /Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
+        if (kept) return void log(`The desk never took the payment kept from ${date(at)}${aside}, so nothing was charged for it, and it is no longer kept. Asking for a new sitting...`);
+        if (dead) throw new Error(`The desk holds no sitting for that payment and takes it no more${aside}. It is no longer kept: run ${again} again to sit.`);
+        if (/Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
+        throw new Error(`${said || `The desk answered ${answer.status}.`} Nothing was charged.`);
       }
       if (answer.status !== 202 && answer.status !== 502 && answer.status !== 409) throw new Error(`The desk answered ${answer.status}${aside}. The payment may have gone through. ${resend}`);
       // Kept with its id from the first answer on, so status can read the sitting while it opens.
@@ -358,18 +364,22 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
 
   /** The sitting to work on: one already paid for, one still open, or a new one. Undefined when this run stops short of one. */
   const sitting = async (): Promise<Opened | undefined> => {
-    const saved = readSittings(account, network, dir, warn).find((s) => s.agentId === agentId && s.class === options.class);
+    let saved = readSittings(account, network, dir, warn).find((s) => s.agentId === agentId && s.class === options.class);
     if (saved?.request) {
       log(`A sitting for agent ${agentId} was paid for at ${date(saved.at)}, and the desk had not opened it.`);
       if (dry) return void log("dry run: nothing sent. Without --dry, the same request is sent again with the same payment, and nothing more is paid.");
       log("Sending the same request with the same payment again; nothing more is paid...");
-      return follow(saved.request, saved.at, await send(saved.request));
+      const resent = await follow(saved.request, saved.at, await send(saved.request), true);
+      if (resent) return resent;
+      saved = undefined;
     }
     // A sitting still inside its time is gone on with, and one not open yet is waited for: the service opens no second one for the agent meanwhile.
     if (saved?.sitting && (saved.deadline === undefined || saved.deadline > Date.now() / 1000)) {
       const { opened, state } = await briefsOf(network, chain.wallet, saved.sitting, fetcher);
       if (opened) return goOn(opened);
       if (state === "paying" || state === "opening") return notOpenYet(saved.sitting, state, "Nothing was approved or paid.");
+      // A payment that did not settle bought nothing, so the sitting it was for is kept no more.
+      if (state === "unpaid") forgetSitting(account, network, mine, dir);
     }
 
     const holds = await chain.holdsAgent(BigInt(agentId));
@@ -587,7 +597,11 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
   // The service answers for a sitting from the moment it holds its payment, with where it stands until it opens.
   const unopened = beforeOpening(view);
   if (unopened) {
-    if (unopened === "unpaid") return log(`Sitting ${id}: its payment did not settle, so nothing was charged and no sitting opens from it.`);
+    if (unopened === "unpaid") {
+      // A payment that did not settle bought nothing, so it is kept no more, and the next sit asks for a new sitting.
+      if (saved) forgetSitting(options.account!, network, saved, options.dir ?? stateDir());
+      return log(`Sitting ${id}: its payment did not settle, so nothing was charged and no sitting opens from it.${saved ? ` It is no longer kept: ${cli(`exam sit --agent-id ${saved.agentId}`)} asks for a new one.` : ""}`);
+    }
     log(`Sitting ${id}: ${unopened === "paying" ? "the service is settling its payment, and opens it once it has" : "paid for, opening"}`);
     if (typeof view.reason === "string" && view.reason.trim()) log(`  Not open yet: ${printable(view.reason)}`);
     const sit = cli(`exam sit --agent-id ${saved?.agentId ?? "<id>"}`);

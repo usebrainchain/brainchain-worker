@@ -473,7 +473,7 @@ describe("exam sit", () => {
     }
   });
 
-  it("forgets a kept payment the desk turns out never to have taken", async () => {
+  it("forgets a kept payment the desk turns out never to have taken, and asks for a new sitting in the same run", async () => {
     let down = true;
     const desk = service(MAINNET, {
       paid: () => {
@@ -484,8 +484,15 @@ describe("exam sit", () => {
     const { run, saved, dir } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n });
     await run().catch(() => undefined);
     expect(saved()).toHaveLength(1);
+    const at = saved()[0]!.at;
     down = false;
-    await expect(sitting(MAINNET, desk.fetcher, chainFor(), { dir }).run()).rejects.toThrow(/^The payment's deadline has passed\. Nothing was charged\.$/);
+    const probes = desk.unpaid.length;
+    const again = sitting(MAINNET, desk.fetcher, chainFor(), { dir });
+    await again.run();
+    expect(again.lines[2]).toBe(`The desk never took the payment kept from ${new Date(at * 1000).toISOString().replace(/\.\d+Z$/, "Z")} (The payment's deadline has passed), so nothing was charged for it, and it is no longer kept. Asking for a new sitting...`);
+    // The new request is quoted, and without --max-price nothing is paid for it.
+    expect(desk.unpaid).toHaveLength(probes + 1);
+    expect(again.lines.at(-1)).toBe("The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.");
     expect(saved()).toEqual([]);
   });
 
@@ -499,9 +506,27 @@ describe("exam sit", () => {
 
     saveSitting(wallet.address, MAINNET, kept, dir);
     const used = service(MAINNET, { paid: () => json({ error: "This payment was already used. Sign a new one." }, 409) });
-    await expect(sitting(MAINNET, used.fetcher, chainFor(), { dir }).run()).rejects.toThrow(
+    const resent = sitting(MAINNET, used.fetcher, chainFor(), { dir });
+    await resent.run();
+    expect(resent.lines).toContain("The desk never took the payment kept from 2100-01-01T00:00:00Z (This payment was already used. Sign a new one), so nothing was charged for it, and it is no longer kept. Asking for a new sitting...");
+    expect(used.unpaid).toHaveLength(1);
+    expect(readSittings(wallet.address, MAINNET, dir)).toEqual([]);
+    // A payment made in this run that the desk takes no more is said so, and the run stops there.
+    const fresh = service(MAINNET, { paid: () => json({ error: "This payment was already used. Sign a new one." }, 409) });
+    await expect(sitting(MAINNET, fresh.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(
       `The desk holds no sitting for that payment and takes it no more (This payment was already used. Sign a new one). It is no longer kept: run \`${CLI} exam sit --agent-id 501\` again to sit.`,
     );
+  });
+
+  it("forgets a kept sitting whose payment did not settle, and asks for a new one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
+    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING }, dir);
+    const unpaid = { error: "The payment for this sitting did not settle. Nothing was charged.", sitting: SITTING, state: "unpaid", payment: "failed" };
+    const desk = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => json(unpaid, 409) } });
+    const { run, lines } = sitting(MAINNET, desk.fetcher, chainFor(), { dir });
+    await run();
+    expect(desk.unpaid).toHaveLength(1);
+    expect(lines.at(-1)).toBe("The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.");
     expect(readSittings(wallet.address, MAINNET, dir)).toEqual([]);
   });
 
@@ -807,6 +832,14 @@ describe("exam status", () => {
     expect(await status(MAINNET, { sitting: SITTING, state: "unpaid" })).toEqual([`Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it.`]);
     // Failed is only ever a sitting that closed without a pass, whatever else the reply carries.
     expect((await status(MAINNET, view({ state: "failed", closedAt: DEADLINE, payment: "paid" })))[0]).toBe(`Sitting ${SITTING} for agent 501, class code: failed at 2100-01-01T02:00:00Z`);
+
+    // A sitting kept here whose payment did not settle is kept no more.
+    const unsettled = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
+    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING, request: { body: "{}", header: ["payment-signature", "abc"] } }, unsettled);
+    expect(await status(MAINNET, before("unpaid", "failed"), { dir: unsettled })).toEqual([
+      `Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it. It is no longer kept: \`${CLI} exam sit --agent-id 501\` asks for a new one.`,
+    ]);
+    expect(readSittings(wallet.address, MAINNET, unsettled)).toEqual([]);
 
     // The wallet that still keeps the paying request is told to send it again.
     const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
