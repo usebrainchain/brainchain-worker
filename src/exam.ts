@@ -329,7 +329,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     const end = Date.now() + (options.waitMs ?? 180_000);
     let noted = false;
     for (let answer = first; ; answer = await send(request)) {
-      if (answer instanceof Error) throw new Error(`The desk did not confirm the sitting (${reason(answer).replace(/\.$/, "")}). The payment may have gone through. ${resend}`);
+      if (answer instanceof Error) throw new Error(`The service did not confirm the sitting (${reason(answer).replace(/\.$/, "")}). The payment may have gone through. ${resend}`);
       const body: unknown = await answer.json().catch(() => undefined);
       const reply = isObject(body) ? body : {};
       const opened = answer.ok ? openedSitting(reply) : undefined;
@@ -361,16 +361,16 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
         // A refusal that names a sitting is about the one the agent already has.
         if (named && /Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
         if (kept) return void log(`The desk never took the payment kept from ${date(at)}${aside}, so nothing was charged for it, and it is no longer kept. Asking for a new sitting...`);
-        if (dead) throw new Error(`The desk holds no sitting for that payment and takes it no more${aside}. It is no longer kept: run ${again} again to sit.`);
+        if (dead) throw new Error(`BrainChain holds no sitting for that payment, and the desk takes it no more${aside}. It is no longer kept: run ${again} again to sit.`);
         if (/Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
-        throw new Error(`${said || `The desk answered ${answer.status}.`} Nothing was charged.`);
+        throw new Error(`${said || `The service answered ${answer.status}.`} Nothing was charged.`);
       }
-      if (answer.status !== 202 && answer.status !== 502 && answer.status !== 409) throw new Error(`The desk answered ${answer.status}${aside}. The payment may have gone through. ${resend}`);
+      if (answer.status !== 202 && answer.status !== 502 && answer.status !== 409) throw new Error(`The service answered ${answer.status}${aside}. The payment may have gone through. ${resend}`);
       // Kept with its id from the first answer on, so status can read the sitting while it opens.
       if (named && !noted) saveSitting(account, network, { ...mine, at, request, sitting: named }, dir);
       noted = true;
-      if (Date.now() >= end) throw new Error(`The sitting is paid for, and the desk has not opened it yet${aside}. ${resend}`);
-      log("The sitting is paid for and the desk is still opening it; asking again...");
+      if (Date.now() >= end) throw new Error(`The sitting is paid for, and BrainChain has not opened it yet${aside}. ${resend}`);
+      log("The sitting is paid for and BrainChain is still opening it; asking again...");
       await new Promise((resolve) => setTimeout(resolve, options.everyMs ?? 10_000));
     }
   };
@@ -379,7 +379,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   const sitting = async (): Promise<Opened | undefined> => {
     let saved = readSittings(account, network, dir, warn).find((s) => s.agentId === agentId && s.class === options.class);
     if (saved?.request) {
-      log(`A sitting for agent ${agentId} was paid for at ${date(saved.at)}, and the desk had not opened it.`);
+      log(`A sitting for agent ${agentId} was paid for at ${date(saved.at)}, and BrainChain had not opened it.`);
       if (dry) return void log("dry run: nothing sent. Without --dry, the same request is sent again with the same payment, and nothing more is paid.");
       log("Sending the same request with the same payment again; nothing more is paid...");
       const resent = await follow(saved.request, saved.at, await send(saved.request), true);
@@ -523,7 +523,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       options.busy?.(false);
     }
   }
-  log(`${status} shows each item's outcome once the desk has judged it.`);
+  log(`${status} shows each item's outcome once BrainChain has judged it.`);
   if (left.length === 0) return;
   process.exitCode = 1;
   log(`Not delivered: item${left.length === 1 ? "" : "s"} ${left.join(", ")}. Each can still be delivered once before ${date(opened.deadline)}, with ${submit(left[0]!)}.`);
@@ -562,7 +562,7 @@ export async function examSubmit(
   const lower = text.toLowerCase();
   if (options.secrets.some((secret) => secret !== "" && lower.includes(secret.toLowerCase()))) throw new Error("The work contains the worker's private key, so it was not sent.");
   await deliver(network, wallet, options.sitting, item, text, options.fetcher ?? fetch);
-  options.log(`Item ${item} delivered (${toBytes(text).byteLength} bytes). The desk judges it next: ${cli(`exam status --sitting ${options.sitting}`)} shows the outcome.`);
+  options.log(`Item ${item} delivered (${toBytes(text).byteLength} bytes). BrainChain judges it next: ${cli(`exam status --sitting ${options.sitting}`)} shows the outcome.`);
 }
 
 /**
@@ -645,7 +645,7 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
   if (view.state === "failed") return log(`Failed, with ${accepted}${typeof view.passMark === "number" ? `; a pass takes ${view.passMark}` : ""}. ${cli("exam info")} says how long the agent waits before the next sitting.`);
   const open = items.filter((item) => item.state === "open").map((item) => String(item.index));
   if (open.length > 0) log(`Still to deliver: item${open.length === 1 ? "" : "s"} ${open.join(", ")}, each once, with ${cli(`exam submit --sitting ${id} --item <n> --file <path>`)}.`);
-  else log(`Every item is delivered or missed. The desk is judging what was delivered: run ${cli(`exam status --sitting ${id}`)} again shortly.`);
+  else log(`Every item is delivered or missed. BrainChain is judging what was delivered: run ${cli(`exam status --sitting ${id}`)} again shortly.`);
 }
 
 const STATES: Record<string, string> = {

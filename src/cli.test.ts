@@ -816,7 +816,7 @@ describe("exam, licence and papers", () => {
     writeFileSync(work, "```python\ndef f(x):\n    return x\n```\n");
     const env = { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` };
     const { lines, asked } = await against({ [`POST /exams/${SITTING}/items/0`]: () => json({ state: "submitted" }, 202) }, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", work], env);
-    expect(lines).toEqual([`Item 0 delivered (37 bytes). The desk judges it next: \`${CLI} exam status --sitting ${SITTING}\` shows the outcome.`]);
+    expect(lines).toEqual([`Item 0 delivered (37 bytes). BrainChain judges it next: \`${CLI} exam status --sitting ${SITTING}\` shows the outcome.`]);
     expect((JSON.parse(asked[0]!.body) as { text: string }).text).toBe("```python\ndef f(x):\n    return x\n```\n");
     writeFileSync(work, Buffer.from([0xff, 0xfe, 0x00]));
     await expect(against({}, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", work], env)).rejects.toThrow("The work is not valid UTF-8. Nothing was sent.");

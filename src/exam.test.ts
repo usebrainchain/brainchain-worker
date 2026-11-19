@@ -432,12 +432,12 @@ describe("exam sit", () => {
     await run();
     expect(desk.seen).toHaveLength(3);
     expect(new Set(desk.seen.map((sent) => `${sent.header} ${sent.body}`)).size).toBe(1);
-    expect(lines.filter((line) => line === "The sitting is paid for and the desk is still opening it; asking again...")).toHaveLength(2);
+    expect(lines.filter((line) => line === "The sitting is paid for and BrainChain is still opening it; asking again...")).toHaveLength(2);
     expect(saved()[0]).toMatchObject({ sitting: SITTING });
     expect(saved()[0]).not.toHaveProperty("request");
   });
 
-  it("asks again for a sitting the desk is still opening every 10 seconds", async () => {
+  it("asks again for a sitting BrainChain is still opening every 10 seconds", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
       const drawing = { message: "The sitting is paid for and its items are being drawn.", sitting: SITTING, state: "paid" };
@@ -465,7 +465,7 @@ describe("exam sit", () => {
       const paying = chainFor({ usdg: 5_000_000n, allowance: 0n, eth: 10n ** 15n });
       const { run, saved, dir } = sitting(MAINNET, desk.fetcher, paying, { maxPrice: 5_000_000n, waitMs: 20 });
       const said = await run().catch((e: Error) => e.message);
-      expect(said).toMatch(/^(The sitting is paid for, and the desk has not opened it yet \(The sitting is paid for, but its items could not be drawn just now.*\)|The desk did not confirm the sitting \(fetch failed\)\. The payment may have gone through)\./);
+      expect(said).toMatch(/^(The sitting is paid for, and BrainChain has not opened it yet \(The sitting is paid for, but its items could not be drawn just now.*\)|The service did not confirm the sitting \(fetch failed\)\. The payment may have gone through)\./);
       expect(said).toContain(`Run \`${CLI} exam sit --agent-id 501\` again: it sends the same request with the same payment, and nothing more is paid.`);
       const { header, body } = desk.seen[0]!;
       // The payment is kept as it was sent, with the sitting's id once the service has named it, so status can read it.
@@ -483,7 +483,7 @@ describe("exam sit", () => {
       expect(desk.seen.at(-1)).toEqual({ header, body });
       expect(desk.unpaid).toHaveLength(probes);
       for (const call of [idle.holdsAgent, idle.funds, idle.approve]) expect(call).not.toHaveBeenCalled();
-      expect(again.lines.slice(0, 2)).toEqual([expect.stringMatching(/^A sitting for agent 501 was paid for at \d{4}-.*Z, and the desk had not opened it\.$/), "Sending the same request with the same payment again; nothing more is paid..."]);
+      expect(again.lines.slice(0, 2)).toEqual([expect.stringMatching(/^A sitting for agent 501 was paid for at \d{4}-.*Z, and BrainChain had not opened it\.$/), "Sending the same request with the same payment again; nothing more is paid..."]);
       expect(again.saved()).toEqual([expect.objectContaining({ sitting: SITTING, deadline: DEADLINE })]);
       expect(again.saved()[0]).not.toHaveProperty("request");
     }
@@ -530,7 +530,7 @@ describe("exam sit", () => {
     // A payment made in this run that the desk takes no more is said so, and the run stops there.
     const fresh = service(MAINNET, { paid: () => json({ error: "This payment was already used. Sign a new one." }, 409) });
     await expect(sitting(MAINNET, fresh.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(
-      `The desk holds no sitting for that payment and takes it no more (This payment was already used. Sign a new one). It is no longer kept: run \`${CLI} exam sit --agent-id 501\` again to sit.`,
+      `BrainChain holds no sitting for that payment, and the desk takes it no more (This payment was already used. Sign a new one). It is no longer kept: run \`${CLI} exam sit --agent-id 501\` again to sit.`,
     );
   });
 
@@ -588,7 +588,7 @@ describe("exam sit", () => {
     const { run, lines } = sitting(MAINNET, desk.fetcher, chainFor(), { dir, dry: true });
     await run();
     expect(lines).toEqual([
-      "A sitting for agent 501 was paid for at 2100-01-01T00:00:00Z, and the desk had not opened it.",
+      "A sitting for agent 501 was paid for at 2100-01-01T00:00:00Z, and BrainChain had not opened it.",
       "dry run: nothing sent. Without --dry, the same request is sent again with the same payment, and nothing more is paid.",
     ]);
     expect(desk.seen).toEqual([]);
@@ -625,6 +625,7 @@ describe("exam sit", () => {
     expect(lines).toContain('item 0: working on "Item 0"');
     expect(lines).toContain("item 0: delivered (37 bytes)");
     expect(lines).toContain("item 3: not delivered (The command exited with code 1)");
+    expect(lines).toContain(`\`${CLI} exam status --sitting ${SITTING}\` shows each item's outcome once BrainChain has judged it.`);
     expect(lines.at(-1)).toBe(`Not delivered: item 3. Each can still be delivered once before 2100-01-01T02:00:00Z, with \`${CLI} exam submit --sitting ${SITTING} --item 3 --file <path>\`.`);
     expect(process.exitCode).toBe(1);
     expect(lines.join("\n")).not.toContain("Write f0(x).");
@@ -771,7 +772,7 @@ describe("exam submit", () => {
     expect(desk.delivered).toHaveLength(1);
     expect(desk.delivered[0]).toMatchObject({ item: 2, text: work });
     expect(await recoverMessageAddress({ message: itemMessage(274630, SITTING, 2, work), signature: desk.delivered[0]!.signature })).toBe(wallet.address);
-    expect(lines).toEqual([`Item 2 delivered (38 bytes). The desk judges it next: \`${CLI} exam status --sitting ${SITTING}\` shows the outcome.`]);
+    expect(lines).toEqual([`Item 2 delivered (38 bytes). BrainChain judges it next: \`${CLI} exam status --sitting ${SITTING}\` shows the outcome.`]);
   });
 
   it("refuses work that is empty, too large or holds the key, before anything is sent", async () => {
@@ -818,6 +819,11 @@ describe("exam status", () => {
       "  Item 4    open: Item 4",
       `Still to deliver: items 3, 4, each once, with \`${CLI} exam submit --sitting ${SITTING} --item <n> --file <path>\`.`,
     ]);
+  });
+
+  it("says BrainChain is judging once every item is delivered or missed", async () => {
+    const items = view().items.map((item, i) => ({ ...item, state: i < 3 ? "submitted" : "missed" }));
+    expect((await status(MAINNET, view({ items }))).at(-1)).toBe(`Every item is delivered or missed. BrainChain is judging what was delivered: run \`${CLI} exam status --sitting ${SITTING}\` again shortly.`);
   });
 
   it("says how a sitting ended, with when the licence expires on a pass", async () => {
