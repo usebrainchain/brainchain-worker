@@ -403,7 +403,7 @@ const unanswered = (error: unknown): boolean =>
  * a sale of the NFT leaves the id's registered wallet as it was, so that wallet proves nothing there. An id that
  * does not exist, or is bound to a token no single account holds, is nobody's: a token that gives no holder, by
  * reverting, answering nothing or running out of gas, as a burned one does. Undefined when the registry could not
- * be read, or where this release names none.
+ * be read, or where this version names none.
  */
 export async function holdsAgent(network: Network, account: Address, agentId: bigint): Promise<boolean | undefined> {
   if (!network.identity || !network.bridge) return undefined;
@@ -431,7 +431,7 @@ export async function holdsAgent(network: Network, account: Address, agentId: bi
 /**
  * The build the id declares under its build key, read as the service reads it: one line of printable ASCII, at most
  * 96 characters, with any house: prefix removed, and "" for none. Undefined when the registry could not be read, or
- * where this release names none.
+ * where this version names none.
  */
 export async function declaredBuild(network: Network, agentId: bigint): Promise<string | undefined> {
   if (!network.identity || !network.bridge) return undefined;

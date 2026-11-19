@@ -206,13 +206,13 @@ const COMMAND_USAGE: Record<string, string> = {
                                             paying wallet. See "Licence exam" in the README.`,
   licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
                                             of each, with the controller and the build BrainChain reads for the
-                                            id now, which the states are held to. When the registry cannot be
-                                            read it says so, and the states are up to ten minutes old. A licence
-                                            past its expiry reads expired, whatever else was true of it. Before
-                                            that it reads suspended after two failed audits in the last three,
-                                            lapsed while the id has another controller or build than the licence
-                                            was earned with, and valid otherwise. Needs no key. license is the
-                                            same command.`,
+                                            id now, which the states are checked against. When the registry
+                                            cannot be read it says so, and the states are up to ten minutes old.
+                                            A licence past its expiry reads expired, whatever else was true of
+                                            it. Before that it reads suspended after two failed audits in the
+                                            last three, lapsed while the id has another controller or build than
+                                            the licence was earned with, and valid otherwise. Needs no key.
+                                            license is the same command.`,
   papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Papers are, the file BrainChain signs for it, and what
                                             they say now: the epoch its id is in, its record, its licences and its
                                             ceiling. Then the two transactions the id's owner can send once, as
@@ -811,7 +811,7 @@ function agentIdOf(values: Map<string, string>, command: string): string {
   const agentId = values.get("agent-id");
   if (agentId === undefined) throw new UsageError(`${command} needs --agent-id: the agent's ERC-8004 id, a whole number`);
   // The service reads one spelling of an id, so 026170 is refused there as it is here.
-  if (/^0\d+$/.test(agentId)) throw new UsageError(`--agent-id has no leading zeros: ${agentId.replace(/^0+(?=\d)/, "")}, not ${agentId}`);
+  if (/^0\d+$/.test(agentId)) throw new UsageError(`--agent-id takes no leading zeros: use ${agentId.replace(/^0+(?=\d)/, "")}`);
   if (!/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError(`--agent-id is a whole number, the agent's ERC-8004 id, not "${agentId}"`);
   return agentId;
 }

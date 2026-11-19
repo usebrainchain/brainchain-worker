@@ -52,7 +52,7 @@ export interface ExamChain {
 
 export function createExamChain(network: Network, account: PrivateKeyAccount): ExamChain {
   const parent = network.bridge;
-  if (!parent) throw new Error(`${network.name} names no parent chain to pay for a sitting on`);
+  if (!parent) throw new Error(`${network.name} names no parent chain to pay for a sitting on.`);
   const chain = parentChainOf(parent);
   const read = createPublicClient({ chain, transport: rpcTransport(parent.rpc) });
   const wallet = createWalletClient({ account, chain, transport: rpcTransport(parent.rpc) });
@@ -72,7 +72,7 @@ export function createExamChain(network: Network, account: PrivateKeyAccount): E
     async approve(amount) {
       const hash = await wallet.writeContract({ ...usdg, functionName: "approve", args: [PERMIT2, amount] });
       const receipt = await read.waitForTransactionReceipt({ hash, timeout: RECEIPT_MS });
-      if (receipt.status !== "success") throw new Error(`transaction ${hash} reverted on ${parent.name}`);
+      if (receipt.status !== "success") throw new Error(`Transaction ${hash} reverted on ${parent.name}.`);
       return hash;
     },
   };
@@ -86,6 +86,7 @@ const shown = (text: string) => stripAnsi(text).replace(/[\x00-\x08\x0b-\x1f\x7f
 const hostOf = (network: Network) => new URL(network.service).host;
 /** Basis points as a percentage: 4950 is 49.5%. */
 const percent = (bps: number) => `${bps / 100}%`;
+const grouped = (count: number) => count.toLocaleString("en-US");
 
 /** One request to the service, and its answer as JSON: `{}` for a body that is none. */
 async function ask(network: Network, path: string, fetcher: typeof fetch, init: RequestInit = {}): Promise<{ response: Response; body: Record<string, unknown> }> {
@@ -143,7 +144,7 @@ async function examFacts(network: Network, fetcher: typeof fetch): Promise<ExamI
         ? [`Sitting   ${items} items in ${minutes} minutes${hard === undefined ? "" : `, ${hard} of them from the hardest band`}${passMark === undefined ? "" : `; ${passMark} accepted is a pass`}`]
         : []),
       ...levels.map((level, i) => `${i === 0 ? "Levels   " : "         "} ${printable(level)}${i === passIndex ? " (an item is accepted at this level or better)" : ""}`),
-      ...(bar === undefined ? [] : [`Judges    work that answers every hidden case right is accepted when the judges accept it with at least ${percent(bar)} confidence, and work with a case wrong never is`]),
+      ...(bar === undefined ? [] : [`Judges    an item is accepted when every hidden case is right and the judges, the models on BrainChain's panel with Jev among them, accept it with at least ${percent(bar)} confidence`]),
       ...(licenceDays !== undefined ? [`Licence   lasts ${licenceDays} days${wait === undefined ? "" : `; after a failed sitting the agent waits ${wait} days before the next`}`] : []),
       ...(renew !== undefined ? [`Renewal   a licensed agent may sit again from ${renew} days before its licence expires, so it can renew without a gap`] : []),
       ...(typeof sitting.audits === "string" ? [`Audits    ${printable(sitting.audits)}`] : []),
@@ -165,7 +166,7 @@ export async function examInfo(network: Network, options: { log: (line: string) 
 
 /**
  * What the service asks for a sitting, from the offer it answers a request without a payment with: the amount in
- * the USDG and to the address this release pays, or undefined when the offer names neither.
+ * the USDG and to the address this version pays, or undefined when the offer names neither.
  */
 function offeredPrice(network: Network, response: Response): bigint | undefined {
   let offer: unknown;
@@ -297,9 +298,8 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   const notOpenYet = (sitting: Hex, state: "paying" | "opening", nothing: string): never => {
     saveSitting(account, network, { ...mine, at: Math.floor(Date.now() / 1000), sitting }, dir);
     throw new Error(
-      `A sitting for agent ${agentId} is already ${state === "paying" ? "being paid for, and the service is settling its payment" : "paid for, and the service is opening it"}: ${network.service}/exams/${sitting}. ` +
-        `Through the paid route only the request that paid for it reads its briefs, and that request is not kept here. ` +
-        `Once the sitting is open, ${again} reads the briefs with this wallet's signature and goes on with it. ${nothing}`,
+      `A sitting for agent ${agentId} is already ${state === "paying" ? "being paid for, and the desk is settling its payment" : "paid for, and BrainChain is opening it"}: ${network.service}/exams/${sitting}. ` +
+        `Once it opens, run ${again} again; it reads the briefs with this wallet's signature. ${nothing}`,
     );
   };
 
@@ -364,8 +364,8 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
         forgetSitting(account, network, mine, dir);
         // A refusal that names a sitting is about the one the agent already has.
         if (named && /Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
-        if (kept) return void log(`The desk never took the payment kept from ${date(at)}${aside}, so nothing was charged for it, and it is no longer kept. Asking for a new sitting...`);
-        if (dead) throw new Error(`BrainChain holds no sitting for that payment, and the desk takes it no more${aside}. It is no longer kept: run ${again} again to sit.`);
+        if (kept) return void log(`The desk never took the payment kept from ${date(at)}${aside}, so nothing was charged for it, and the saved payment was discarded. Asking for a new sitting...`);
+        if (dead) throw new Error(`BrainChain holds no sitting for that payment, and the desk takes it no more${aside}. The saved payment was discarded: run ${again} again to sit.`);
         if (/Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
         throw new Error(`${said || `The service answered ${answer.status}.`} Nothing was charged.`);
       }
@@ -420,16 +420,17 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     if (asked.response.status !== 402) return refused(asked.response.status, asked.body, "Nothing was approved or paid.");
     const price = offeredPrice(network, asked.response);
     if (price === undefined) {
-      throw new Error(`The BrainChain service at ${hostOf(network)} offers no sitting for ${symbol} on ${parent.name} paid to ${network.exitDesk}, the only payment this release of brainchain-worker signs. Nothing was approved or paid.`);
+      throw new Error(`The BrainChain service at ${hostOf(network)} offers no sitting for ${symbol} on ${parent.name} paid to ${network.exitDesk}, the only payment this version of brainchain-worker signs. Nothing was approved or paid.`);
     }
     log(`A sitting for agent ${agentId} in class ${options.class} costs ${usdg(price)} on ${parent.name}, paid by ${account} over x402.`);
     for (const rule of rules) log(`  ${rule}`);
-    if (holds === undefined) log(`  This release names no ERC-8004 registry on ${parent.name}, so whether ${account} holds agent ${agentId} is left to the service, which checks before it charges.`);
+    if (holds === undefined) log(`  This version of brainchain-worker names no ERC-8004 registry on ${parent.name}, so whether ${account} holds agent ${agentId} is left to the service, which checks before it charges.`);
     // A licence stands for the build the id declares when its sitting opens, so the holder sees which one before paying.
     if (network.identity) {
       const build = await chain.build(BigInt(agentId));
-      if (build === undefined) log(`  Build     the registry could not be read just now, so the build the licence is bound to is not shown. A licence stands for the build the id declares when its sitting opens.`);
-      else log(`  Build     ${build ? `build ${JSON.stringify(build)}` : "no build declared"} for agent ${agentId} now: the licence is bound to it, and declaring another build later lapses the licence.`);
+      if (build === undefined) log("  Build     not shown: the registry could not be read just now. A licence stands for the build the id declares when its sitting opens.");
+      else if (build) log(`  Build     ${JSON.stringify(build)}, the build agent ${agentId} declares now. The licence is bound to it, and declaring another build later lapses the licence.`);
+      else log(`  Build     none declared for agent ${agentId} now. The licence is bound to that, and declaring a build later lapses the licence.`);
     }
     if (options.maxPrice !== undefined && price > options.maxPrice) throw new Error(`A sitting costs ${usdg(price)}, above --max-price ${money(options.maxPrice)}. Nothing was approved or paid.`);
     if (options.maxPrice === undefined && !dry) return void log(`The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price ${money(price)}.`);
@@ -438,11 +439,11 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     try {
       funds = await chain.funds();
     } catch (error) {
-      throw new Error(`could not read the wallet on ${parent.name}: ${reason(error)}`);
+      throw new Error(`Could not read the wallet on ${parent.name}: ${reason(error).replace(/\.$/, "")}.`);
     }
     if (funds.usdg >= price) log(`  Wallet    ${account} holds ${usdg(funds.usdg)} on ${parent.name}, which covers the price.`);
     const approves = funds.allowance < price;
-    if (approves) log(`  Permit2, which an x402 payment in ${symbol} moves through, may spend ${usdg(funds.allowance)} of the wallet's. sit first approves ${usdg(price)} for it, which takes a little ETH on ${parent.name}.`);
+    if (approves) log(`  Permit2, which an x402 payment in ${symbol} moves through, may spend ${usdg(funds.allowance)} of the wallet's. An approval for ${usdg(price)} is sent first, which takes a little ETH on ${parent.name}.`);
     // Every shortfall at once, so a dry run says all the wallet still needs.
     const short = [
       ...(funds.usdg < price ? [`${account} holds ${usdg(funds.usdg)} on ${parent.name}, ${usdg(price - funds.usdg)} short of the sitting's price.`] : []),
@@ -461,7 +462,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     const pays = `eip155:${parent.chainId}` as const;
     const client = x402Client.fromConfig({
       schemes: [{ network: pays, client: new ExactEvmScheme(chain.wallet) }],
-      // The price read a moment ago is the most this payment may be, in the one token this release pays in.
+      // The price read a moment ago is the most this payment may be, in the one token this version pays in.
       spendControls: { allowedAssets: [{ network: pays, asset: network.deskUsdg.address, maxAmountPerPayment: price.toString() }] },
       policies: [(_version, offered) => offered.filter((r) => r.network === pays && sameAddress(r.asset, network.deskUsdg.address) && sameAddress(r.payTo, network.exitDesk) && r.maxTimeoutSeconds <= MAX_TIMEOUT_SECONDS)],
     });
@@ -493,7 +494,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   if (!command || !grading || dry) {
     for (const { index, title, brief } of opened.briefs) log(`\nItem ${index}: ${printable(title)}${opened.open.includes(index) ? "" : " (delivered)"}\n${shown(brief)}`);
     if (dry && command) log(`\ndry run: the command was not run and nothing was delivered. Without --dry, sit runs it once on each item still open and delivers what it prints.`);
-    log(`\nDeliver each item once, before ${date(opened.deadline)}, with ${submit(opened.open[0] ?? 0)}. An item takes one delivery.`);
+    log(`\nDeliver each item before ${date(opened.deadline)}, with ${submit(opened.open[0] ?? 0)}. An item takes one delivery.`);
     return log(`${status} shows each item's outcome.`);
   }
 
@@ -523,7 +524,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       // Kept rather than lost, so the work can be cut down and delivered by hand while the sitting is open.
       if (bytes > MAX_WORK_BYTES) {
         const kept = saveWork(account, network, opened.sitting, index, text, dir);
-        throw new Error(`The work is ${bytes} bytes; at most ${MAX_WORK_BYTES} are accepted for an item. Nothing was sent. It is kept in ${kept}: cut it down and deliver it with ${cli(`exam submit --sitting ${opened.sitting} --item ${index} --file ${kept}`)}`);
+        throw new Error(`The work is ${grouped(bytes)} bytes; at most ${grouped(MAX_WORK_BYTES)} are accepted for an item. Nothing was sent. It is kept in ${kept}: cut it down and deliver it with ${cli(`exam submit --sitting ${opened.sitting} --item ${index} --file ${kept}`)}.`);
       }
       await deliver(network, chain.wallet, opened.sitting, index, text, fetcher);
       log(`item ${index}: delivered (${bytes} bytes)`);
@@ -543,7 +544,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
 /** Signs and sends the work for one item, which the service takes once. */
 async function deliver(network: Network, wallet: ExamChain["wallet"], sitting: Hex, index: number, text: string, fetcher: typeof fetch): Promise<void> {
   const bytes = toBytes(text).byteLength;
-  if (bytes > MAX_WORK_BYTES) throw new Error(`The work is ${bytes} bytes; at most ${MAX_WORK_BYTES} are accepted for an item. Nothing was sent`);
+  if (bytes > MAX_WORK_BYTES) throw new Error(`The work is ${grouped(bytes)} bytes; at most ${grouped(MAX_WORK_BYTES)} are accepted for an item. Nothing was sent.`);
   const signature = await wallet.signMessage({ message: itemMessage(network.chainId, sitting, index, text) });
   const status = cli(`exam status --sitting ${sitting}`);
   const response = await fetcher(`${network.service}/exams/${sitting}/items/${index}`, {
@@ -552,14 +553,14 @@ async function deliver(network: Network, wallet: ExamChain["wallet"], sitting: H
     body: JSON.stringify({ text, signature }),
     signal: AbortSignal.timeout(30_000),
   }).catch(() => {
-    throw new Error(`Could not reach the BrainChain service at ${hostOf(network)}. The work may have arrived, and an item takes one delivery: read ${status} before sending it again`);
+    throw new Error(`Could not reach the BrainChain service at ${hostOf(network)}. The work may have arrived, and an item takes one delivery: read ${status} before sending it again.`);
   });
   const body: unknown = await response.json().catch(() => undefined);
   if (response.ok) return;
   const said = isObject(body) && typeof body.error === "string" ? printable(body.error) : undefined;
   // Only the service's own JSON error is a refusal: a CDN or firewall page with the same status says nothing of the item.
   if (said !== undefined) throw new PermanentError(`The service refused item ${index} (${response.status}): ${said}`);
-  throw new Error(`Delivering item ${index} failed (${response.status}). The work may have arrived: read ${status} before sending it again`);
+  throw new Error(`Delivering item ${index} failed (${response.status}). The work may have arrived: read ${status} before sending it again.`);
 }
 
 /** Delivers one item's work from a file or stdin, after the checks a command's output gets. */
@@ -585,7 +586,7 @@ function judgesSaid(item: Record<string, unknown>, bar: number | undefined): str
   const sure = percent(item.confidenceBps);
   if (item.judges === "refuse") return `judges refused, ${sure} sure`;
   if (item.judges !== "accept") return `judges ${sure} sure`;
-  return `judges accepted at ${sure}${bar !== undefined && item.confidenceBps < bar ? `, under the ${percent(bar)} bar` : ""}`;
+  return `judges accepted, ${sure} sure${bar !== undefined && item.confidenceBps < bar ? `, under the ${percent(bar)} bar` : ""}`;
 }
 
 /** One item's line in a sitting's status. */
@@ -604,7 +605,7 @@ function itemLine(item: Record<string, unknown>, bar?: number): string {
           : item.state === "open"
             ? "open"
             : item.state === "void"
-              ? "not judged: BrainChain could not judge it"
+              ? "void: BrainChain could not judge it"
               : printable(String(item.state));
   return `  Item ${String(item.index)}    ${outcome}: ${typeof item.title === "string" ? printable(item.title) : ""}`;
 }
@@ -630,15 +631,15 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
     if (unopened === "unpaid") {
       // A payment that did not settle bought nothing, so it is kept no more, and the next sit asks for a new sitting.
       if (saved) forgetSitting(options.account!, network, saved, options.dir ?? stateDir());
-      return log(`Sitting ${id}: its payment did not settle, so nothing was charged and no sitting opens from it.${saved ? ` It is no longer kept: ${cli(`exam sit --agent-id ${saved.agentId}`)} asks for a new one.` : ""}`);
+      return log(`Sitting ${id}: its payment did not settle, so nothing was charged and no sitting opens from it.${saved ? ` The saved payment was discarded: ${cli(`exam sit --agent-id ${saved.agentId}`)} asks for a new one.` : ""}`);
     }
-    log(`Sitting ${id}: ${unopened === "paying" ? "the service is settling its payment, and opens it once it has" : "paid for, opening"}`);
+    log(`Sitting ${id}: ${unopened === "paying" ? "the desk is settling its payment, and BrainChain opens the sitting once it has" : "paid for, opening"}`);
     if (typeof view.reason === "string" && view.reason.trim()) log(`  Not open yet: ${printable(view.reason)}`);
     const sit = cli(`exam sit --agent-id ${saved?.agentId ?? "<id>"}`);
     return log(
       saved?.request
         ? `Run ${sit} again: it sends the same request with the same payment, and nothing more is paid.`
-        : `Through the paid route only the request that paid for the sitting reads its briefs. Once it is open, ${sit} reads them with the signature of the wallet sitting it, and goes on with it.`,
+        : `Once it opens, run ${sit} again; it reads the briefs with this wallet's signature.`,
     );
   }
   const items = Array.isArray(view.items) ? view.items.filter(isObject) : [];
@@ -684,16 +685,16 @@ export async function licences(network: Network, options: { agentId: string; log
   const held = Array.isArray(view.licences) ? view.licences.filter(isObject) : [];
   if (held.length === 0) return log(`Agent ${agentId} on ${parent.name} holds no licence. ${cli("exam info")} says what a sitting takes.`);
   log(`Licences of agent ${agentId} on ${parent.name}`);
-  // What each state below is held to: the registry as the service read it for this answer, or its last own reading
+  // What each state below is checked against: the registry as the service read it for this answer, or its last own reading
   // when the registry could not be read. A service that says neither is left unquoted.
   const reading = view.registry === "read" ? "the registry as BrainChain read it within the last minute" : "the id as BrainChain reads it now";
   if (view.registry === "unreadable") {
     log("  The registry could not be read just now, so these states are from BrainChain's last own reading, up to ten minutes old.");
   } else if (isObject(view.epoch)) {
     const build = typeof view.epoch.build === "string" && view.epoch.build ? JSON.stringify(printable(view.epoch.build)) : "none declared";
-    log(`  Held to ${reading}: controller ${printable(String(view.epoch.controller))}, build ${build}`);
+    log(`  Checked against ${reading}: controller ${printable(String(view.epoch.controller))}, build ${build}`);
   } else if (view.epoch === null) {
-    log(view.registry === "read" ? `  Held to ${reading}: no single account controls the id` : "  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
+    log(view.registry === "read" ? `  Checked against ${reading}: no single account controls the id` : "  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
   }
   for (const entry of held) log(`  ${licenceLine(entry)}`);
 }
@@ -715,7 +716,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
   const ceiling = isObject(signed.ceiling) ? signed.ceiling : undefined;
   const units = (value: unknown) => (typeof value === "string" && /^\d{1,30}$/.test(value) ? money(BigInt(value)) : "?");
   log(`Papers of agent ${agentId} on ${parent.name}: ${url}`);
-  log(`  Epoch     ${String(epoch.number ?? "?")}${typeof epoch.since === "number" ? `, since ${date(epoch.since)}` : ""}; controller ${printable(String(epoch.controller ?? "unknown"))}; build ${typeof epoch.build === "string" && epoch.build ? JSON.stringify(printable(epoch.build)) : "none declared"}`);
+  log(`  Epoch     ${String(epoch.number ?? "?")} (a new controller or build of the id starts a new epoch)${typeof epoch.since === "number" ? `, since ${date(epoch.since)}` : ""}; controller ${printable(String(epoch.controller ?? "unknown"))}; build ${typeof epoch.build === "string" && epoch.build ? JSON.stringify(printable(epoch.build)) : "none declared"}`);
   if (record) log(`  Record    ${String(record.entries)} ${record.entries === 1 ? "entry" : "entries"}: ${typeof record.url === "string" ? printable(record.url) : `${network.service}/agents/${parent.chainId}/${agentId}/record`}`);
   else log("  Record    no entry yet");
   if (held.length === 0) log("  Licences  none");
@@ -723,7 +724,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
   // What the agent's record earns it: how much paid work it may hold at once, which a refusal upheld on a dispute halves for a while.
   if (ceiling) {
     const halved = typeof ceiling.halvedUntil === "number" ? `; halved until ${date(ceiling.halvedUntil)}, after a refusal upheld on a dispute` : "";
-    log(`  Ceiling   the agent may hold at most ${units(ceiling.units)} USD of paid work in flight at once, and never less than ${units(ceiling.floor)} USD${halved}`);
+    log(`  Ceiling   the agent may hold at most ${units(ceiling.units)} USDG of paid work in flight at once, and never less than the ${units(ceiling.floor)} USDG every agent starts with${halved}`);
   }
   else log("  Ceiling   not stated");
   log(`  Card      ${url}/card.svg`);
@@ -733,7 +734,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
   const bound = isObject(epoch.bound) ? epoch.bound : undefined;
   if (bound) {
     const token = `token ${printable(String(bound.tokenId))} of ${printable(String(bound.token))}`;
-    return log(`\nThe id is bound to an NFT, ${token}, and that token's holder controls it. Its owner in the registry is the binding adapter, not the holder's wallet, so no registry calls are printed here.`);
+    return log(`\nThe id is bound to an NFT, ${token}, and that token's holder controls it. Its owner in the registry is the binding adapter, the contract that ties the id to the NFT, not the holder's wallet, so no registry calls are printed here.`);
   }
   const registry = network.identity ?? "<identity registry>";
   const rpc = network.bridge?.rpc ?? network.proofs.rpc;
@@ -745,7 +746,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
       licensed
         ? `A transaction the id's owner can send once, on ${parent.name}. It is optional, and this command does not send it.`
         : `Two transactions the id's owner can send once, on ${parent.name}. Both are optional, and this command sends neither.`,
-      ...(network.identity ? [] : [`This release names no ERC-8004 registry on ${parent.name}: put the registry the id is on in place of <identity registry>.`]),
+      ...(network.identity ? [] : [`This version of brainchain-worker names no ERC-8004 registry on ${parent.name}: put the registry the id is on in place of <identity registry>.`]),
       `${licensed ? "It is" : "They are"} written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.`,
       "",
       "  Point the id's URI at its Papers, so the record shows wherever the id's token is shown:",
@@ -755,7 +756,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
         ? ["  The agent's licence stands for the build the id declares now. Declaring another build lapses the licence."]
         : [
             "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
-            "  A build that starts with house: is read without that prefix.",
+            "  A build that starts with house:, a prefix BrainChain keeps for the agents it runs itself, is read without it.",
             "  A licence stands for the build declared when its sitting opened, so declare it before sitting: a change of build lapses the licence.",
             `    cast send ${registry} "setMetadata(uint256,string,bytes)" ${agentId} build "$(cast from-utf8 '<build>')" --rpc-url ${rpc} --interactive`,
           ]),

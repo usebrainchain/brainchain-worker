@@ -490,7 +490,7 @@ describe("holdsAgent", () => {
     expect(await declaredBuild(TESTNET, 501n)).toBeUndefined();
   });
 
-  it("says nothing when the registry cannot be read, or where this release names none", async () => {
+  it("says nothing when the registry cannot be read, or where this version names none", async () => {
     down = true;
     try {
       expect(await holds({ [`${REGISTRY} ownerOf`]: address(account.address) })).toBeUndefined();

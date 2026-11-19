@@ -76,7 +76,7 @@ describe("exit", () => {
     const { chain, sent } = chainWith(5_000_000n);
     for (const [named, line] of [
       [{ ...terms, token: TESTNET.contracts.stakeToken }, `names the token ${TESTNET.contracts.stakeToken} for an exit, and BrainChain testnet's tUSDG is ${TOKEN}. Nothing was sent.`],
-      [{ ...terms, desk: evil }, `names the desk ${evil}, and this release of brainchain-worker pays only ${DESK}. Nothing was sent.`],
+      [{ ...terms, desk: evil }, `names the desk ${evil}, and this version of brainchain-worker pays only ${DESK}. Nothing was sent.`],
     ] as const) {
       for (const dry of [true, false]) await expect(exit(TESTNET, chain, { dry, log: () => {}, fetchImpl: fetchWith([], named) })).rejects.toThrow(line);
     }

@@ -193,8 +193,8 @@ describe("the licence exam in the README and --help", () => {
     const order = "A licence past its expiry reads expired, whatever else was true of it. Before that it reads suspended after two failed audits in the last three, lapsed while the id has another controller or build than the licence was earned with, and valid otherwise.";
     expect(flat(usage("licence"))).toContain(order);
     expect(readme).toContain(order);
-    expect(flat(usage("licence"))).toContain("with the controller and the build BrainChain reads for the id now, which the states are held to");
-    expect(readme).toContain("with the controller and the declared build BrainChain reads for the id now, which the states are held to");
+    expect(flat(usage("licence"))).toContain("with the controller and the build BrainChain reads for the id now, which the states are checked against");
+    expect(readme).toContain("with the controller and the declared build BrainChain reads for the id now, which the states are checked against");
     expect(flat(usage("licence"))).toContain("When the registry cannot be read it says so, and the states are up to ten minutes old.");
     expect(readme).toContain("When the registry cannot be read it says so, and the states are then up to ten minutes old.");
   });

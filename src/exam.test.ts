@@ -53,7 +53,7 @@ const RULES = [
   `  Levels    ${LEVELS[0]}`,
   `            ${LEVELS[1]} (an item is accepted at this level or better)`,
   `            ${LEVELS[2]}`,
-  "  Judges    work that answers every hidden case right is accepted when the judges accept it with at least 50% confidence, and work with a case wrong never is",
+  "  Judges    an item is accepted when every hidden case is right and the judges, the models on BrainChain's panel with Jev among them, accept it with at least 50% confidence",
   "  Licence   lasts 60 days; after a failed sitting the agent waits 7 days before the next",
   "  Renewal   a licensed agent may sit again from 14 days before its licence expires, so it can renew without a gap",
   "  Audits    A licensed agent's work is audited now and then with a task it cannot tell from any other. 2 failed audits in the last 3 suspend the licence.",
@@ -185,7 +185,7 @@ describe("exam info", () => {
       await examInfo(MAINNET, { log: (line) => lines.push(line), fetcher: service(MAINNET, { info: { ...INFO, sitting } }).fetcher });
       return lines.find((line) => line.startsWith("  Judges"));
     };
-    expect(await judges({ ...INFO.sitting, barBps: 6250 })).toContain("when the judges accept it with at least 62.5% confidence");
+    expect(await judges({ ...INFO.sitting, barBps: 6250 })).toContain("accept it with at least 62.5% confidence");
     const { barBps: _, ...bare } = INFO.sitting;
     expect(await judges(bare)).toBeUndefined();
   });
@@ -209,7 +209,7 @@ describe("exam sit", () => {
     expect(lines).toEqual([
       `A sitting for agent 501 in class code costs 5.00 USDG on Robinhood Chain, paid by ${wallet.address} over x402.`,
       ...RULES,
-      `  Build     build "rehearsal build 1" for agent 501 now: the licence is bound to it, and declaring another build later lapses the licence.`,
+      `  Build     "rehearsal build 1", the build agent 501 declares now. The licence is bound to it, and declaring another build later lapses the licence.`,
       "The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.00.",
     ]);
     expect(chain.build).toHaveBeenCalledWith(501n);
@@ -231,7 +231,7 @@ describe("exam sit", () => {
     await expect(sitting(MAINNET, desk.fetcher, chainFor(), { class: "prose", maxPrice: 5_000_000n }).run()).rejects.toThrow('The exam has no class "prose". Its classes: code. Nothing was signed or paid.');
     const elsewhere = service(MAINNET, { payTo: "0x000000000000000000000000000000000000dEaD" });
     await expect(sitting(MAINNET, elsewhere.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(
-      `The BrainChain service at brain.usebrainchain.com offers no sitting for USDG on Robinhood Chain paid to ${MAINNET.exitDesk}, the only payment this release of brainchain-worker signs. Nothing was approved or paid.`,
+      `The BrainChain service at brain.usebrainchain.com offers no sitting for USDG on Robinhood Chain paid to ${MAINNET.exitDesk}, the only payment this version of brainchain-worker signs. Nothing was approved or paid.`,
     );
     expect([...desk.seen, ...elsewhere.seen]).toEqual([]);
     expect(over.saved()).toEqual([]);
@@ -250,7 +250,7 @@ describe("exam sit", () => {
     const { run, lines } = sitting(TESTNET, testnet.fetcher, chainFor(undefined, "unread"));
     await run();
     expect(lines[0]).toBe(`A sitting for agent 501 in class code costs 5.00 test USDG on Robinhood Chain testnet, paid by ${wallet.address} over x402.`);
-    expect(lines).toContain(`  This release names no ERC-8004 registry on Robinhood Chain testnet, so whether ${wallet.address} holds agent 501 is left to the service, which checks before it charges.`);
+    expect(lines).toContain(`  This version of brainchain-worker names no ERC-8004 registry on Robinhood Chain testnet, so whether ${wallet.address} holds agent 501 is left to the service, which checks before it charges.`);
   });
 
   it("says with --dry all the wallet still needs, or what it would do, and signs nothing", async () => {
@@ -267,7 +267,7 @@ describe("exam sit", () => {
     const ready = sitting(MAINNET, desk.fetcher, unapproved, { dry: true, maxPrice: 6_000_000n });
     await ready.run();
     expect(ready.lines.slice(-2)).toEqual([
-      "  Permit2, which an x402 payment in USDG moves through, may spend 1.00 USDG of the wallet's. sit first approves 5.00 USDG for it, which takes a little ETH on Robinhood Chain.",
+      "  Permit2, which an x402 payment in USDG moves through, may spend 1.00 USDG of the wallet's. An approval for 5.00 USDG is sent first, which takes a little ETH on Robinhood Chain.",
       "dry run: nothing approved or paid. Without --dry, sit approves Permit2, pays 5.00 USDG and saves the sitting.",
     ]);
     const unconfirmed = sitting(MAINNET, desk.fetcher, chainFor(), { dry: true });
@@ -286,10 +286,10 @@ describe("exam sit", () => {
       await run();
       return lines.find((line) => line.startsWith("  Build"));
     };
-    expect(await lineOf("rehearsal build 1")).toBe(`  Build     build "rehearsal build 1" for agent 501 now: the licence is bound to it, and declaring another build later lapses the licence.`);
-    expect(await lineOf("")).toBe("  Build     no build declared for agent 501 now: the licence is bound to it, and declaring another build later lapses the licence.");
-    expect(await lineOf("unread")).toBe("  Build     the registry could not be read just now, so the build the licence is bound to is not shown. A licence stands for the build the id declares when its sitting opens.");
-    // Where this release names no registry there is none to read.
+    expect(await lineOf("rehearsal build 1")).toBe(`  Build     "rehearsal build 1", the build agent 501 declares now. The licence is bound to it, and declaring another build later lapses the licence.`);
+    expect(await lineOf("")).toBe("  Build     none declared for agent 501 now. The licence is bound to that, and declaring a build later lapses the licence.");
+    expect(await lineOf("unread")).toBe("  Build     not shown: the registry could not be read just now. A licence stands for the build the id declares when its sitting opens.");
+    // Where this version names no registry there is none to read.
     const { run, lines } = sitting(TESTNET, service(TESTNET).fetcher, chainFor(undefined, "unread"), { dry: true });
     await run();
     expect(lines.some((line) => line.startsWith("  Build"))).toBe(false);
@@ -313,9 +313,9 @@ describe("exam sit", () => {
     expect(saved()).toEqual([{ agentId: "501", class: "code", at: sent.at, sitting: SITTING, deadline: DEADLINE }]);
 
     expect(lines.slice(1 + RULES.length, 8 + RULES.length)).toEqual([
-      `  Build     build "rehearsal build 1" for agent 501 now: the licence is bound to it, and declaring another build later lapses the licence.`,
+      `  Build     "rehearsal build 1", the build agent 501 declares now. The licence is bound to it, and declaring another build later lapses the licence.`,
       `  Wallet    ${wallet.address} holds 5.00 USDG on Robinhood Chain, which covers the price.`,
-      "  Permit2, which an x402 payment in USDG moves through, may spend 0.00 USDG of the wallet's. sit first approves 5.00 USDG for it, which takes a little ETH on Robinhood Chain.",
+      "  Permit2, which an x402 payment in USDG moves through, may spend 0.00 USDG of the wallet's. An approval for 5.00 USDG is sent first, which takes a little ETH on Robinhood Chain.",
       "Approving 5.00 USDG for Permit2 on Robinhood Chain...",
       `  approved: 0x${"a1".repeat(32)}`,
       "Paying 5.00 USDG for the sitting...",
@@ -323,7 +323,7 @@ describe("exam sit", () => {
     ]);
     expect(lines[8 + RULES.length]).toBe("\nItem 0: Item 0\nWrite f0(x).\n\nReturn only the function, in one Python code block.");
     expect(lines.slice(-2)).toEqual([
-      `\nDeliver each item once, before 2100-01-01T02:00:00Z, with \`${CLI} exam submit --sitting ${SITTING} --item 0 --file <path>\`. An item takes one delivery.`,
+      `\nDeliver each item before 2100-01-01T02:00:00Z, with \`${CLI} exam submit --sitting ${SITTING} --item 0 --file <path>\`. An item takes one delivery.`,
       `\`${CLI} exam status --sitting ${SITTING}\` shows each item's outcome.`,
     ]);
   });
@@ -359,8 +359,8 @@ describe("exam sit", () => {
     const other: Hex = `0x${"0d".repeat(32)}`;
     const refusal = () => json({ error: "A sitting for agent 501 is already paid for and being opened. Send the request that paid for it again to read it. Nothing was charged.", sitting: other }, 409);
     const told = (nothing: string) =>
-      `A sitting for agent 501 is already paid for, and the service is opening it: ${MAINNET.service}/exams/${other}. Through the paid route only the request that paid for it reads its briefs, and that request is not kept here. ` +
-      `Once the sitting is open, \`${CLI} exam sit --agent-id 501\` reads the briefs with this wallet's signature and goes on with it. ${nothing}`;
+      `A sitting for agent 501 is already paid for, and BrainChain is opening it: ${MAINNET.service}/exams/${other}. ` +
+      `Once it opens, run \`${CLI} exam sit --agent-id 501\` again; it reads the briefs with this wallet's signature. ${nothing}`;
     // Until the sitting is open its briefs address answers 409 with where it stands.
     const drawing = "The sitting is paid for and its items are being drawn. Send the request that paid for it again to read it; it is not charged twice.";
     let open = false;
@@ -393,7 +393,7 @@ describe("exam sit", () => {
 
     // A payment still being settled reads as that.
     const settling = service(MAINNET, { refuse: refusal, routes: { [`GET /exams/${other}/briefs`]: () => json({ error: "The payment for this sitting is being settled.", sitting: other, state: "paying", payment: "unconfirmed" }, 409) } });
-    await expect(sitting(MAINNET, settling.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(`A sitting for agent 501 is already being paid for, and the service is settling its payment: ${MAINNET.service}/exams/${other}.`);
+    await expect(sitting(MAINNET, settling.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(`A sitting for agent 501 is already being paid for, and the desk is settling its payment: ${MAINNET.service}/exams/${other}.`);
   });
 
   it("goes on with a sitting the service says is open, when its briefs can be read with this wallet's signature", async () => {
@@ -529,7 +529,7 @@ describe("exam sit", () => {
     const probes = desk.unpaid.length;
     const again = sitting(MAINNET, desk.fetcher, chainFor(), { dir });
     await again.run();
-    expect(again.lines[2]).toBe(`The desk never took the payment kept from ${new Date(at * 1000).toISOString().replace(/\.\d+Z$/, "Z")} (The payment's deadline has passed), so nothing was charged for it, and it is no longer kept. Asking for a new sitting...`);
+    expect(again.lines[2]).toBe(`The desk never took the payment kept from ${new Date(at * 1000).toISOString().replace(/\.\d+Z$/, "Z")} (The payment's deadline has passed), so nothing was charged for it, and the saved payment was discarded. Asking for a new sitting...`);
     // The new request is quoted, and without --max-price nothing is paid for it.
     expect(desk.unpaid).toHaveLength(probes + 1);
     expect(again.lines.at(-1)).toBe("The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.00.");
@@ -548,13 +548,13 @@ describe("exam sit", () => {
     const used = service(MAINNET, { paid: () => json({ error: "This payment was already used. Sign a new one." }, 409) });
     const resent = sitting(MAINNET, used.fetcher, chainFor(), { dir });
     await resent.run();
-    expect(resent.lines).toContain("The desk never took the payment kept from 2100-01-01T00:00:00Z (This payment was already used. Sign a new one), so nothing was charged for it, and it is no longer kept. Asking for a new sitting...");
+    expect(resent.lines).toContain("The desk never took the payment kept from 2100-01-01T00:00:00Z (This payment was already used. Sign a new one), so nothing was charged for it, and the saved payment was discarded. Asking for a new sitting...");
     expect(used.unpaid).toHaveLength(1);
     expect(readSittings(wallet.address, MAINNET, dir)).toEqual([]);
     // A payment made in this run that the desk takes no more is said so, and the run stops there.
     const fresh = service(MAINNET, { paid: () => json({ error: "This payment was already used. Sign a new one." }, 409) });
     await expect(sitting(MAINNET, fresh.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(
-      `BrainChain holds no sitting for that payment, and the desk takes it no more (This payment was already used. Sign a new one). It is no longer kept: run \`${CLI} exam sit --agent-id 501\` again to sit.`,
+      `BrainChain holds no sitting for that payment, and the desk takes it no more (This payment was already used. Sign a new one). The saved payment was discarded: run \`${CLI} exam sit --agent-id 501\` again to sit.`,
     );
   });
 
@@ -680,7 +680,7 @@ describe("exam sit", () => {
     expect(lines).toContain("item 1: not delivered (The result contains the worker's private key, so it was not uploaded. Check what the command can read)");
     // An item takes less than a task's result does, and what is over is never sent: it is kept, for its owner alone, to cut down and deliver by hand.
     const kept = join(dir, `${wallet.address}.mainnet.exam.${SITTING}.item3.txt`);
-    expect(lines).toContain(`item 3: not delivered (The work is 48001 bytes; at most 48000 are accepted for an item. Nothing was sent. It is kept in ${kept}: cut it down and deliver it with \`${CLI} exam submit --sitting ${SITTING} --item 3 --file ${kept}\`)`);
+    expect(lines).toContain(`item 3: not delivered (The work is 48,001 bytes; at most 48,000 are accepted for an item. Nothing was sent. It is kept in ${kept}: cut it down and deliver it with \`${CLI} exam submit --sitting ${SITTING} --item 3 --file ${kept}\`)`);
     expect(readFileSync(kept, "utf8")).toBe("#".repeat(MAX_WORK_BYTES + 1));
     if (process.platform !== "win32") expect(statSync(kept).mode & 0o777).toBe(0o600);
     // The work that held the key is never kept.
@@ -803,7 +803,7 @@ describe("exam submit", () => {
     const desk = service(TESTNET);
     const send = (text: string) => examSubmit(TESTNET, wallet, { sitting: SITTING, item: 0, text, secrets: [KEY, KEY.slice(2)], log: () => {}, fetcher: desk.fetcher });
     await expect(send(" \n")).rejects.toThrow("The work is empty. Nothing was sent.");
-    await expect(send("é".repeat(MAX_WORK_BYTES / 2 + 1))).rejects.toThrow("The work is 48002 bytes; at most 48000 are accepted for an item. Nothing was sent");
+    await expect(send("é".repeat(MAX_WORK_BYTES / 2 + 1))).rejects.toThrow("The work is 48,002 bytes; at most 48,000 are accepted for an item. Nothing was sent.");
     await expect(send(`secret = "${KEY.slice(2).toUpperCase()}"`)).rejects.toThrow("The work contains the worker's private key, so it was not sent.");
     expect(desk.delivered).toEqual([]);
   });
@@ -836,7 +836,7 @@ describe("exam status", () => {
     const items = view().items.map((item, i) => (i === 0 ? { ...item, state: "judged", accepted: true, right: 12, of: 12, judges: "accept", confidenceBps: 9100, decision: "4801" } : i === 1 ? { ...item, state: "submitted" } : i === 2 ? { ...item, state: "missed" } : item));
     expect(await status(MAINNET, view({ items }))).toEqual([
       `Sitting ${SITTING} for agent 501, class code: open until 2100-01-01T02:00:00Z`,
-      "  Item 0    accepted (12 of 12 hidden cases right, judges accepted at 91%, decision 4801): Item 0",
+      "  Item 0    accepted (12 of 12 hidden cases right, judges accepted, 91% sure, decision 4801): Item 0",
       "  Item 1    delivered, waiting to be judged: Item 1",
       "  Item 2    missed: the sitting's time ran out first: Item 2",
       "  Item 3    open: Item 3",
@@ -861,10 +861,10 @@ describe("exam status", () => {
       const items = judged(5).map((item, i) => (i === 2 ? { ...item, accepted: false, right: 18, of: 18, decision: "886", ...said } : item));
       return (await status(MAINNET, view({ state: "passed", closedAt: DEADLINE, items, licence, ...sitting })))[3];
     };
-    expect(await refusedAs({ judges: "accept", confidenceBps: 4900 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges accepted at 49%, decision 886): Item 2");
+    expect(await refusedAs({ judges: "accept", confidenceBps: 4900 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges accepted, 49% sure, decision 886): Item 2");
     expect(await refusedAs({ judges: "refuse", confidenceBps: 9000 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges refused, 90% sure, decision 886): Item 2");
     // The bar is named when the sitting carries it, and only for an answer to accept that fell under it.
-    expect(await refusedAs({ judges: "accept", confidenceBps: 4900 }, { barBps: 5000 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges accepted at 49%, under the 50% bar, decision 886): Item 2");
+    expect(await refusedAs({ judges: "accept", confidenceBps: 4900 }, { barBps: 5000 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges accepted, 49% sure, under the 50% bar, decision 886): Item 2");
     expect(await refusedAs({ judges: "refuse", confidenceBps: 9000 }, { barBps: 5000 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges refused, 90% sure, decision 886): Item 2");
     // A host that kept how sure the judges were before it kept their answer reads as it did.
     expect(await refusedAs({ confidenceBps: 4900 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges 49% sure, decision 886): Item 2");
@@ -881,8 +881,8 @@ describe("exam status", () => {
       "  Item 0    accepted (12 of 12 hidden cases right, decision 4800): Item 0",
       "  Item 1    accepted (12 of 12 hidden cases right, decision 4801): Item 1",
       "  Item 2    accepted (12 of 12 hidden cases right, decision 4802): Item 2",
-      "  Item 3    not judged: BrainChain could not judge it: Item 3",
-      "  Item 4    not judged: BrainChain could not judge it: Item 4",
+      "  Item 3    void: BrainChain could not judge it: Item 3",
+      "  Item 4    void: BrainChain could not judge it: Item 4",
       `${why} If the payment has not come back, write to hello@usebrainchain.com with the sitting's id.`,
     ]);
   });
@@ -901,9 +901,9 @@ describe("exam status", () => {
 
   it("shows a sitting before it opens by the state the service gives it, never as unknown", async () => {
     const before = (state: string, payment: string, extra: Record<string, unknown> = {}) => ({ sitting: SITTING, state, payment, message: "The sitting is paid for and its items are being drawn.", ...extra });
-    const unkept = `Through the paid route only the request that paid for the sitting reads its briefs. Once it is open, \`${CLI} exam sit --agent-id <id>\` reads them with the signature of the wallet sitting it, and goes on with it.`;
+    const unkept = `Once it opens, run \`${CLI} exam sit --agent-id <id>\` again; it reads the briefs with this wallet's signature.`;
     expect(await status(MAINNET, before("opening", "paid", { reason: "the pool has no item left to draw" }))).toEqual([`Sitting ${SITTING}: paid for, opening`, "  Not open yet: the pool has no item left to draw", unkept]);
-    for (const payment of ["paying", "unconfirmed"]) expect(await status(MAINNET, before("paying", payment))).toEqual([`Sitting ${SITTING}: the service is settling its payment, and opens it once it has`, unkept]);
+    for (const payment of ["paying", "unconfirmed"]) expect(await status(MAINNET, before("paying", payment))).toEqual([`Sitting ${SITTING}: the desk is settling its payment, and BrainChain opens the sitting once it has`, unkept]);
     expect(await status(MAINNET, before("unpaid", "failed"))).toEqual([`Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it.`]);
     // The state alone says it: a reply that leaves the payment's own state out reads the same.
     expect(await status(MAINNET, { sitting: SITTING, state: "unpaid" })).toEqual([`Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it.`]);
@@ -914,7 +914,7 @@ describe("exam status", () => {
     const unsettled = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
     saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING, request: { body: "{}", header: ["payment-signature", "abc"] } }, unsettled);
     expect(await status(MAINNET, before("unpaid", "failed"), { dir: unsettled })).toEqual([
-      `Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it. It is no longer kept: \`${CLI} exam sit --agent-id 501\` asks for a new one.`,
+      `Sitting ${SITTING}: its payment did not settle, so nothing was charged and no sitting opens from it. The saved payment was discarded: \`${CLI} exam sit --agent-id 501\` asks for a new one.`,
     ]);
     expect(readSittings(wallet.address, MAINNET, unsettled)).toEqual([]);
 
@@ -949,14 +949,14 @@ describe("licence", () => {
     await licences(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
     expect(lines).toEqual([
       "Licences of agent 501 on Robinhood Chain",
-      `  Held to the registry as BrainChain read it within the last minute: controller ${wallet.address}, build "atlas 2.1"`,
+      `  Checked against the registry as BrainChain read it within the last minute: controller ${wallet.address}, build "atlas 2.1"`,
       "  code  valid; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 2 passed, 0 failed",
       "  prose  suspended: two failed audits in the last three; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 4 of 5 accepted; audits: 1 passed, 2 failed",
       "  data  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 0 passed, 0 failed",
     ]);
   });
 
-  it("says when the registry could not be read and how old the states then are, and what they are held to otherwise", async () => {
+  it("says when the registry could not be read and how old the states then are, and what they are checked against otherwise", async () => {
     const held = [{ class: "code", state: "lapsed", licence: signed(), audits: { passed: 0, failed: 0 } }];
     const second = async (extra: Record<string, unknown>) => {
       const lines: string[] = [];
@@ -966,10 +966,10 @@ describe("licence", () => {
     };
     const epoch = { id: `0x${"cd".repeat(32)}`, controller: wallet.address, build: "" };
     expect(await second({ registry: "unreadable", epoch: null })).toBe("  The registry could not be read just now, so these states are from BrainChain's last own reading, up to ten minutes old.");
-    expect(await second({ registry: "read", epoch })).toBe(`  Held to the registry as BrainChain read it within the last minute: controller ${wallet.address}, build none declared`);
-    expect(await second({ registry: "read", epoch: null })).toBe("  Held to the registry as BrainChain read it within the last minute: no single account controls the id");
+    expect(await second({ registry: "read", epoch })).toBe(`  Checked against the registry as BrainChain read it within the last minute: controller ${wallet.address}, build none declared`);
+    expect(await second({ registry: "read", epoch: null })).toBe("  Checked against the registry as BrainChain read it within the last minute: no single account controls the id");
     // A service that does not say whether it read the registry is quoted for what it does say, or not at all.
-    expect(await second({ epoch })).toBe(`  Held to the id as BrainChain reads it now: controller ${wallet.address}, build none declared`);
+    expect(await second({ epoch })).toBe(`  Checked against the id as BrainChain reads it now: controller ${wallet.address}, build none declared`);
     expect(await second({ epoch: null })).toBe("  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
     expect(await second({})).toMatch(/^ {2}code {2}lapsed: /);
   });
@@ -1011,10 +1011,10 @@ describe("papers", () => {
     const url = `${MAINNET.service}/papers/4663/501`;
     expect(lines.slice(0, 7)).toEqual([
       `Papers of agent 501 on Robinhood Chain: ${url}`,
-      `  Epoch     2, since 2099-12-31T00:00:00Z; controller ${wallet.address}; build "atlas 2.1"`,
+      `  Epoch     2 (a new controller or build of the id starts a new epoch), since 2099-12-31T00:00:00Z; controller ${wallet.address}; build "atlas 2.1"`,
       `  Record    31 entries: ${MAINNET.service}/agents/4663/501/record`,
       "  Licence   code  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 1 passed, 0 failed",
-      "  Ceiling   the agent may hold at most 2.50 USD of paid work in flight at once, and never less than 1.00 USD; halved until 2100-01-31T00:00:00Z, after a refusal upheld on a dispute",
+      "  Ceiling   the agent may hold at most 2.50 USDG of paid work in flight at once, and never less than the 1.00 USDG every agent starts with; halved until 2100-01-31T00:00:00Z, after a refusal upheld on a dispute",
       `  Card      ${url}/card.svg`,
       "  Check     npx brainchain-verify mainnet --record 501",
     ]);
@@ -1028,7 +1028,7 @@ describe("papers", () => {
         `    cast send ${MAINNET.identity} "setAgentURI(uint256,string)" 501 "${url}" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
         "",
         "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
-        "  A build that starts with house: is read without that prefix.",
+        "  A build that starts with house:, a prefix BrainChain keeps for the agents it runs itself, is read without it.",
         "  A licence stands for the build declared when its sitting opened, so declare it before sitting: a change of build lapses the licence.",
         `    cast send ${MAINNET.identity} "setMetadata(uint256,string,bytes)" 501 build "$(cast from-utf8 '<build>')" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
       ].join("\n"),
@@ -1055,17 +1055,17 @@ describe("papers", () => {
     const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file(bound) } });
     const lines: string[] = [];
     await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
-    expect(lines.at(-1)).toBe(`\nThe id is bound to an NFT, token 77 of ${TOKEN}, and that token's holder controls it. Its owner in the registry is the binding adapter, not the holder's wallet, so no registry calls are printed here.`);
+    expect(lines.at(-1)).toBe(`\nThe id is bound to an NFT, token 77 of ${TOKEN}, and that token's holder controls it. Its owner in the registry is the binding adapter, the contract that ties the id to the NFT, not the holder's wallet, so no registry calls are printed here.`);
     expect(lines.join("\n")).not.toContain("cast send");
   });
 
-  it("says what the Papers leave out, and names no registry where this release has none", async () => {
+  it("says what the Papers leave out, and names no registry where this version has none", async () => {
     const bare = { ...signed, epoch: { ...signed.epoch, build: "", since: undefined }, record: undefined, licences: [], ceiling: undefined, verify: undefined };
     const desk = service(TESTNET, { routes: { "GET /papers/46630/9": () => file(bare) } });
     const lines: string[] = [];
     await papers(TESTNET, { agentId: "9", log: (line) => lines.push(line), fetcher: desk.fetcher });
-    expect(lines.slice(1, 6)).toEqual([`  Epoch     2; controller ${wallet.address}; build none declared`, "  Record    no entry yet", "  Licences  none", "  Ceiling   not stated", `  Card      ${TESTNET.service}/papers/46630/9/card.svg`]);
-    expect(lines.at(-1)).toContain("This release names no ERC-8004 registry on Robinhood Chain testnet: put the registry the id is on in place of <identity registry>.");
+    expect(lines.slice(1, 6)).toEqual([`  Epoch     2 (a new controller or build of the id starts a new epoch); controller ${wallet.address}; build none declared`, "  Record    no entry yet", "  Licences  none", "  Ceiling   not stated", `  Card      ${TESTNET.service}/papers/46630/9/card.svg`]);
+    expect(lines.at(-1)).toContain("This version of brainchain-worker names no ERC-8004 registry on Robinhood Chain testnet: put the registry the id is on in place of <identity registry>.");
     expect(lines.at(-1)).toContain(`cast send <identity registry> "setAgentURI(uint256,string)" 9 "${TESTNET.service}/papers/46630/9" --rpc-url https://rpc.testnet.chain.robinhood.com --interactive`);
     await expect(papers(TESTNET, { agentId: "10", log: () => {}, fetcher: desk.fetcher })).rejects.toThrow(
       "The BrainChain service at brain.testnet.usebrainchain.com serves no Papers for agent 10 on Robinhood Chain testnet: no one controls that id, or Papers are not served on BrainChain testnet.",

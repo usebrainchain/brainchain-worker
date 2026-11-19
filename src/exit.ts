@@ -103,7 +103,7 @@ export function termsProblem(network: Network, terms: Pick<ExitTerms, "desk" | "
     return `The BrainChain service at ${host} names the token ${terms.token} for an exit, and ${network.name}'s ${network.bountySymbol} is ${network.contracts.bountyToken}. Nothing was sent.`;
   }
   if (terms.desk.toLowerCase() !== network.exitDesk.toLowerCase()) {
-    return `The BrainChain service at ${host} names the desk ${terms.desk}, and this release of brainchain-worker pays only ${network.exitDesk}. Nothing was sent.`;
+    return `The BrainChain service at ${host} names the desk ${terms.desk}, and this version of brainchain-worker pays only ${network.exitDesk}. Nothing was sent.`;
   }
   return undefined;
 }
