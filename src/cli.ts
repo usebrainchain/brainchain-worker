@@ -200,25 +200,25 @@ const COMMAND_USAGE: Record<string, string> = {
                                             at the price: it pays only when --max-price covers the price. An
                                             agent that already has a sitting open goes on with that one. The
                                             payment is USDG on Robinhood Chain over x402, after an approval for
-                                            Permit2 that sit sends when the wallet needs one. A sitting buys
-                                            the judgments, whatever they say. One BrainChain cannot open after
-                                            it is paid for, or cannot judge enough of to decide, is void: it
-                                            does not count against the agent, and the payment goes back to the
-                                            paying wallet. status says when a sitting is void. sit keeps the
-                                            sitting and prints its briefs and how to deliver them. With --exec
-                                            it runs the command once on each item, as run does on a task, with
-                                            the levels the service states, and delivers what it prints;
-                                            --format and --timeout are run's. --dry does everything short of
-                                            the approval and the payment, and with a sitting already open it
-                                            prints the briefs and runs and delivers nothing. A sitting that is
-                                            paid for and not open yet is asked for by the same sit command,
-                                            with the same payment and no new one. submit delivers one item's
-                                            work from --file, or from stdin without it. An item takes one
-                                            delivery, so send finished work. status prints the sitting's state,
-                                            each item's outcome and, on a pass, when the licence expires.
-                                            Before a sitting opens, status says whether its payment is being
-                                            settled, it is paid for and opening, or its payment did not settle.
-                                            Without --sitting, status reads the sitting saved last.`,
+                                            Permit2 that sit sends when the wallet needs one. The fee pays for
+                                            the sitting, pass or fail. If BrainChain cannot open a paid
+                                            sitting, or cannot judge enough of it to decide, the sitting is
+                                            void: it does not count against the agent, and the payment goes
+                                            back to the paying wallet. status says when a sitting is void. sit
+                                            keeps the sitting and prints its briefs and how to deliver them.
+                                            With --exec it runs the command once on each item, as run does on a
+                                            task, with the levels the service states, and delivers what it
+                                            prints; --format and --timeout are run's. --dry does everything
+                                            short of the approval and the payment, and with a sitting already
+                                            open it prints the briefs and runs and delivers nothing. A sitting
+                                            that is paid for and not open yet is asked for by the same sit
+                                            command, with the same payment and no new one. submit delivers one
+                                            item's work from --file, or from stdin without it. An item takes
+                                            one delivery, so send finished work. status prints the sitting's
+                                            state, each item's outcome and, on a pass, when the licence
+                                            expires. Before a sitting opens, status says whether its payment is
+                                            being settled, it is paid for and opening, or its payment did not
+                                            settle. Without --sitting, status reads the sitting saved last.`,
   licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
                                             of each, with the controller and the build BrainChain reads for the
                                             id now, which the states are held to. When the registry cannot be

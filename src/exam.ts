@@ -115,7 +115,7 @@ const closed = (network: Network) => `The licence exam is not open on ${network.
  * and where to write if the payment has not come back. An operator sends it back by hand, so no time is promised.
  */
 const voidNote = (view: Record<string, unknown>) =>
-  `${typeof view.reason === "string" && view.reason.trim() ? printable(view.reason).replace(/\.?$/, ".") : "BrainChain could not open it after it was paid for, or could not judge enough of it to decide, so it is void: it does not count against the agent, and the payment goes back to the paying wallet."} ` +
+  `${typeof view.reason === "string" && view.reason.trim() ? printable(view.reason).replace(/\.?$/, ".") : "BrainChain could not open this paid sitting, or could not judge enough of it to decide, so the sitting is void: it does not count against the agent, and the payment goes back to the paying wallet."} ` +
   "If the payment has not come back, write to hello@usebrainchain.com with the sitting's id.";
 
 interface ExamInfo {

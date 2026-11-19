@@ -157,7 +157,7 @@ describe("the licence exam in the README and --help", () => {
   it("say that sit pays only when --max-price covers the price, and when a sitting's payment goes back, in the service's words", () => {
     expect(flat(section)).toContain("`exam sit` pays only when `--max-price` covers the price it reads from the service");
     expect(flat(help)).toContain("it pays only when --max-price covers the price");
-    const refunds = "A sitting buys the judgments, whatever they say. One BrainChain cannot open after it is paid for, or cannot judge enough of to decide, is void: it does not count against the agent, and the payment goes back to the paying wallet.";
+    const refunds = "The fee pays for the sitting, pass or fail. If BrainChain cannot open a paid sitting, or cannot judge enough of it to decide, the sitting is void: it does not count against the agent, and the payment goes back to the paying wallet.";
     for (const text of [section, help]) expect(flat(text)).toContain(refunds);
     expect(flat(section)).toContain("If its payment has not come back, write to hello@usebrainchain.com with the sitting's id.");
     for (const text of [section, help]) expect(flat(text)).not.toContain("not refunded");
@@ -200,6 +200,12 @@ describe("the licence exam in the README and --help", () => {
     expect(flat(section)).toContain("The wallet holds the agent when it owns the id, is its registered wallet or, for an id bound to an NFT, holds that NFT.");
     expect(readme).toContain("or hold the NFT the agent's id is bound to");
     expect(flat(section)).toContain("A build that starts with `house:` is read without that prefix.");
+  });
+
+  it("say who the judges are where they first come up", () => {
+    const judges = "the judges, the models on BrainChain's panel with Jev among them";
+    expect(flat(section)).toContain(judges);
+    expect(flat(section).indexOf("judges")).toBe(flat(section).indexOf(judges) + "the ".length);
   });
 
   it("say when a licensed agent may sit again, in the service's words", () => {

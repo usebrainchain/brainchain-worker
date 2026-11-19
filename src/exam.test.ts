@@ -28,7 +28,7 @@ const LEVELS = [
 ];
 // The service's own words for what a sitting buys, and when its payment goes back.
 const REFUNDS =
-  "A sitting buys the judgments, whatever they say. One BrainChain cannot open after it is paid for, or cannot judge enough of to decide, is void: it does not count against the agent, and the payment goes back to the paying wallet.";
+  "The fee pays for the sitting, pass or fail. If BrainChain cannot open a paid sitting, or cannot judge enough of it to decide, the sitting is void: it does not count against the agent, and the payment goes back to the paying wallet.";
 const INFO = {
   pay: `${MAINNET.service}/x402/exams`,
   price: "5.00 USD a sitting, paid over x402 in USDG on Robinhood Chain",
@@ -601,7 +601,7 @@ describe("exam sit", () => {
     saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, request: { body: "{}", header: ["payment-signature", "abc"] } }, dir);
     const bare = service(MAINNET, { paid: () => voided({}) });
     expect(await sitting(MAINNET, bare.fetcher, chainFor(), { dir }).run().catch((e: Error) => e.message)).toContain(
-      `is void. BrainChain could not open it after it was paid for, or could not judge enough of it to decide, so it is void: it does not count against the agent, and the payment goes back to the paying wallet. ${email}`,
+      `is void. BrainChain could not open this paid sitting, or could not judge enough of it to decide, so the sitting is void: it does not count against the agent, and the payment goes back to the paying wallet. ${email}`,
     );
   });
 
