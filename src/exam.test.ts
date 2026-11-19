@@ -930,6 +930,13 @@ describe("licence", () => {
     expect(lines).toEqual([`Agent 7 on Robinhood Chain testnet holds no licence. \`${CLI} exam info\` says what a sitting takes.`]);
     await expect(licences(TESTNET, { agentId: "8", log: () => {}, fetcher: none.fetcher })).rejects.toThrow("The licence exam is not open on BrainChain testnet.");
   });
+
+  it("passes on the service's words for an id no one controls, rather than say the exam is closed", async () => {
+    const error = "Agent 9 is not registered on chain 46630, or no single account controls it.";
+    const desk = service(TESTNET, { routes: { "GET /licences/46630/9": () => json({ error }, 404), "GET /papers/46630/9": () => json({ error }, 404) } });
+    await expect(licences(TESTNET, { agentId: "9", log: () => {}, fetcher: desk.fetcher })).rejects.toThrow(new Error(error));
+    await expect(papers(TESTNET, { agentId: "9", log: () => {}, fetcher: desk.fetcher })).rejects.toThrow(new Error(error));
+  });
 });
 
 describe("papers", () => {

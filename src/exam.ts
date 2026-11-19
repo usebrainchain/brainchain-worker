@@ -93,11 +93,15 @@ async function ask(network: Network, path: string, fetcher: typeof fetch, init: 
   return { response, body: isObject(body) ? body : {} };
 }
 
-/** A read that must succeed: the service's JSON, `missing` for a 404, and its own words for any other refusal. */
+/**
+ * A read that must succeed: the service's JSON, and its own words for a refusal. A 404 is `missing`, unless the
+ * service says more than its "Not found." for an address it has no route for, as it does for an id no one controls.
+ */
 async function read(network: Network, path: string, fetcher: typeof fetch, missing: string): Promise<Record<string, unknown>> {
   const { response, body } = await ask(network, path, fetcher);
-  if (response.status === 404) throw new Error(missing);
-  if (!response.ok) throw new Error(typeof body.error === "string" ? printable(body.error) : `${response.status} from the BrainChain service at ${hostOf(network)}`);
+  const said = typeof body.error === "string" ? printable(body.error) : undefined;
+  if (response.status === 404) throw new Error(said !== undefined && said !== "Not found." ? said : missing);
+  if (!response.ok) throw new Error(said ?? `${response.status} from the BrainChain service at ${hostOf(network)}`);
   return body;
 }
 
