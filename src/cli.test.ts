@@ -141,6 +141,8 @@ describe("help", () => {
         [["licence"], "licence needs --agent-id: the agent's ERC-8004 id, a whole number"],
         [["license"], "licence needs --agent-id"],
         [["papers", "--agent-id", "-1"], '--agent-id is a whole number, the agent\'s ERC-8004 id, not "-1"'],
+        [["exam", "sit", "--agent-id", "026170"], "--agent-id has no leading zeros: 26170, not 026170"],
+        [["licence", "--agent-id", "00"], "--agent-id has no leading zeros: 0, not 00"],
       ];
       for (const [argv, said] of refusals) await expect(main(argv), argv.join(" ")).rejects.toThrow(said);
       await expect(main(["run", "--exec", "cat"])).rejects.toThrow("Set BRAINCHAIN_WORKER_KEY");

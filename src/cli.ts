@@ -824,6 +824,8 @@ const EXAM_FLAGS: Record<string, string[]> = {
 function agentIdOf(values: Map<string, string>, command: string): string {
   const agentId = values.get("agent-id");
   if (agentId === undefined) throw new UsageError(`${command} needs --agent-id: the agent's ERC-8004 id, a whole number`);
+  // The service reads one spelling of an id, so 026170 is refused there as it is here.
+  if (/^0\d+$/.test(agentId)) throw new UsageError(`--agent-id has no leading zeros: ${agentId.replace(/^0+(?=\d)/, "")}, not ${agentId}`);
   if (!/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError(`--agent-id is a whole number, the agent's ERC-8004 id, not "${agentId}"`);
   return agentId;
 }
