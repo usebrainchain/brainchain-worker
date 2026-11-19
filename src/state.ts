@@ -237,7 +237,6 @@ export function saveWork(address: string, network: Network, sitting: Hex, index:
   return file;
 }
 
-/** Drops the sitting saved for an agent and class. */
 export function forgetSitting(address: string, network: Network, sitting: Pick<SavedSitting, "agentId" | "class">, dir = stateDir()): void {
   rmSync(sittingFile(address, network, sitting, dir), { force: true });
 }
@@ -248,7 +247,7 @@ export function memoryStore(board = ""): Store {
   return { state: empty(board), save: () => undefined };
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const isHash = (value: unknown) => typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value);
 const isIds = (value: unknown) => Array.isArray(value) && value.every((id) => typeof id === "string" && /^\d+$/.test(id));

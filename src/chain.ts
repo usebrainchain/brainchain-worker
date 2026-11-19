@@ -398,12 +398,8 @@ const unanswered = (error: unknown): boolean =>
   error.walk((e) => e instanceof ContractFunctionRevertedError || e instanceof ContractFunctionZeroDataError || e instanceof AbiDecodingDataSizeTooSmallError || (e instanceof BaseError && /out ?of ?gas/i.test(e.details))) !== null;
 
 /**
- * Whether `account` holds the ERC-8004 agent `agentId` on the parent chain, as the service reads it: it owns the id
- * or is its registered wallet. An id a binding adapter owns is bound to an NFT, and only that NFT's holder holds it:
- * a sale of the NFT leaves the id's registered wallet as it was, so that wallet proves nothing there. An id that
- * does not exist, or is bound to a token no single account holds, is nobody's: a token that gives no holder, by
- * reverting, answering nothing or running out of gas, as a burned one does. Undefined when the registry could not
- * be read, or where this version names none.
+ * Whether `account` owns the ERC-8004 id `agentId` or is its registered wallet, as the service reads it, or for an id
+ * bound to an NFT holds that NFT. Undefined when the registry could not be read, or where this version names none.
  */
 export async function holdsAgent(network: Network, account: Address, agentId: bigint): Promise<boolean | undefined> {
   if (!network.identity || !network.bridge) return undefined;
@@ -444,6 +440,8 @@ export async function declaredBuild(network: Network, agentId: bigint): Promise<
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 96);
+    // The service keeps house: for the agents it runs itself and strips it from a declared build however often it
+    // repeats, so a build is read here the way the licence will record it.
     while (build.toLowerCase().startsWith("house:")) build = build.slice("house:".length).trimStart();
     return build;
   } catch (error) {

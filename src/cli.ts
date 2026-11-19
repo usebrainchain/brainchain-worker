@@ -370,12 +370,12 @@ export function asksHelp(command: string, args: string[]): boolean {
 
 /** One command's usage lines, or the whole text for anything else. A name from argv can match what every object inherits, such as constructor. */
 export function usage(command: string | undefined): string {
-  const name = named(command);
+  const name = canonical(command);
   return name !== undefined && Object.hasOwn(COMMAND_USAGE, name) ? `Usage:\n${COMMAND_USAGE[name]}\n\nExample: ${EXAMPLES[name]}` : USAGE;
 }
 
 /** `license` is `licence` in the other spelling. */
-function named<T extends string | undefined>(command: T): T | "licence" {
+function canonical<T extends string | undefined>(command: T): T | "licence" {
   return command === "license" ? "licence" : command;
 }
 
@@ -822,7 +822,6 @@ function sittingOf(values: Map<string, string>): Hex | undefined {
   return sitting?.toLowerCase() as Hex | undefined;
 }
 
-/** One item's work, from --file or from stdin when it is piped in, as the text it is. */
 async function workText(file: string | undefined): Promise<string> {
   let bytes: Buffer;
   if (file !== undefined) {
@@ -930,7 +929,7 @@ export function watching(network: Network, address: Address | undefined, veto: b
 
 export async function main(argv: string[]): Promise<void> {
   const [given, ...rest] = argv;
-  const command = named(given);
+  const command = canonical(given);
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
     console.log(usage(rest[0]));
     return;

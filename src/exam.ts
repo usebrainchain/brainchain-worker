@@ -11,7 +11,7 @@ import { declaredBuild, erc20Abi, holdsAgent, PermanentError, reason, RECEIPT_MS
 import { cli } from "./invoked.js";
 import { parentChainOf, rpcTransport, type Network } from "./network.js";
 import { money, when } from "./standing.js";
-import { forgetSitting, readSittings, saveSitting, saveWork, stateDir, type SavedSitting } from "./state.js";
+import { forgetSitting, isObject, readSittings, saveSitting, saveWork, stateDir, type SavedSitting } from "./state.js";
 import { deliverable, loggedTitle, printable, stripAnsi, taskInput, taskPrompt, type Brief, type Command } from "./work.js";
 
 /** The canonical Permit2 contract, which an x402 payment in USDG moves through. */
@@ -78,7 +78,6 @@ export function createExamChain(network: Network, account: PrivateKeyAccount): E
   };
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const sameAddress = (a: unknown, b: string) => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
 const date = (seconds: unknown) => (typeof seconds === "number" ? when(BigInt(Math.floor(seconds))) : "an unknown time");
 /** Text over several lines from the service, with nothing in it that moves the cursor or hides. */
@@ -88,7 +87,6 @@ const hostOf = (network: Network) => new URL(network.service).host;
 const percent = (bps: number) => `${bps / 100}%`;
 const grouped = (count: number) => count.toLocaleString("en-US");
 
-/** One request to the service, and its answer as JSON: `{}` for a body that is none. */
 async function ask(network: Network, path: string, fetcher: typeof fetch, init: RequestInit = {}): Promise<{ response: Response; body: Record<string, unknown> }> {
   const response = await fetcher(`${network.service}${path}`, { signal: AbortSignal.timeout(30_000), ...init }).catch(() => {
     throw new Error(`Could not reach the BrainChain service at ${hostOf(network)}.`);
@@ -294,7 +292,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     return current;
   };
 
-  /** A sitting the agent already has that is not open yet: kept, so status and the next sit find it, and said plainly. */
+  /** Saves a sitting that is paid for and not open yet, so status and the next sit find it, and stops this run. */
   const notOpenYet = (sitting: Hex, state: "paying" | "opening", nothing: string): never => {
     saveSitting(account, network, { ...mine, at: Math.floor(Date.now() / 1000), sitting }, dir);
     throw new Error(
@@ -304,10 +302,9 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   };
 
   /**
-   * A request the service turned away, which it does before it charges. A refusal that names a sitting is about the
-   * one this agent already has: open and sat by this wallet, it is gone on with; paid for and not open yet, it is
-   * kept. Any other refusal, and a sitting this wallet cannot read, is the service's own words. `nothing` says what
-   * this run had not done when it was turned away.
+   * Handles a request the service turned down, which happens before anything is charged. If the refusal names a
+   * sitting this wallet can read, the run goes on with it or saves it; otherwise the service's words are the error.
+   * `nothing` says what this run had not yet done.
    */
   const refused = async (status: number, reply: Record<string, unknown>, nothing: string): Promise<Opened> => {
     if (status === 429) throw new Error(`The service has had too many sitting requests from this address in the last minute, so it did not look at this one. ${nothing} Run ${again} again in a minute.`);
@@ -578,8 +575,8 @@ export async function examSubmit(
 }
 
 /**
- * What the judges said of an item and how sure they were of it. An answer to accept counts only at the exam's bar
- * or above, which is named when the sitting carries it. An item judged before the answer was kept has only how sure they were.
+ * The judges' answer on an item and how sure they were. An accept under the exam's bar is marked as such. Items judged
+ * before the service kept the answer have only the confidence.
  */
 function judgesSaid(item: Record<string, unknown>, bar: number | undefined): string | undefined {
   if (typeof item.confidenceBps !== "number") return undefined;
@@ -589,7 +586,6 @@ function judgesSaid(item: Record<string, unknown>, bar: number | undefined): str
   return `judges accepted, ${sure} sure${bar !== undefined && item.confidenceBps < bar ? `, under the ${percent(bar)} bar` : ""}`;
 }
 
-/** One item's line in a sitting's status. */
 function itemLine(item: Record<string, unknown>, bar?: number): string {
   const cases = typeof item.right === "number" && typeof item.of === "number" ? `${item.right} of ${item.of} hidden cases right` : undefined;
   const judges = judgesSaid(item, bar);
@@ -738,7 +734,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
   }
   const registry = network.identity ?? "<identity registry>";
   const rpc = network.bridge?.rpc ?? network.proofs.rpc;
-  // A valid licence stands for the build the id declares now, so declaring another is no suggestion to make.
+  // A valid licence is bound to the build declared now, so a new build would lapse it.
   const licensed = held.some((entry) => entry.state === "valid");
   log(
     [

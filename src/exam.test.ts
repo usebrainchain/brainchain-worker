@@ -1074,7 +1074,7 @@ describe("papers", () => {
 });
 
 describe("what the exam's lines never say", () => {
-  it("is a dash for a pause", async () => {
+  it("contains no em dash", async () => {
     const lines: string[] = [];
     const log = (line: string) => lines.push(line);
     const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => json({ brainchain: { papers: {} } }), "GET /licences/4663/501": () => json({ licences: [] }), [`GET /exams/${SITTING}`]: () => json(view()) } });
