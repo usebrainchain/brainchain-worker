@@ -7,7 +7,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { createPublicClient, createWalletClient, formatUnits, keccak256, toBytes, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
-import { createChain, erc20Abi, PermanentError, reason, RECEIPT_MS, type HiredTask } from "./chain.js";
+import { erc20Abi, holdsAgent, PermanentError, reason, RECEIPT_MS, type HiredTask } from "./chain.js";
 import { cli } from "./invoked.js";
 import { parentChainOf, rpcTransport, type Network } from "./network.js";
 import { when } from "./standing.js";
@@ -57,7 +57,7 @@ export function createExamChain(network: Network, account: PrivateKeyAccount): E
   const usdg = { address: network.deskUsdg.address, abi: erc20Abi } as const;
   return {
     wallet: account,
-    holdsAgent: createChain(network, account).holdsAgent,
+    holdsAgent: (agentId) => holdsAgent(network, account.address, agentId),
     async funds() {
       const [held, allowance, eth] = await Promise.all([
         read.readContract({ ...usdg, functionName: "balanceOf", args: [account.address] }),

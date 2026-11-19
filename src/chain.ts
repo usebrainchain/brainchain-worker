@@ -2,8 +2,10 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 
 import {
+  AbiDecodingDataSizeTooSmallError,
   BaseError,
   ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
   createPublicClient,
   createWalletClient,
   encodeAbiParameters,
@@ -388,6 +390,42 @@ const adapterAbi = parseAbi(["struct Binding { uint8 standard; address tokenCont
 /** The adapter's code for ERC-721, the one standard whose token has a single holder. */
 const ERC721 = 0;
 
+/** The call reached the contract and got no answer from it: a revert, no data or too little back, or no gas left. */
+const unanswered = (error: unknown): boolean =>
+  error instanceof BaseError &&
+  error.walk((e) => e instanceof ContractFunctionRevertedError || e instanceof ContractFunctionZeroDataError || e instanceof AbiDecodingDataSizeTooSmallError || (e instanceof BaseError && /out ?of ?gas/i.test(e.details))) !== null;
+
+/**
+ * Whether `account` holds the ERC-8004 agent `agentId` on the parent chain, as the service reads it: it owns the id
+ * or is its registered wallet. An id a binding adapter owns is bound to an NFT, and only that NFT's holder holds it:
+ * a sale of the NFT leaves the id's registered wallet as it was, so that wallet proves nothing there. An id that
+ * does not exist, or is bound to a token no single account holds, is nobody's: a token that gives no holder, by
+ * reverting, answering nothing or running out of gas, as a burned one does. Undefined when the registry could not
+ * be read, or where this release names none.
+ */
+export async function holdsAgent(network: Network, account: Address, agentId: bigint): Promise<boolean | undefined> {
+  if (!network.identity || !network.bridge) return undefined;
+  const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
+  const mine = (holder: Address) => holder.toLowerCase() === account.toLowerCase();
+  const read = (functionName: "ownerOf" | "getAgentWallet") => parent.readContract({ address: network.identity!, abi: identityAbi, functionName, args: [agentId] });
+  try {
+    const owner = await read("ownerOf");
+    const adapter = network.identityAdapters?.find((known) => known.toLowerCase() === owner.toLowerCase());
+    if (adapter) {
+      const binding = await parent.readContract({ address: adapter, abi: adapterAbi, functionName: "bindingOf", args: [agentId] });
+      if (binding.standard !== ERC721) return false;
+      const holder = await parent.readContract({ address: binding.tokenContract, abi: identityAbi, functionName: "ownerOf", args: [binding.tokenId] }).catch((error: unknown) => {
+        if (unanswered(error)) return undefined;
+        throw error;
+      });
+      return holder !== undefined && mine(holder);
+    }
+    return mine(owner) || mine(await read("getAgentWallet"));
+  } catch (error) {
+    return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? false : undefined;
+  }
+}
+
 export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
   const chain = chainOf(network);
   const transport = brainchainTransport(network);
@@ -545,32 +583,8 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       const stakes = await Promise.all(sets.map((s) => client.readContract({ address: s.staking, abi: workerStakingAbi, functionName: "get", args: [account.address] })));
       return sets.flatMap((s, i) => (stakes[i]!.staked > 0n || stakes[i]!.unstaking > 0n ? [{ ...s, w: stakes[i]! }] : []));
     },
-    /**
-     * Whether this wallet holds the ERC-8004 agent `agentId` on the parent chain, as the service reads it: it owns
-     * the id or is its registered wallet. An id a binding adapter owns is bound to an NFT, and only that NFT's
-     * holder holds it: a sale of the NFT leaves the id's registered wallet as it was, so that wallet proves
-     * nothing there. An id that does not exist, or is bound to a token no single account holds, is nobody's.
-     * Undefined when the registry could not be read.
-     */
-    async holdsAgent(agentId: bigint): Promise<boolean | undefined> {
-      if (!network.identity || !network.bridge) return undefined;
-      const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
-      const mine = (holder: Address) => holder.toLowerCase() === account.address.toLowerCase();
-      const read = (functionName: "ownerOf" | "getAgentWallet") =>
-        parent.readContract({ address: network.identity!, abi: identityAbi, functionName, args: [agentId] });
-      try {
-        const owner = await read("ownerOf");
-        const adapter = network.identityAdapters?.find((known) => known.toLowerCase() === owner.toLowerCase());
-        if (adapter) {
-          const binding = await parent.readContract({ address: adapter, abi: adapterAbi, functionName: "bindingOf", args: [agentId] });
-          if (binding.standard !== ERC721) return false;
-          return mine(await parent.readContract({ address: binding.tokenContract, abi: identityAbi, functionName: "ownerOf", args: [binding.tokenId] }));
-        }
-        return mine(owner) || mine(await read("getAgentWallet"));
-      } catch (error) {
-        return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? false : undefined;
-      }
-    },
+    /** Whether this wallet holds the ERC-8004 agent `agentId` on the parent chain, as {@link holdsAgent} reads it. */
+    holdsAgent: (agentId: bigint) => holdsAgent(network, account.address, agentId),
     apply: (profileURI: string) =>
       send({ address: bonds, abi: bondsAbi, functionName: "propose", args: [taskBoard, applicationData(account.address), profileURI] }),
     /** Whether the guardian's veto shuts allowing a worker, which is what an application asks for. */

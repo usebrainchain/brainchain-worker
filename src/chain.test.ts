@@ -458,6 +458,10 @@ describe("holdsAgent", () => {
     expect(await holds({ ...owned, [`${ADAPTER.toLowerCase()} bindingOf`]: binding(1) })).toBe(false);
     expect(await holds(owned)).toBe(false);
     expect(await holds({ [`${REGISTRY} ownerOf`]: address(ADAPTER), [`${ADAPTER.toLowerCase()} bindingOf`]: binding(0) })).toBe(false);
+    // A token contract that answers nothing gives no holder either, as the service reads it: never an outage to try again.
+    expect(await holds({ [`${REGISTRY} ownerOf`]: address(ADAPTER), [`${ADAPTER.toLowerCase()} bindingOf`]: binding(0), [`${TOKEN.toLowerCase()} ownerOf`]: "0x" })).toBe(false);
+    // Only from the token: a registry that answers nothing is one that could not be read.
+    expect(await holds({ [`${REGISTRY} ownerOf`]: "0x" })).toBeUndefined();
   });
 
   it("says nothing when the registry cannot be read, or where this release names none", async () => {
