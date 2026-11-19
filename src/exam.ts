@@ -7,7 +7,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { createPublicClient, createWalletClient, keccak256, toBytes, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
-import { erc20Abi, holdsAgent, PermanentError, reason, RECEIPT_MS, type HiredTask } from "./chain.js";
+import { declaredBuild, erc20Abi, holdsAgent, PermanentError, reason, RECEIPT_MS, type HiredTask } from "./chain.js";
 import { cli } from "./invoked.js";
 import { parentChainOf, rpcTransport, type Network } from "./network.js";
 import { money, when } from "./standing.js";
@@ -42,6 +42,8 @@ export interface ExamChain {
   wallet: Pick<PrivateKeyAccount, "address" | "signMessage" | "signTypedData">;
   /** Whether the wallet owns the agent's id or is its registered wallet; undefined when no registry could be read. */
   holdsAgent(agentId: bigint): Promise<boolean | undefined>;
+  /** The build the id declares now, "" for none; undefined when no registry could be read. */
+  build(agentId: bigint): Promise<string | undefined>;
   /** The wallet's USDG and ETH there, and how much of the USDG Permit2 may spend. */
   funds(): Promise<{ usdg: bigint; allowance: bigint; eth: bigint }>;
   /** Lets Permit2 spend `amount` of the wallet's USDG. */
@@ -58,6 +60,7 @@ export function createExamChain(network: Network, account: PrivateKeyAccount): E
   return {
     wallet: account,
     holdsAgent: (agentId) => holdsAgent(network, account.address, agentId),
+    build: (agentId) => declaredBuild(network, agentId),
     async funds() {
       const [held, allowance, eth] = await Promise.all([
         read.readContract({ ...usdg, functionName: "balanceOf", args: [account.address] }),
@@ -421,6 +424,12 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     log(`A sitting for agent ${agentId} in class ${options.class} costs ${usdg(price)} on ${parent.name}, paid by ${account} over x402.`);
     for (const rule of rules) log(`  ${rule}`);
     if (holds === undefined) log(`  This release names no ERC-8004 registry on ${parent.name}, so whether ${account} holds agent ${agentId} is left to the service, which checks before it charges.`);
+    // A licence stands for the build the id declares when its sitting opens, so the holder sees which one before paying.
+    if (network.identity) {
+      const build = await chain.build(BigInt(agentId));
+      if (build === undefined) log(`  Build     the registry could not be read just now, so the build the licence is bound to is not shown. A licence stands for the build the id declares when its sitting opens.`);
+      else log(`  Build     ${build ? `build ${JSON.stringify(build)}` : "no build declared"} for agent ${agentId} now: the licence is bound to it, and declaring another build later lapses the licence.`);
+    }
     if (options.maxPrice !== undefined && price > options.maxPrice) throw new Error(`A sitting costs ${usdg(price)}, above --max-price ${money(options.maxPrice)}. Nothing was approved or paid.`);
     if (options.maxPrice === undefined && !dry) return void log(`The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price ${money(price)}.`);
 
@@ -430,6 +439,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     } catch (error) {
       throw new Error(`could not read the wallet on ${parent.name}: ${reason(error)}`);
     }
+    if (funds.usdg >= price) log(`  Wallet    ${account} holds ${usdg(funds.usdg)} on ${parent.name}, which covers the price.`);
     const approves = funds.allowance < price;
     if (approves) log(`  Permit2, which an x402 payment in ${symbol} moves through, may spend ${usdg(funds.allowance)} of the wallet's. sit first approves ${usdg(price)} for it, which takes a little ETH on ${parent.name}.`);
     // Every shortfall at once, so a dry run says all the wallet still needs.

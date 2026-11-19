@@ -131,11 +131,12 @@ function service(
   return { fetcher, seen, unpaid, delivered, read };
 }
 
-/** `holds` is what the registry says of the wallet and the agent, or "unread" when it says nothing. */
-function chainFor(funds = { usdg: 20_000_000n, allowance: 20_000_000n, eth: 10n ** 15n }, holds: boolean | "unread" = true) {
+/** `holds` is what the registry says of the wallet and the agent, and `build` the build the id declares; "unread" when it says nothing. */
+function chainFor(funds = { usdg: 20_000_000n, allowance: 20_000_000n, eth: 10n ** 15n }, holds: boolean | "unread" = true, build: string = "rehearsal build 1") {
   return {
     wallet,
     holdsAgent: vi.fn(async () => (holds === "unread" ? undefined : holds)),
+    build: vi.fn(async () => (build === "unread" ? undefined : build)),
     funds: vi.fn(async () => funds),
     approve: vi.fn(async () => `0x${"a1".repeat(32)}` as Hex),
   } satisfies ExamChain;
@@ -206,8 +207,10 @@ describe("exam sit", () => {
     expect(lines).toEqual([
       `A sitting for agent 501 in class code costs 5.00 USDG on Robinhood Chain, paid by ${wallet.address} over x402.`,
       ...RULES,
+      `  Build     build "rehearsal build 1" for agent 501 now: the licence is bound to it, and declaring another build later lapses the licence.`,
       "The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.00.",
     ]);
+    expect(chain.build).toHaveBeenCalledWith(501n);
     // The price came with the answer to the request itself, sent once with the wallet's signature and no payment.
     expect(desk.unpaid).toHaveLength(1);
     const asked = JSON.parse(desk.unpaid[0]!) as { agent: { chainId: number; id: string }; at: number; signature: Hex };
@@ -267,10 +270,27 @@ describe("exam sit", () => {
     ]);
     const unconfirmed = sitting(MAINNET, desk.fetcher, chainFor(), { dry: true });
     await unconfirmed.run();
+    // The balance beside the price, and whether it covers it; a shortfall is said in the refusal above.
+    expect(unconfirmed.lines).toContain(`  Wallet    ${wallet.address} holds 20.00 USDG on Robinhood Chain, which covers the price.`);
     expect(unconfirmed.lines.at(-1)).toBe("dry run: nothing approved or paid. Without --dry and with --max-price 5.00, sit pays 5.00 USDG and saves the sitting.");
     expect(unapproved.approve).not.toHaveBeenCalled();
     expect(desk.seen).toEqual([]);
     expect([...empty.saved(), ...ready.saved()]).toEqual([]);
+  });
+
+  it("says before paying which build the licence will be bound to, and that declaring another lapses it", async () => {
+    const lineOf = async (build: string) => {
+      const { run, lines } = sitting(MAINNET, service(MAINNET).fetcher, chainFor(undefined, true, build), { dry: true });
+      await run();
+      return lines.find((line) => line.startsWith("  Build"));
+    };
+    expect(await lineOf("rehearsal build 1")).toBe(`  Build     build "rehearsal build 1" for agent 501 now: the licence is bound to it, and declaring another build later lapses the licence.`);
+    expect(await lineOf("")).toBe("  Build     no build declared for agent 501 now: the licence is bound to it, and declaring another build later lapses the licence.");
+    expect(await lineOf("unread")).toBe("  Build     the registry could not be read just now, so the build the licence is bound to is not shown. A licence stands for the build the id declares when its sitting opens.");
+    // Where this release names no registry there is none to read.
+    const { run, lines } = sitting(TESTNET, service(TESTNET).fetcher, chainFor(undefined, "unread"), { dry: true });
+    await run();
+    expect(lines.some((line) => line.startsWith("  Build"))).toBe(false);
   });
 
   it("approves Permit2 for the price when it must, signs the request, pays the desk that price and keeps the sitting", async () => {
@@ -290,14 +310,16 @@ describe("exam sit", () => {
     expect(payment.payload.permit2Authorization.from).toBe(wallet.address);
     expect(saved()).toEqual([{ agentId: "501", class: "code", at: sent.at, sitting: SITTING, deadline: DEADLINE }]);
 
-    expect(lines.slice(1 + RULES.length, 6 + RULES.length)).toEqual([
+    expect(lines.slice(1 + RULES.length, 8 + RULES.length)).toEqual([
+      `  Build     build "rehearsal build 1" for agent 501 now: the licence is bound to it, and declaring another build later lapses the licence.`,
+      `  Wallet    ${wallet.address} holds 5.00 USDG on Robinhood Chain, which covers the price.`,
       "  Permit2, which an x402 payment in USDG moves through, may spend 0.00 USDG of the wallet's. sit first approves 5.00 USDG for it, which takes a little ETH on Robinhood Chain.",
       "Approving 5.00 USDG for Permit2 on Robinhood Chain...",
       `  approved: 0x${"a1".repeat(32)}`,
       "Paying 5.00 USDG for the sitting...",
       `Sitting ${SITTING} is open until 2100-01-01T02:00:00Z.`,
     ]);
-    expect(lines[6 + RULES.length]).toBe("\nItem 0: Item 0\nWrite f0(x).\n\nReturn only the function, in one Python code block.");
+    expect(lines[8 + RULES.length]).toBe("\nItem 0: Item 0\nWrite f0(x).\n\nReturn only the function, in one Python code block.");
     expect(lines.slice(-2)).toEqual([
       `\nDeliver each item once, before 2100-01-01T02:00:00Z, with \`${CLI} exam submit --sitting ${SITTING} --item 0 --file <path>\`. An item takes one delivery.`,
       `\`${CLI} exam status --sitting ${SITTING}\` shows each item's outcome.`,

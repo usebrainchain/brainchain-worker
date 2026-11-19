@@ -17,13 +17,14 @@ import {
   keccak256,
   toBytes,
   toFunctionSelector,
+  toHex,
   type Address,
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi, workerStakingAbi } from "./abi.js";
-import { appealAbi, createChain, erc20Abi, faucetReopens, fetchBrief, NotWaiting, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
+import { appealAbi, createChain, declaredBuild, erc20Abi, faucetReopens, fetchBrief, NotWaiting, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
 import { cli } from "./invoked.js";
 import { MAINNET, resolveNetwork, TESTNET } from "./network.js";
 import { flightLine } from "./standing.js";
@@ -402,7 +403,12 @@ describe("holdsAgent", () => {
   const ADAPTER = MAINNET.identityAdapters![0]!;
   const address = (holder: Address) => encodeAbiParameters([{ type: "address" }], [holder]);
   const binding = (standard: number, tokenId = 77n) => encodeAbiParameters([{ type: "uint8" }, { type: "address" }, { type: "uint256" }], [standard, TOKEN, tokenId]);
-  const selector = { ownerOf: toFunctionSelector("function ownerOf(uint256)"), getAgentWallet: toFunctionSelector("function getAgentWallet(uint256)"), bindingOf: toFunctionSelector("function bindingOf(uint256)") };
+  const selector = {
+    ownerOf: toFunctionSelector("function ownerOf(uint256)"),
+    getAgentWallet: toFunctionSelector("function getAgentWallet(uint256)"),
+    bindingOf: toFunctionSelector("function bindingOf(uint256)"),
+    getMetadata: toFunctionSelector("function getMetadata(uint256,string)"),
+  };
   /** What each contract answers each call with: an encoded result, or nothing for a revert. */
   let answers: Record<string, Hex | undefined> = {};
   let asked: string[] = [];
@@ -462,6 +468,26 @@ describe("holdsAgent", () => {
     expect(await holds({ [`${REGISTRY} ownerOf`]: address(ADAPTER), [`${ADAPTER.toLowerCase()} bindingOf`]: binding(0), [`${TOKEN.toLowerCase()} ownerOf`]: "0x" })).toBe(false);
     // Only from the token: a registry that answers nothing is one that could not be read.
     expect(await holds({ [`${REGISTRY} ownerOf`]: "0x" })).toBeUndefined();
+  });
+
+  it("reads the build the id declares as the service does: one printable line, no house: prefix, and none for nothing set", async () => {
+    const build = async (answer: Hex | undefined) => {
+      answers = answer === undefined ? {} : { [`${REGISTRY} getMetadata`]: answer };
+      return declaredBuild(network, 501n);
+    };
+    const bytes = (text: string) => encodeAbiParameters([{ type: "bytes" }], [toHex(text)]);
+    expect(await build(bytes("rehearsal build 1"))).toBe("rehearsal build 1");
+    expect(await build(bytes("House: house:  atlas\t2.1\n"))).toBe("atlas 2.1");
+    expect(await build(bytes(""))).toBe("");
+    // A registry without the metadata read declares none.
+    expect(await build(undefined)).toBe("");
+    down = true;
+    try {
+      expect(await build(bytes("atlas"))).toBeUndefined();
+    } finally {
+      down = false;
+    }
+    expect(await declaredBuild(TESTNET, 501n)).toBeUndefined();
   });
 
   it("says nothing when the registry cannot be read, or where this release names none", async () => {

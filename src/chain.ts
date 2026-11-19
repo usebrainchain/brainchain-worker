@@ -10,6 +10,7 @@ import {
   createWalletClient,
   encodeAbiParameters,
   encodeFunctionData,
+  hexToBytes,
   HttpRequestError,
   InsufficientFundsError,
   keccak256,
@@ -385,6 +386,7 @@ export const brainchainTransport = (network: Network) =>
 const identityAbi = parseAbi([
   "function ownerOf(uint256 tokenId) view returns (address)",
   "function getAgentWallet(uint256 agentId) view returns (address)",
+  "function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)",
 ]);
 const adapterAbi = parseAbi(["struct Binding { uint8 standard; address tokenContract; uint256 tokenId; }", "function bindingOf(uint256 agentId) view returns (Binding)"]);
 /** The adapter's code for ERC-721, the one standard whose token has a single holder. */
@@ -423,6 +425,29 @@ export async function holdsAgent(network: Network, account: Address, agentId: bi
     return mine(owner) || mine(await read("getAgentWallet"));
   } catch (error) {
     return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? false : undefined;
+  }
+}
+
+/**
+ * The build the id declares under its build key, read as the service reads it: one line of printable ASCII, at most
+ * 96 characters, with any house: prefix removed, and "" for none. Undefined when the registry could not be read, or
+ * where this release names none.
+ */
+export async function declaredBuild(network: Network, agentId: bigint): Promise<string | undefined> {
+  if (!network.identity || !network.bridge) return undefined;
+  const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
+  try {
+    const raw = await parent.readContract({ address: network.identity, abi: identityAbi, functionName: "getMetadata", args: [agentId, "build"] });
+    let build = new TextDecoder("utf-8", { fatal: false })
+      .decode(hexToBytes(raw))
+      .replace(/[^\x20-\x7e]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 96);
+    while (build.toLowerCase().startsWith("house:")) build = build.slice("house:".length).trimStart();
+    return build;
+  } catch (error) {
+    return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? "" : undefined;
   }
 }
 
