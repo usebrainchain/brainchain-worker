@@ -708,6 +708,12 @@ export async function papers(network: Network, options: { agentId: string; log: 
   log(`  Card      ${url}/card.svg`);
   if (typeof signed.verify === "string") log(`  Check     ${printable(signed.verify)}`);
 
+  // An id bound to an NFT is owned in the registry by the binding adapter, so a call from the holder's wallet is not the owner's.
+  const bound = isObject(epoch.bound) ? epoch.bound : undefined;
+  if (bound) {
+    const token = `token ${printable(String(bound.tokenId))} of ${printable(String(bound.token))}`;
+    return log(`\nThe id is bound to an NFT, ${token}, and that token's holder controls it. Its owner in the registry is the binding adapter, not the holder's wallet, so no registry calls are printed here.`);
+  }
   const registry = network.identity ?? "<identity registry>";
   const rpc = network.bridge?.rpc ?? network.proofs.rpc;
   log(
@@ -715,7 +721,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
       "",
       `Two transactions the id's owner can send once, on ${parent.name}. Both are optional, and this command sends neither.`,
       ...(network.identity ? [] : [`This release names no ERC-8004 registry on ${parent.name}: put the registry the id is on in place of <identity registry>.`]),
-      "They are written for Foundry's cast, which asks for the key, so it never appears on the command line.",
+      "They are written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.",
       "",
       "  Point the id's URI at its Papers, so the record shows wherever the id's token is shown:",
       `    cast send ${registry} "setAgentURI(uint256,string)" ${agentId} "${url}" --rpc-url ${rpc} --interactive`,

@@ -970,7 +970,7 @@ describe("papers", () => {
       [
         "",
         "Two transactions the id's owner can send once, on Robinhood Chain. Both are optional, and this command sends neither.",
-        "They are written for Foundry's cast, which asks for the key, so it never appears on the command line.",
+        "They are written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.",
         "",
         "  Point the id's URI at its Papers, so the record shows wherever the id's token is shown:",
         `    cast send ${MAINNET.identity} "setAgentURI(uint256,string)" 501 "${url}" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
@@ -983,6 +983,16 @@ describe("papers", () => {
     );
     expect(lines).toHaveLength(8);
     expect(desk.read).toEqual(["/papers/4663/501"]);
+  });
+
+  it("says an id bound to an NFT is controlled by the token's holder, and prints no registry calls for it", async () => {
+    const TOKEN = "0x00000000000000000000000000000000000000A7";
+    const bound = { ...signed, epoch: { ...signed.epoch, bound: { token: TOKEN, tokenId: "77" } } };
+    const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file(bound) } });
+    const lines: string[] = [];
+    await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
+    expect(lines.at(-1)).toBe(`\nThe id is bound to an NFT, token 77 of ${TOKEN}, and that token's holder controls it. Its owner in the registry is the binding adapter, not the holder's wallet, so no registry calls are printed here.`);
+    expect(lines.join("\n")).not.toContain("cast send");
   });
 
   it("says what the Papers leave out, and names no registry where this release has none", async () => {
