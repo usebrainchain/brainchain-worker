@@ -111,9 +111,9 @@ describe("bond", () => {
     expect(ask).toHaveBeenCalledWith("Send it? [y/N] ");
     expect(lines[0]).toBe(
       [
-        "Bond 5 USDG on task 12 (bounty 1 USDG, deadline 2027-01-16T08:00:00Z).",
+        "Bond 5.00 USDG on task 12 (bounty 1.00 USDG, deadline 2027-01-16T08:00:00Z).",
         `  Released by the task's Proof: 4.95 USDG back after Shipped's 1% fee (0.05 USDG), collected with ${cli("bond claim 12")}.`,
-        "  Missed: if no Proof is recorded by 2027-01-19T08:00:00Z, the 5 USDG goes to 0x00000000000000000000000000000000000000D1, the poster.",
+        "  Missed: if no Proof is recorded by 2027-01-19T08:00:00Z, the 5.00 USDG goes to 0x00000000000000000000000000000000000000D1, the poster.",
         `  Gas now: about ${(Number(GAS.create + GAS.approve) * 0.02) / 1e9} ETH on Robinhood Chain for the approval and the bond at 0.02 gwei; the claim later costs about ${(Number(GAS.withdraw) * 0.02) / 1e9} ETH.`,
       ].join("\n"),
     );
@@ -147,7 +147,7 @@ describe("bond", () => {
     const [terms] = chain.create.mock.calls[0]!;
     expect(terms.refundTo).toBe(payer);
     expect(terms.milestone).toContain(`paid to ${payer}, the agent that paid BrainChain's desk for the task`);
-    expect(lines[0]).toContain(`the 5 USDG goes to ${payer}, the agent that paid for the task.`);
+    expect(lines[0]).toContain(`the 5.00 USDG goes to ${payer}, the agent that paid for the task.`);
     const own = fakeChain({ task: task({ poster: "0x00000000000000000000000000000000000000De" }), payer: ACCOUNT });
     await expect(run(own, "5", { yes: true })).rejects.toThrow("Task 12 was paid for by this wallet.");
     expect(own.create).not.toHaveBeenCalled();
@@ -162,14 +162,14 @@ describe("bond", () => {
   it("refuses a task the wallet posted, an amount under the bounty or under 2 USDG, and a task it cannot bond", async () => {
     for (const [chain, amount, error] of [
       [fakeChain({ task: task({ poster: ACCOUNT }) }), "5", "Task 12 was posted by this wallet."],
-      [fakeChain({ task: task({ bounty: USDG("8") }) }), "5", "The bond must be at least the task's bounty, 8 USDG; 5 USDG is under it."],
-      [fakeChain({ task: task() }), "1.5", `The bond must be at least ${Number(MIN_BOND) / 1e6} USDG`],
+      [fakeChain({ task: task({ bounty: USDG("8") }) }), "5", "The bond must be at least the task's bounty, 8.00 USDG; 5.00 USDG is under it."],
+      [fakeChain({ task: task() }), "1.5", `The bond must be at least ${(Number(MIN_BOND) / 1e6).toFixed(2)} USDG`],
       [fakeChain({ task: undefined }), "5", "There is no task 12 on BrainChain."],
       [fakeChain({ task: task({ status: Status.Hired, model: `0x${"0".repeat(24)}${"a".repeat(40)}` }) }), "5", "Task 12 is not hired to this worker. Bond a task after BrainChain hires you for it."],
       [fakeChain({ task: task({ status: Status.Paid }) }), "5", "Task 12 is not hired to this worker. Bond a task after BrainChain hires you for it."],
       [fakeChain({ task: task({ deadline: NOW - 1n }) }), "5", "deadline, 2027-01-15T07:59:59Z, has passed"],
       [fakeChain({ task: task(), bonds: [view()] }), "5", "This worker already has a bond open on task 12 (registry id 4)."],
-      [fakeChain({ task: task(), usdg: USDG("4") }), "5", `${ACCOUNT} holds 4 USDG on Robinhood Chain, under the 5 USDG to bond. Nothing was sent.`],
+      [fakeChain({ task: task(), usdg: USDG("4") }), "5", `${ACCOUNT} holds 4.00 USDG on Robinhood Chain, under the 5.00 USDG to bond. Nothing was sent.`],
       [fakeChain({ task: task(), eth: 0n }), "5", "holds 0 ETH on Robinhood Chain, under the"],
     ] as const) {
       await expect(run(chain, amount, { yes: true })).rejects.toThrow(error);
@@ -192,7 +192,7 @@ describe("bond", () => {
 describe("bond status", () => {
   const facts = (over: Partial<Parameters<typeof bondLine>[2]> = {}) => ({ indexed: false, now: NOW, ...over });
   const deadline = NOW + 86_400n;
-  const head = "Bond on task 12 (registry id 4): 5 USDG";
+  const head = "Bond on task 12 (registry id 4): 5.00 USDG";
 
   it("reads a bond on a retired board's task on that board, and names the set", async () => {
     const old = MAINNET.retired![0]!;
@@ -257,7 +257,7 @@ describe("bond claim", () => {
     expect(lines).toEqual(["The bond with registry id 4 was delivered and its 4.95 USDG was collected: the registry owes this wallet nothing."]);
     lines.length = 0;
     await bondClaim(MAINNET, config, fakeChain({ bonds: [view({ status: DeedStatus.Settled, ruling: Ruling.Default, settledAt: NOW })] }), 12n, (l) => lines.push(l), offline);
-    expect(lines).toEqual([`The bond with registry id 4 was missed: its 5 USDG went to ${MISSED_TO}: ${POSTER}. There is nothing to claim.`]);
+    expect(lines).toEqual([`The bond with registry id 4 was missed: its 5.00 USDG went to ${MISSED_TO}: ${POSTER}. There is nothing to claim.`]);
   });
 
   it("gives a bond the number status gives it", async () => {
@@ -266,7 +266,7 @@ describe("bond claim", () => {
     await bondClaim(MAINNET, config, fakeChain({ bonds: [delivered] }), 12n, (l) => lines.push(l), shipped);
     expect(lines).toEqual(["Bond No. 3 was delivered and its 4.95 USDG was collected: the registry owes this wallet nothing."]);
     const open = fakeChain({ task: task({ status: Status.Refunded }), bonds: [view({ deadline: NOW + 86_400n })] });
-    await expect(bondClaim(MAINNET, config, open, 12n, () => {}, shipped)).rejects.toThrow(/^Bond No\. 3 on task 12: 5 USDG, open until .*the task was refunded/);
+    await expect(bondClaim(MAINNET, config, open, 12n, () => {}, shipped)).rejects.toThrow(/^Bond No\. 3 on task 12: 5.00 USDG, open until .*the task was refunded/);
   });
 
   it("refuses while the bond is open, without a bond, and without gas", async () => {
@@ -324,6 +324,6 @@ describe("deed page", () => {
     const lines: string[] = [];
     const deadline = NOW + 86_400n;
     await bondStatus(MAINNET, config, fakeChain({ task: task(), bonds: [view({ deadline })] }), 12n, (l) => lines.push(l), answering(page));
-    expect(lines).toEqual(["Bond No. 3 on task 12: 5 USDG, open until 2027-01-16T08:00:00Z: waiting for the task to be paid and its Proof recorded https://app.shipped.bond/bonds/3"]);
+    expect(lines).toEqual(["Bond No. 3 on task 12: 5.00 USDG, open until 2027-01-16T08:00:00Z: waiting for the task to be paid and its Proof recorded https://app.shipped.bond/bonds/3"]);
   });
 });

@@ -5,12 +5,12 @@
 // the worker's key signs them, and it pays in USDG on the chain the id is on.
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
-import { createPublicClient, createWalletClient, formatUnits, keccak256, toBytes, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { createPublicClient, createWalletClient, keccak256, toBytes, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { erc20Abi, holdsAgent, PermanentError, reason, RECEIPT_MS, type HiredTask } from "./chain.js";
 import { cli } from "./invoked.js";
 import { parentChainOf, rpcTransport, type Network } from "./network.js";
-import { when } from "./standing.js";
+import { money, when } from "./standing.js";
 import { forgetSitting, readSittings, saveSitting, saveWork, stateDir, type SavedSitting } from "./state.js";
 import { deliverable, loggedTitle, printable, stripAnsi, taskInput, taskPrompt, type Brief, type Command } from "./work.js";
 
@@ -259,7 +259,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   const account = chain.wallet.address;
   const parent = identityChain(network);
   const { symbol } = network.deskUsdg;
-  const usdg = (units: bigint) => `${formatUnits(units, 6)} ${symbol}`;
+  const usdg = (units: bigint) => `${money(units)} ${symbol}`;
   const mine = { agentId, class: options.class };
   const again = cli(`exam sit --agent-id ${agentId}${options.class === "code" ? "" : ` --class ${options.class}`}`);
   const resend = `Run ${again} again: it sends the same request with the same payment, and nothing more is paid.`;
@@ -421,8 +421,8 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     log(`A sitting for agent ${agentId} in class ${options.class} costs ${usdg(price)} on ${parent.name}, paid by ${account} over x402.`);
     for (const rule of rules) log(`  ${rule}`);
     if (holds === undefined) log(`  This release names no ERC-8004 registry on ${parent.name}, so whether ${account} holds agent ${agentId} is left to the service, which checks before it charges.`);
-    if (options.maxPrice !== undefined && price > options.maxPrice) throw new Error(`A sitting costs ${usdg(price)}, above --max-price ${formatUnits(options.maxPrice, 6)}. Nothing was approved or paid.`);
-    if (options.maxPrice === undefined && !dry) return void log(`The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price ${formatUnits(price, 6)}.`);
+    if (options.maxPrice !== undefined && price > options.maxPrice) throw new Error(`A sitting costs ${usdg(price)}, above --max-price ${money(options.maxPrice)}. Nothing was approved or paid.`);
+    if (options.maxPrice === undefined && !dry) return void log(`The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price ${money(price)}.`);
 
     let funds: Awaited<ReturnType<ExamChain["funds"]>>;
     try {
@@ -440,7 +440,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     if (short.length > 0) throw new Error([...short, dry ? "dry run: nothing approved or paid" : "Nothing was approved or paid."].join("\n"));
     if (dry) {
       const then = `sit ${approves ? "approves Permit2, " : ""}pays ${usdg(price)} and saves the sitting`;
-      return void log(`dry run: nothing approved or paid. Without --dry${options.maxPrice === undefined ? ` and with --max-price ${formatUnits(price, 6)}` : ""}, ${then}.`);
+      return void log(`dry run: nothing approved or paid. Without --dry${options.maxPrice === undefined ? ` and with --max-price ${money(price)}` : ""}, ${then}.`);
     }
 
     if (approves) {
@@ -702,7 +702,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
   const record = isObject(signed.record) ? signed.record : undefined;
   const held = Array.isArray(signed.licences) ? signed.licences.filter(isObject) : [];
   const ceiling = isObject(signed.ceiling) ? signed.ceiling : undefined;
-  const units = (value: unknown) => (typeof value === "string" && /^\d{1,30}$/.test(value) ? formatUnits(BigInt(value), 6) : "?");
+  const units = (value: unknown) => (typeof value === "string" && /^\d{1,30}$/.test(value) ? money(BigInt(value)) : "?");
   log(`Papers of agent ${agentId} on ${parent.name}: ${url}`);
   log(`  Epoch     ${String(epoch.number ?? "?")}${typeof epoch.since === "number" ? `, since ${date(epoch.since)}` : ""}; controller ${printable(String(epoch.controller ?? "unknown"))}; build ${typeof epoch.build === "string" && epoch.build ? JSON.stringify(printable(epoch.build)) : "none declared"}`);
   if (record) log(`  Record    ${String(record.entries)} entries: ${typeof record.url === "string" ? printable(record.url) : `${network.service}/agents/${parent.chainId}/${agentId}/record`}`);

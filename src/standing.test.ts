@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Status, type Flight } from "./chain.js";
 import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { aboutEth, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, shortOfStake, stake, unapplied, wallet, type Snapshot } from "./standing.js";
+import { aboutEth, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, money, shortOfStake, stake, unapplied, usdg, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
@@ -27,6 +27,13 @@ function standing(overrides: { staked?: bigint; unstaking?: bigint; unlocksAt?: 
     toStake: w.staked >= min ? 0n : min - w.staked,
   } as unknown as Snapshot;
 }
+
+describe("money", () => {
+  it("states a dollar amount as the service states a price, with two decimals at least", () => {
+    expect([0n, 900_000n, 5_000_000n, 1_250_000n, 125_000n, 4_999_999n].map(money)).toEqual(["0.00", "0.90", "5.00", "1.25", "0.125", "4.999999"]);
+    expect(usdg(MAINNET, 900_000n)).toBe("0.90 USDG");
+  });
+});
 
 describe("stake", () => {
   it("groups whole tokens in thousands and keeps a fraction as it is", () => {

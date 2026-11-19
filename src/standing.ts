@@ -11,7 +11,9 @@ export function grouped(amount: bigint, decimals: number): string {
 }
 
 export const stake = (network: Network, amount: bigint) => `${grouped(amount, 18)} ${network.stakeSymbol}`;
-export const usdg = (network: Network, amount: bigint) => `${formatUnits(amount, 6)} ${network.bountySymbol}`;
+/** A 6-decimal dollar amount as the service states prices, with two decimals at least: 0.90, 5.00, 0.125. */
+export const money = (units: bigint) => formatUnits(units, 6).replace(/^(-?\d+)$/, "$1.00").replace(/^(-?\d+\.\d)$/, "$10");
+export const usdg = (network: Network, amount: bigint) => `${money(amount)} ${network.bountySymbol}`;
 export const when = (seconds: bigint) => new Date(Number(seconds) * 1000).toISOString().replace(".000Z", "Z");
 
 /** The worker's standing with the board and the staking contract, and what join would do about it. */

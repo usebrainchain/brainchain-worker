@@ -1,10 +1,10 @@
-import { createPublicClient, createWalletClient, encodeFunctionData, formatUnits, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { createPublicClient, createWalletClient, encodeFunctionData, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { erc20Errors, transferErrors } from "./abi.js";
 import { appealAbi, brainchainTransport, erc20Abi, explainRevert, faucetReopens, reason, RECEIPT_MS, Status } from "./chain.js";
 import { cli } from "./invoked.js";
 import { chainOf, type Network } from "./network.js";
-import { ethNeeded, GAS, shortOfGas } from "./standing.js";
+import { ethNeeded, GAS, money, shortOfGas, usdg } from "./standing.js";
 
 /** TaskBoard statuses from set 3.5.0 on: a ruling that waits out its appeal window, and one under appeal. */
 export const { Ruled, Appealed } = Status;
@@ -166,8 +166,8 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
     chain.allowance(),
     chain.sent(),
   ]);
-  const amount = `${formatUnits(bond, 6)} ${network.bountySymbol}`;
-  const holds = `The appeal bond is ${amount}, and this wallet holds ${formatUnits(balance, 6)}.`;
+  const amount = usdg(network, bond);
+  const holds = `The appeal bond is ${amount}, and this wallet holds ${money(balance)}.`;
   // Test USDG comes from its faucet, as tBRAIN does for join; only mainnet's USDG is bridged in.
   const claims = balance < bond && network.bountyFaucet === true;
   if (balance < bond && !claims) throw new Error(`${holds} Bridge more with ${cli("bridge --bounty <amount>")}.`);
@@ -179,7 +179,7 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
   if (claims) {
     const faucet = await chain.bountyFaucet();
     if (now < faucet.opensAt) throw closed(faucet.opensAt);
-    if (balance + faucet.amount < bond) throw new Error(`${holds} The faucet's ${formatUnits(faucet.amount, 6)} ${network.bountySymbol} a day would not make up the rest.`);
+    if (balance + faucet.amount < bond) throw new Error(`${holds} The faucet's ${usdg(network, faucet.amount)} a day would not make up the rest.`);
   }
   // Checked for every transaction before any is sent: an approval alone spends gas and leaves the bond approved.
   const need = ethNeeded([...(claims ? [GAS.faucet] : []), ...(allowance < bond ? [APPROVE_GAS] : []), APPEAL_GAS], gasPrice);

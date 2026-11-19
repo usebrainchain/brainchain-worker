@@ -103,7 +103,7 @@ describe("appeal", () => {
 
     const closed = fake({ status: Ruled }, undefined, 1_000_000n, {}, { amount: 100_000_000n, opensAt: NOW + 600n });
     await expect(appeal(TESTNET, closed, 7n, () => {})).rejects.toThrow(
-      "The appeal bond is 1.25 tUSDG, and this wallet holds 1. The tUSDG faucet allows one claim a day, and this wallet can claim again at 2027-01-15T08:10:00Z. Run appeal again then, before the appeal window closes at 2027-01-15T08:59:00Z.",
+      "The appeal bond is 1.25 tUSDG, and this wallet holds 1.00. The tUSDG faucet allows one claim a day, and this wallet can claim again at 2027-01-15T08:10:00Z. Run appeal again then, before the appeal window closes at 2027-01-15T08:59:00Z.",
     );
     const late = fake({ status: Ruled }, undefined, 0n, {}, { amount: 100_000_000n, opensAt: NOW + 7_200n });
     await expect(appeal(TESTNET, late, 7n, () => {})).rejects.toThrow("can claim again at 2027-01-15T10:00:00Z, after the appeal window closes at 2027-01-15T08:59:00Z.");
@@ -123,7 +123,7 @@ describe("appeal", () => {
   it("sends a mainnet wallet short of the bond to the bridge", async () => {
     const chain = fake({ status: Ruled }, undefined, 1_000_000n);
     await expect(appeal(MAINNET, chain, 7n, () => {})).rejects.toThrow(
-      `The appeal bond is 1.25 USDG, and this wallet holds 1. Bridge more with ${cli("bridge --bounty <amount>")}.`,
+      `The appeal bond is 1.25 USDG, and this wallet holds 1.00. Bridge more with ${cli("bridge --bounty <amount>")}.`,
     );
     expect(chain.claimBounty).not.toHaveBeenCalled();
     expect(chain.approveBounty).not.toHaveBeenCalled();

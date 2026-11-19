@@ -204,9 +204,9 @@ describe("exam sit", () => {
     const { run, lines, saved } = sitting(MAINNET, desk.fetcher, chain);
     await run();
     expect(lines).toEqual([
-      `A sitting for agent 501 in class code costs 5 USDG on Robinhood Chain, paid by ${wallet.address} over x402.`,
+      `A sitting for agent 501 in class code costs 5.00 USDG on Robinhood Chain, paid by ${wallet.address} over x402.`,
       ...RULES,
-      "The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.",
+      "The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.00.",
     ]);
     // The price came with the answer to the request itself, sent once with the wallet's signature and no payment.
     expect(desk.unpaid).toHaveLength(1);
@@ -222,7 +222,7 @@ describe("exam sit", () => {
   it("refuses a price above --max-price, a class the exam does not have and an offer it does not sign, before anything is sent", async () => {
     const desk = service(MAINNET);
     const over = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 4_999_999n });
-    await expect(over.run()).rejects.toThrow(/^A sitting costs 5 USDG, above --max-price 4\.999999\. Nothing was approved or paid\.$/);
+    await expect(over.run()).rejects.toThrow(/^A sitting costs 5\.00 USDG, above --max-price 4\.999999\. Nothing was approved or paid\.$/);
     await expect(sitting(MAINNET, desk.fetcher, chainFor(), { class: "prose", maxPrice: 5_000_000n }).run()).rejects.toThrow('The exam has no class "prose". Its classes: code. Nothing was signed or paid.');
     const elsewhere = service(MAINNET, { payTo: "0x000000000000000000000000000000000000dEaD" });
     await expect(sitting(MAINNET, elsewhere.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(
@@ -244,7 +244,7 @@ describe("exam sit", () => {
     const testnet = service(TESTNET);
     const { run, lines } = sitting(TESTNET, testnet.fetcher, chainFor(undefined, "unread"));
     await run();
-    expect(lines[0]).toBe(`A sitting for agent 501 in class code costs 5 test USDG on Robinhood Chain testnet, paid by ${wallet.address} over x402.`);
+    expect(lines[0]).toBe(`A sitting for agent 501 in class code costs 5.00 test USDG on Robinhood Chain testnet, paid by ${wallet.address} over x402.`);
     expect(lines).toContain(`  This release names no ERC-8004 registry on Robinhood Chain testnet, so whether ${wallet.address} holds agent 501 is left to the service, which checks before it charges.`);
   });
 
@@ -262,12 +262,12 @@ describe("exam sit", () => {
     const ready = sitting(MAINNET, desk.fetcher, unapproved, { dry: true, maxPrice: 6_000_000n });
     await ready.run();
     expect(ready.lines.slice(-2)).toEqual([
-      "  Permit2, which an x402 payment in USDG moves through, may spend 1 USDG of the wallet's. sit first approves 5 USDG for it, which takes a little ETH on Robinhood Chain.",
-      "dry run: nothing approved or paid. Without --dry, sit approves Permit2, pays 5 USDG and saves the sitting.",
+      "  Permit2, which an x402 payment in USDG moves through, may spend 1.00 USDG of the wallet's. sit first approves 5.00 USDG for it, which takes a little ETH on Robinhood Chain.",
+      "dry run: nothing approved or paid. Without --dry, sit approves Permit2, pays 5.00 USDG and saves the sitting.",
     ]);
     const unconfirmed = sitting(MAINNET, desk.fetcher, chainFor(), { dry: true });
     await unconfirmed.run();
-    expect(unconfirmed.lines.at(-1)).toBe("dry run: nothing approved or paid. Without --dry and with --max-price 5, sit pays 5 USDG and saves the sitting.");
+    expect(unconfirmed.lines.at(-1)).toBe("dry run: nothing approved or paid. Without --dry and with --max-price 5.00, sit pays 5.00 USDG and saves the sitting.");
     expect(unapproved.approve).not.toHaveBeenCalled();
     expect(desk.seen).toEqual([]);
     expect([...empty.saved(), ...ready.saved()]).toEqual([]);
@@ -291,10 +291,10 @@ describe("exam sit", () => {
     expect(saved()).toEqual([{ agentId: "501", class: "code", at: sent.at, sitting: SITTING, deadline: DEADLINE }]);
 
     expect(lines.slice(1 + RULES.length, 6 + RULES.length)).toEqual([
-      "  Permit2, which an x402 payment in USDG moves through, may spend 0 USDG of the wallet's. sit first approves 5 USDG for it, which takes a little ETH on Robinhood Chain.",
-      "Approving 5 USDG for Permit2 on Robinhood Chain...",
+      "  Permit2, which an x402 payment in USDG moves through, may spend 0.00 USDG of the wallet's. sit first approves 5.00 USDG for it, which takes a little ETH on Robinhood Chain.",
+      "Approving 5.00 USDG for Permit2 on Robinhood Chain...",
       `  approved: 0x${"a1".repeat(32)}`,
-      "Paying 5 USDG for the sitting...",
+      "Paying 5.00 USDG for the sitting...",
       `Sitting ${SITTING} is open until 2100-01-01T02:00:00Z.`,
     ]);
     expect(lines[6 + RULES.length]).toBe("\nItem 0: Item 0\nWrite f0(x).\n\nReturn only the function, in one Python code block.");
@@ -508,7 +508,7 @@ describe("exam sit", () => {
     expect(again.lines[2]).toBe(`The desk never took the payment kept from ${new Date(at * 1000).toISOString().replace(/\.\d+Z$/, "Z")} (The payment's deadline has passed), so nothing was charged for it, and it is no longer kept. Asking for a new sitting...`);
     // The new request is quoted, and without --max-price nothing is paid for it.
     expect(desk.unpaid).toHaveLength(probes + 1);
-    expect(again.lines.at(-1)).toBe("The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.");
+    expect(again.lines.at(-1)).toBe("The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.00.");
     expect(saved()).toEqual([]);
   });
 
@@ -542,7 +542,7 @@ describe("exam sit", () => {
     const { run, lines } = sitting(MAINNET, desk.fetcher, chainFor(), { dir });
     await run();
     expect(desk.unpaid).toHaveLength(1);
-    expect(lines.at(-1)).toBe("The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.");
+    expect(lines.at(-1)).toBe("The service would open this sitting. Nothing was approved or paid: to sit, run this again with --max-price 5.00.");
     expect(readSittings(wallet.address, MAINNET, dir)).toEqual([]);
   });
 
@@ -983,7 +983,7 @@ describe("papers", () => {
       `  Epoch     2, since 2099-12-31T00:00:00Z; controller ${wallet.address}; build "atlas 2.1"`,
       `  Record    31 entries: ${MAINNET.service}/agents/4663/501/record`,
       "  Licence   code  valid; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 1 passed, 0 failed",
-      "  Ceiling   2.5 USD in flight at most (floor 1), halved until 2100-01-31T00:00:00Z",
+      "  Ceiling   2.50 USD in flight at most (floor 1.00), halved until 2100-01-31T00:00:00Z",
       `  Card      ${url}/card.svg`,
       "  Check     npx brainchain-verify mainnet --record 501",
     ]);
