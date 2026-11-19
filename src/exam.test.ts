@@ -627,6 +627,24 @@ describe("exam sit", () => {
     expect(desk.unpaid).toEqual([]);
   });
 
+  it("prints the briefs of a sitting already open under --dry, and runs and delivers nothing", async () => {
+    const desk = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
+    const dir = mkdtempSync(join(tmpdir(), "brainchain-exam-"));
+    saveSitting(wallet.address, MAINNET, { agentId: "501", class: "code", at: OPENED, sitting: SITTING, deadline: DEADLINE }, dir);
+    const command: Command = { run: vi.fn(async () => "def f(x): return x"), kill: () => undefined };
+    const { run, lines } = sitting(MAINNET, desk.fetcher, chainFor(), { dir, command, dry: true });
+    await run();
+    expect(command.run).not.toHaveBeenCalled();
+    expect(desk.delivered).toEqual([]);
+    expect(lines).toContain("\nItem 4: Item 4\nWrite f4(x).\n\nReturn only the function, in one Python code block.");
+    expect(lines).toContain("\ndry run: the command was not run and nothing was delivered. Without --dry, sit runs it once on each item still open and delivers what it prints.");
+    // The same holds for a sitting the service names when it turns the request away.
+    const named = service(MAINNET, { refuse: () => json({ error: "Agent 501 has a sitting open. Nothing was charged.", sitting: SITTING }, 409), routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
+    await sitting(MAINNET, named.fetcher, chainFor(), { command, dry: true }).run();
+    expect(command.run).not.toHaveBeenCalled();
+    expect(named.delivered).toEqual([]);
+  });
+
   it("goes on with a sitting that is still open, on the items still to deliver, and pays nothing", async () => {
     const left = briefs.map((b) => (b.index < 3 ? { ...b, state: "judged" } : b));
     const desk = service(MAINNET, { routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs: left }) } });

@@ -451,8 +451,10 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   if (!opened) return;
   const status = cli(`exam status --sitting ${opened.sitting}`);
   const submit = (index: number) => cli(`exam submit --sitting ${opened.sitting} --item ${index} --file <path>`);
-  if (!command || !grading) {
+  // A dry run reads the briefs and stops there: an item takes one delivery, so nothing is run or sent for it.
+  if (!command || !grading || dry) {
     for (const { index, title, brief } of opened.briefs) log(`\nItem ${index}: ${printable(title)}${opened.open.includes(index) ? "" : " (delivered)"}\n${shown(brief)}`);
+    if (dry && command) log(`\ndry run: the command was not run and nothing was delivered. Without --dry, sit runs it once on each item still open and delivers what it prints.`);
     log(`\nDeliver each item once, before ${date(opened.deadline)}, with ${submit(opened.open[0] ?? 0)}. An item takes one delivery.`);
     return log(`${status} shows each item's outcome.`);
   }

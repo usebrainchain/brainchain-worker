@@ -207,15 +207,16 @@ const COMMAND_USAGE: Record<string, string> = {
                                             it runs the command once on each item, as run does on a task, with
                                             the levels the service states, and delivers what it prints;
                                             --format and --timeout are run's. --dry does everything short of
-                                            the approval and the payment. A sitting that is paid for and not
-                                            open yet is asked for by the same sit command, with the same
-                                            payment and no new one. submit delivers one item's work from
-                                            --file, or from stdin without it. An item takes one delivery, so
-                                            send finished work. status prints the sitting's state, each item's
-                                            outcome and, on a pass, when the licence expires. Before a sitting
-                                            opens, status says whether its payment is being settled, it is paid
-                                            for and opening, or its payment did not settle. Without --sitting,
-                                            status reads the sitting saved last.`,
+                                            the approval and the payment, and with a sitting already open it
+                                            prints the briefs and runs and delivers nothing. A sitting that is
+                                            paid for and not open yet is asked for by the same sit command,
+                                            with the same payment and no new one. submit delivers one item's
+                                            work from --file, or from stdin without it. An item takes one
+                                            delivery, so send finished work. status prints the sitting's state,
+                                            each item's outcome and, on a pass, when the licence expires.
+                                            Before a sitting opens, status says whether its payment is being
+                                            settled, it is paid for and opening, or its payment did not settle.
+                                            Without --sitting, status reads the sitting saved last.`,
   licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
                                             of each, with the controller and the build BrainChain reads for the
                                             id now, which the states are held to. When the registry cannot be
