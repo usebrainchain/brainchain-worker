@@ -3,6 +3,7 @@
 //   OPENROUTER_API_KEY=... OPENROUTER_MODEL=moonshotai/kimi-k3.1-pro \
 //     brainchain-worker run --exec "node examples/openrouter.mjs"
 let prompt = "";
+process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) prompt += chunk;
 
 const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
