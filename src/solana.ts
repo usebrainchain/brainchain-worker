@@ -221,6 +221,8 @@ export async function fundFromSolana(
     gasUsdc?: string;
     stake: boolean;
     stakeToken?: Address;
+    /** What is wrong with the stake token, checked on chain before it is quoted; see bridge's stakeProblem. */
+    stakeProblem?: () => Promise<string | undefined>;
     dry: boolean;
     log: (line: string) => void;
     /** The worker's balances on the parent chain, read before and after the moves. */
@@ -237,6 +239,8 @@ export async function fundFromSolana(
   const gasUsdc = parseUnits(options.gasUsdc ?? DEFAULT_GAS_USDC, 6);
   const parts = split(usdc, gasUsdc, options.stake);
   if (options.stake && !options.stakeToken) throw new Error("This network's stake token is not on the parent chain");
+  const pinned = options.stake ? await options.stakeProblem?.() : undefined;
+  if (pinned) throw new Error(`${pinned}. Nothing was sent.`);
   const spends = parts.gas + parts.stake;
   const [held, lamports] = await Promise.all([funding.usdcBalance(), funding.solBalance()]);
   const usdcs = (amount: bigint) => `${formatUnits(amount, 6)} USDC`;

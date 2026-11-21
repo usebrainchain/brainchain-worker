@@ -159,8 +159,15 @@ export function wallet(
   const reopens = faucet ? `. The faucet opens again for this wallet at ${when(faucet.opensAt)}` : "";
   const unstaking =
     s.w.unstaking > 0n ? `, and the ${stake(network, s.w.unstaking)} unstaking can be withdrawn ${now >= s.w.unlocksAt ? "now" : `after ${when(s.w.unlocksAt)}`}` : "";
-  const buy = network.buyStake ? `. ${network.buyStake}` : "";
+  const buy = network.buyStake ? `. ${whereToBuy(network)}` : "";
   return `${has}; join needs ${stake(network, need)}${reopens}${unstaking}${buy}`;
+}
+
+/** Where join's missing stake token comes from, where it has no faucet: buy-stake where 0x serves the parent chain, or by hand. */
+export function whereToBuy(network: Network): string {
+  const byHand = network.buyStake ?? "";
+  if (!network.zerox) return byHand;
+  return `${cli("buy-stake")} buys what is missing with ETH or USDG on ${network.bridge?.name ?? "the parent chain"}, through 0x, and offers to bridge it; or ${byHand[0]!.toLowerCase()}${byHand.slice(1)}`;
 }
 
 /**
@@ -214,7 +221,7 @@ export function gasLine(network: Network, address: string, s: Snapshot, gas: big
 export function shortOfStake(network: Network, w: Snapshot["w"], balance: bigint, need: bigint, now: bigint): string {
   const withdraw = now >= w.unlocksAt ? "now" : `after ${when(w.unlocksAt)}`;
   const unstaking = w.unstaking > 0n ? ` Or run ${cli("withdraw")} ${withdraw} and join with the ${stake(network, w.unstaking)} it returns.` : "";
-  return `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs. ${network.buyStake}${unstaking}`;
+  return `The wallet holds ${stake(network, balance)} of the ${stake(network, need)} join needs. ${whereToBuy(network)}${unstaking}`;
 }
 
 /** Where a task in flight stands and what happens next, for `status`. */

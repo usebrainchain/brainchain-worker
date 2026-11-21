@@ -91,6 +91,15 @@ export function checkReturn(quote: Pick<RelayQuote, "inUsd" | "outUsd">, maxLoss
   }
 }
 
+/** A token's price in USD as Relay reads it, the reference the loss limits above were set against. */
+export async function relayPrice(chainId: number, token: string, fetchImpl: typeof fetch = fetch): Promise<number> {
+  const response = await fetchImpl(`${RELAY_API}/currencies/token/price/v2?address=${encodeURIComponent(token)}&chainId=${chainId}`, { signal: AbortSignal.timeout(20_000) });
+  const body = (await response.json().catch(() => ({}))) as { price?: unknown };
+  const price = Number(body.price);
+  if (!response.ok || !Number.isFinite(price) || price <= 0) throw new RelayError(`Relay has no price for ${token} on chain ${chainId}${response.ok ? "" : ` (${response.status})`}`);
+  return price;
+}
+
 export type RelayStatus = "success" | "failure" | "refund" | "pending";
 
 export async function relayStatus(requestId: string, fetchImpl: typeof fetch = fetch): Promise<RelayStatus> {

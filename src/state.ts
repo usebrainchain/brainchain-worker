@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 
 import type { Hex } from "viem";
 
+import type { StakeMoves } from "./bridge.js";
 import type { Network } from "./network.js";
 import { startTime } from "./proc.js";
 
@@ -105,13 +106,41 @@ export function readWatched(log: string, dir = stateDir()): WatchPlace | undefin
 }
 
 export function writeWatched(log: string, { seen, block }: WatchPlace, dir = stateDir()): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const file = join(dir, `watch.${log.toLowerCase()}.json`);
+  writeAtomic(join(dir, `watch.${log.toLowerCase()}.json`), JSON.stringify({ seen: seen.toString(), ...(block === undefined ? {} : { block: block.toString() }) }));
+}
+
+const movesFile = (address: string, network: Network, dir: string) => join(dir, `${address}.${network.id}.stake.json`);
+
+/** The last swap buy-stake sent and the last stake deposit, as saved; nothing for a file that is missing or unreadable. */
+export function readStakeMoves(address: string, network: Network, dir = stateDir()): StakeMoves {
+  let saved: { swap?: { tx?: unknown; at?: unknown }; deposit?: { tx?: unknown; amount?: unknown; at?: unknown } };
+  try {
+    saved = JSON.parse(readFileSync(movesFile(address, network, dir), "utf8")) as typeof saved;
+  } catch {
+    return {};
+  }
+  const { swap, deposit } = saved ?? {};
+  return {
+    ...(swap && isHash(swap.tx) && isCount(swap.at) ? { swap: { tx: swap.tx as Hex, at: swap.at } } : {}),
+    ...(deposit && isHash(deposit.tx) && isCount(deposit.at) && isDigits(deposit.amount) ? { deposit: { tx: deposit.tx as Hex, amount: BigInt(deposit.amount), at: deposit.at } } : {}),
+  };
+}
+
+export function saveStakeMove(address: string, network: Network, move: StakeMoves, dir = stateDir()): void {
+  const { swap, deposit } = { ...readStakeMoves(address, network, dir), ...move };
+  writeAtomic(
+    movesFile(address, network, dir),
+    JSON.stringify({ ...(swap ? { swap } : {}), ...(deposit ? { deposit: { ...deposit, amount: deposit.amount.toString() } } : {}) }),
+  );
+}
+
+function writeAtomic(file: string, text: string): void {
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   // Each write its own temp file: runs from cron overlap, and nothing else keeps them apart.
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   const fd = openSync(temp, "w", 0o600);
   try {
-    writeFileSync(fd, JSON.stringify({ seen: seen.toString(), ...(block === undefined ? {} : { block: block.toString() }) }));
+    writeFileSync(fd, text);
     // On disk before the rename, so a power loss leaves the old place or the new one, never an empty file.
     fsyncSync(fd);
   } finally {
