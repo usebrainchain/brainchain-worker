@@ -304,7 +304,7 @@ describe("the release BrainChain names active", () => {
     chain.activeSet = vi.fn(async () => Promise.reject(new Error("https://brain.usebrainchain.com/network.json answered 503")));
     const lines = await run(chain, "stake", "1000");
     expect(lines[0]).toBe(
-      "Could not read the set BrainChain names active (https://brain.usebrainchain.com/network.json answered 503), so this release was not confirmed current; the stake token is checked on chain instead.",
+      "Could not read BrainChain's active contracts (https://brain.usebrainchain.com/network.json answered 503); checking the stake token on chain instead.",
     );
     expect(sent).toHaveLength(1);
     const old = fakeChain({ staked: "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37" });
@@ -353,7 +353,7 @@ describe("a stake buy in flight", () => {
     const arrived = [deposit("a", NOW - 7_200), deposit("b", NOW - 3_500)];
     expect(await stakeInFlight(MAINNET, chainWith({ deposits: { sent, arrived } }), {}, NOW)).toBe(
       `A deposit of 312,500 BRAIN from this wallet, sent 2 minutes ago (${sent[1]!.tx}), has not arrived on BrainChain yet, and buying now would buy it again. ` +
-        `Deposits arrive in about a minute: run buy-stake again once ${cli("status")} shows it`,
+        `Deposits arrive in about a minute: run ${cli("buy-stake")} again once ${cli("status")} shows it`,
     );
   });
 
@@ -369,7 +369,7 @@ describe("a stake buy in flight", () => {
   it("names an unmined transaction, and the swap or deposit it may be", async () => {
     const saved = { swap: { tx: TX, at: NOW - 90 }, deposit: { tx: `0x${"cd".repeat(32)}` as Hex, amount: parseEther("312500"), at: NOW - 600 } };
     expect(await stakeInFlight(MAINNET, chainWith({ unmined: 1 }), saved, NOW)).toBe(
-      `This wallet has a transaction on Robinhood Chain that is not mined yet, which may be the swap it sent a minute ago (${TX}), and buying now could buy the BRAIN twice. Run buy-stake again once it is mined`,
+      `This wallet has a transaction on Robinhood Chain that is not mined yet, which may be the swap it sent a minute ago (${TX}), and buying now could buy the BRAIN twice. Run ${cli("buy-stake")} again once it is mined`,
     );
     expect(await stakeInFlight(MAINNET, chainWith({ unmined: 2 }), {}, NOW)).toMatch(/^This wallet has a transaction on Robinhood Chain that is not mined yet, and buying now/);
   });
@@ -377,7 +377,7 @@ describe("a stake buy in flight", () => {
   it("names a swap sent in the last ten minutes that the RPC does not know yet, and not one it has mined or one older", async () => {
     const saved = { swap: { tx: TX, at: NOW - 240 } };
     expect(await stakeInFlight(MAINNET, chainWith({ state: "unknown" }), saved, NOW)).toBe(
-      `The swap this wallet sent 4 minutes ago (${TX}) is not on Robinhood Chain yet, and buying now could buy the BRAIN twice. Run buy-stake again once it is mined, or in 6 minutes if it never is`,
+      `The swap this wallet sent 4 minutes ago (${TX}) is not on Robinhood Chain yet, and buying now could buy the BRAIN twice. Run ${cli("buy-stake")} again once it is mined, or in 6 minutes if it never is`,
     );
     expect(await stakeInFlight(MAINNET, chainWith({ state: "mined" }), saved, NOW)).toBeUndefined();
     expect(await stakeInFlight(MAINNET, chainWith({ state: "unknown" }), { swap: { tx: TX, at: NOW - 600 } }, NOW)).toBeUndefined();
@@ -387,7 +387,7 @@ describe("a stake buy in flight", () => {
     const failing = chainWith({ deposits: new Error("query returned more than 10000 results") });
     const saved = { deposit: { tx: TX, amount: parseEther("1000"), at: NOW - 30 } };
     expect(await stakeInFlight(MAINNET, failing, saved, NOW)).toBe(
-      `Could not check whether the deposit of 1,000 BRAIN sent less than a minute ago (${TX}) has arrived on BrainChain (query returned more than 10000 results), and buying before it does could buy it twice. Run buy-stake again in a minute`,
+      `Could not check whether the deposit of 1,000 BRAIN sent less than a minute ago (${TX}) has arrived on BrainChain (query returned more than 10000 results), and buying before it does could buy it twice. Run ${cli("buy-stake")} again in a minute`,
     );
     expect(await stakeInFlight(MAINNET, failing, {}, NOW)).toBeUndefined();
     expect(await stakeInFlight(MAINNET, failing, { deposit: { ...saved.deposit, at: NOW - 86_400 } }, NOW)).toBeUndefined();

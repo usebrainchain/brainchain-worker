@@ -143,15 +143,16 @@ const COMMAND_USAGE: Record<string, string> = {
                                             needs to BrainChain; any extra stays in the wallet. It sells a fixed
                                             amount, 0x's price for that BRAIN plus 1.5%, so the spend is known
                                             before signing. 0x's price and quote cost 0.01 USDC each, paid from the
-                                            worker's key on Base, and --dry buys both too: it shows the quote, sends
-                                            nothing else, and exits 1 when the wallet lacks what the buy needs.
-                                            Nothing is signed on Robinhood Chain until 0x's signature on the quote
-                                            verifies, its calldata swaps only for this wallet, spends at most 7%
-                                            over the BRAIN's worth at Relay's price and brings at least what join
-                                            needs, and a simulation shows it. It shows the exact spend, which is
+                                            worker's key on Base, and --dry pays for both as well: it shows the
+                                            quote, sends nothing else, and exits 1 when the wallet lacks what the
+                                            buy needs. The wallet also pays gas on Robinhood Chain and keeps
+                                            0.0003 ETH there for the bridge's deposit. Every quote is checked and
+                                            simulated before anything is signed; a sale over 7% above the BRAIN's
+                                            worth at Relay's price is refused. It shows the exact spend, which is
                                             also the worst case, in tokens, USD and percent over that worth, and
                                             the BRAIN expected, and asks before buying and before bridging; --yes
-                                            does both without asking. Mainnet.`,
+                                            does both without asking. Once the BRAIN arrives on BrainChain, run
+                                            join. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]
                                             Bond the stake token and propose a change to BrainChain for Jev to

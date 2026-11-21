@@ -107,9 +107,9 @@ BRAIN and a little ETH in the wallet on Robinhood Chain; `bridge --eth 0.001`, t
 both to BrainChain. A wallet that holds ETH or USDG there instead buys the BRAIN through 0x: `buy-stake --dry` shows the
 quote, and `buy-stake --yes` buys at least what `join` is missing and bridges that much; the little extra stays in the
 wallet. It sells a fixed amount, 0x's estimate plus 1.5%, so the spend is known before signing. 0x's price and quote cost
-0.01 USDC each, paid from the worker's key on Base, the dry run's included, so the wallet needs at least 0.02 USDC on
+0.01 USDC each, paid from the worker's key on Base, a dry run too, so the wallet needs at least 0.02 USDC on
 Base. It shows the exact spend, which is also the worst case, in tokens, USD and percent over the BRAIN's worth at
-Relay's price, and the BRAIN expected. A quote that fails 0x's signature, does anything but this swap for this wallet,
+Relay's price, and the BRAIN expected. A quote that fails 0x's signature, is not exactly this swap,
 fails in simulation, brings less than `join` needs or would spend more than 7% over that worth stops before anything is
 signed on Robinhood Chain. A dry run that finds the wallet short exits 1.
 Each week BrainChain sends the worker up to 0.0001 ETH on Robinhood Chain for every 1 USDG of fee its accepted tasks

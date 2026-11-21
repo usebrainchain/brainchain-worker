@@ -157,10 +157,10 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const now = deps.now ?? Date.now;
   const unpaid = (message: string) => new Error(`${message.replace(/\.?$/, ".")} Nothing was paid.`);
 
-  const pinned = await deps.stakeProblem();
-  if (pinned) throw unpaid(pinned);
+  const problem = await deps.stakeProblem();
+  if (problem) throw unpaid(problem);
   const [{ need, held }, onParent] = await Promise.all([deps.needs(), chain.balance(brain)]);
-  if (need === 0n) return log(`This worker's stake is at the minimum and it applies for nothing, so there is no ${network.stakeSymbol} to buy.`);
+  if (need === 0n) return log(`This worker already stakes the minimum and has no application to bond, so there is no ${network.stakeSymbol} to buy.`);
   const missing = need > held ? need - held : 0n;
   if (missing === 0n) return log(`The wallet holds the ${brains(need)} join needs on ${network.name}. Run ${cli("join")}.`);
   const fromParent = onParent < missing ? onParent : missing;
@@ -182,12 +182,12 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
     throw unpaid(`This machine's clock is ${Math.abs(drift)} seconds ${drift > 0 ? "ahead of" : "behind"} ${parent.name}'s latest block, and 0x's quote is checked against it. Set the clock right and run again`);
   }
 
-  const paidWith = await chain.paymentBalance().catch((error: unknown) => {
+  const baseUsdc = await chain.paymentBalance().catch((error: unknown) => {
     throw unpaid(`Could not read the wallet's USDC on ${zerox.payment.name} (${reason(error).replace(/\.$/, "")})`);
   });
-  if (paidWith < 2n * each) {
+  if (baseUsdc < 2n * each) {
     throw unpaid(
-      `buy-stake pays 0x ${usdc(each)} on ${zerox.payment.name} for a price and ${usdc(each)} for a quote, from the worker's own key, and ${chain.account} holds ${formatUnits(paidWith, 6)} USDC there. ` +
+      `buy-stake pays 0x ${usdc(each)} on ${zerox.payment.name} for a price and ${usdc(each)} for a quote, from the worker's own key, and ${chain.account} holds ${formatUnits(baseUsdc, 6)} USDC there. ` +
         `Send that address at least ${usdc(2n * each)} on ${zerox.payment.name}`,
     );
   }
@@ -252,22 +252,22 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const sellAmount = (estimate * (1000n + ROOM_PER_MILLE) + 999n) / 1000n;
   if (sellAmount > ceiling) {
     throw new Error(
-      `0x prices ${brains(amount)} at ${sells(estimate, true)}, so a sale that brings at least that many spends ${cost(sellAmount)}, more than the ${cap} buy-stake accepts, ${sells(ceiling)}. ` +
+      `Buying at least ${brains(amount)} would spend ${cost(sellAmount)}, and buy-stake spends at most ${cap} over that worth, ${sells(ceiling)}. ` +
         `Try again later, or buy at ripples.run and use ${cli("bridge --stake")}. ${spentLine()}; nothing else was sent.`,
     );
   }
 
-  let bought: PaidQuote;
+  let quoted: PaidQuote;
   try {
-    bought = await deps.quote({ ...query, sellAmount: sellAmount.toString(), slippageBps: String(SLIPPAGE_BPS) }, "quote");
+    quoted = await deps.quote({ ...query, sellAmount: sellAmount.toString(), slippageBps: String(SLIPPAGE_BPS) }, "quote");
   } catch (error) {
     if (error instanceof NotPaid) throw new Error(`${error.message.replace(/ Nothing was paid\.$/, "")} Nothing was paid for the quote; the price's ${usdc(each)} is spent.`);
-    throw new Error(`${reason(error).replace(/\.?$/, ".")} The price bought before it cost ${usdc(each)}.`);
+    throw new Error(`${reason(error).replace(/\.?$/, ".")} The price was already paid for, ${usdc(each)}.`);
   }
   paid += each;
-  if (bought.payment) log(`Paid 0x ${usdc(each)} on ${zerox.payment.name} for a quote: ${bought.payment}`);
+  if (quoted.payment) log(`Paid 0x ${usdc(each)} on ${zerox.payment.name} for a quote: ${quoted.payment}`);
   const intent = { chainId: parent.chainId, taker: chain.account, sellToken: sell.token, buyToken: brain, sellAmount, minBuyAmount: amount, slippageBps: SLIPPAGE_BPS };
-  const report = await verifyQuote(bought.response, bought.url, intent, { settlers: () => chain.settlers(), now });
+  const report = await verifyQuote(quoted.response, quoted.url, intent, { settlers: () => chain.settlers(), now });
   const failed = report.checks.find((c) => c.status === "fail");
   if (failed || !report.quote || !report.decoded) {
     const promised = report.decoded?.minAmountOut;
@@ -283,7 +283,7 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const floor = report.decoded.minAmountOut;
   const swap: Swap = { to: quote.transaction.to, data: quote.transaction.data, value: quote.transaction.value, ...(quote.transaction.gas ? { gas: quote.transaction.gas } : {}) };
   const approves = approvesFor(sellAmount);
-  const how = { approves, most: sellAmount, wants: amount, eth, rerun: usdc(2n * each) };
+  const how = { approves, most: sellAmount, wants: amount, eth, rerun: usdc(2n * each), sells, brains: whole };
 
   const simulated = await simulateBuy(chain, swap, sell.token, brain, { ...how, covered: balance >= sellAmount });
   if (typeof simulated === "string") throw new Error(`${simulated}. ${spentLine()}; nothing else was sent.`);
@@ -291,15 +291,15 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const extra = expected > amount ? expected - amount : 0n;
   const perBrain = inUsd(sellAmount) / (Number(formatUnits(expected, 18)) * brainUsd) - 1;
   const gas = gasFor(swap.gas ?? SWAP_GAS, approves);
-  const fee = feeOf(bought.response.body, sell.token);
+  const fee = feeOf(quoted.response.body, sell.token);
   const signedAgo = report.signature.created === undefined ? "" : `, signed ${Math.max(0, Math.round(now() / 1000) - report.signature.created)} seconds ago`;
   log(
     [
       `0x quotes ${whole(quote.buyAmount)} for exactly ${cost(sellAmount)}. The sale spends that and no more, so it is also the worst case; the swap reverts below ${whole(floor)}, and join needs ${brains(amount)}.`,
-      `  For the ${whole(expected)} expected${simulated ? " in the simulation" : ""}, that is ${percent(perBrain)} over Relay's price for each; the ${whole(extra)} beyond what join needs stay in the wallet on ${parent.name}.`,
+      `  That is ${percent(perBrain)} over Relay's price per BRAIN received, for the ${whole(expected)} expected${simulated ? " in the simulation" : ""}; the ${whole(extra)} beyond what join needs stay in the wallet on ${parent.name}.`,
       `  At Relay's price of ${brainUsd.toPrecision(3)} USD, ${brains(amount)} is worth ${usd(worth)} USD, and buy-stake spends at most ${cap} over that, ${sells(ceiling)}.` +
         (fee === undefined ? "" : ` 0x's fee of ${sells(fee, true)} is included.`),
-      `  Checked: 0x's signature (key ${report.signature.keyid}${signedAgo}); the transaction calls 0x's AllowanceHolder ${short(holder)}, which lets Settler ${short(report.decoded.settler)}, the one 0x's registry names, take exactly ${sells(sellAmount, true)}; it pays the BRAIN to ${short(chain.account)} and reverts below ${whole(floor)}.`,
+      `  Checked: 0x's signature (key ${report.signature.keyid}${signedAgo}); the transaction calls 0x's AllowanceHolder ${short(holder)}, which lets Settler ${short(report.decoded.settler)}, the one 0x's registry names, take exactly ${sells(sellAmount, true)}; it pays the BRAIN to ${short(chain.account)}, at least the minimum above.`,
       simulated
         ? `  Simulated on ${parent.name}${simulated.lent ? `, as if the wallet held the ${sell.symbol}` : ""}: it takes ${sells(simulated.spent)} and brings ${whole(simulated.gained)}.`
         : `  Not simulated: the wallet holds ${sells(balance)} of the ${sells(sellAmount, true)} the sale takes.`,
@@ -309,7 +309,7 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   if (options.dry) {
     // Held to the most a real run holds the wallet to before it pays, so the two agree.
     const lacking = lacks(ceiling, gasFor(swap.gas ?? SWAP_GAS, approvesFor(ceiling)));
-    const done = `Dry run: ${usdc(paid)} paid for a price and a quote, nothing else sent.`;
+    const done = `Dry run: ${usdc(paid)} paid for a price and a quote, nothing else sent. Run ${cli("buy-stake")} without --dry to buy; a new price and quote cost another ${usdc(2n * each)}.`;
     if (lacking.length > 0) throw new Error([...lacking, done].join("\n"));
     return log(done);
   }
@@ -423,14 +423,14 @@ async function simulateBuy(
   swap: Swap,
   sold: Address,
   bought: Address,
-  how: { approves: boolean; most: bigint; wants: bigint; covered: boolean; eth: boolean; rerun: string },
+  how: { approves: boolean; most: bigint; wants: bigint; covered: boolean; eth: boolean; rerun: string; sells: (amount: bigint) => string; brains: (amount: bigint) => string },
 ): Promise<{ spent: bigint; gained: bigint; lent: boolean } | string | undefined> {
   if (!how.covered && !how.eth) return undefined;
   const lend = !how.covered ? swap.value + LENT : undefined;
   try {
     const result = await chain.simulate(swap, sold, bought, { ...(how.approves ? { approve: how.most } : {}), ...(lend ? { lend } : {}) });
-    if (result.spent > how.most) return `The swap takes ${result.spent} when simulated, more than the ${how.most} its calldata allows`;
-    if (result.gained < how.wants) return `The swap brings ${result.gained} when simulated, less than the ${how.wants} asked for`;
+    if (result.spent > how.most) return `The swap takes ${how.sells(result.spent)} when simulated, more than the ${how.sells(how.most)} its calldata allows`;
+    if (result.gained < how.wants) return `The swap brings ${how.brains(result.gained)} when simulated, less than the ${how.brains(how.wants)} join needs`;
     return { ...result, lent: lend !== undefined };
   } catch (error) {
     if (expired(error)) return `The quote expired before it was sent: run buy-stake again (a new price and quote cost ${how.rerun})`;
@@ -467,14 +467,14 @@ export function createBuyChain(network: Network, account: PrivateKeyAccount, rec
     blockTime: async () => (await read.getBlock()).timestamp,
     paymentBalance: () => payment.readContract({ address: zerox.payment.usdc, abi: erc20Abi, functionName: "balanceOf", args: [self] }),
     settlers: () => readSettlers(read, bridge.chainId),
-    async simulate(swap, sold, gotten, options = {}) {
+    async simulate(swap, sold, bought, options = {}) {
       const { data } = await read.call({
         // From the wallet, as the swap is sent, and within the swap's own gas, so a route that runs short fails here.
         // The probe's own few thousand gas make this a little stricter than the transaction.
         account: self,
         to: self,
         ...(swap.gas ? { gas: swap.gas + (options.approve ? APPROVE_GAS : 0n) } : {}),
-        data: encodeFunctionData({ abi: probeAbi, functionName: "probe", args: [sold, gotten, options.approve ?? 0n, swap.to, swap.value, swap.data] }),
+        data: encodeFunctionData({ abi: probeAbi, functionName: "probe", args: [sold, bought, options.approve ?? 0n, swap.to, swap.value, swap.data] }),
         stateOverride: [{ address: self, code: PROBE_CODE, ...(options.lend === undefined ? {} : { balance: options.lend }) }],
       });
       const [spent, gained] = decodeFunctionResult({ abi: probeAbi, functionName: "probe", data: data ?? "0x" });

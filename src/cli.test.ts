@@ -487,13 +487,12 @@ describe("buy-stake's flags", () => {
     expect(() => parse("buy-stake", ["--dry=1"])).toThrow("--dry takes no value");
   });
 
-  it("says in its help what a dry run buys, why the sale is exact-in, and what the worst case is", () => {
+  it("says in its help what a run costs, what is checked, and what comes next", () => {
     const help = usage("buy-stake").replace(/\s+/g, " ");
-    expect(help).toContain("0x's price and quote cost 0.01 USDC each, paid from the worker's key on Base, and --dry buys both too: it shows the quote, sends nothing else, and exits 1 when the wallet lacks what the buy needs");
-    expect(help).toContain("so the spend is known before signing");
-    expect(help).toContain("spends at most 7% over the BRAIN's worth at Relay's price and brings at least what join needs");
-    expect(help).toContain("It shows the exact spend, which is also the worst case, in tokens, USD and percent over that worth, and the BRAIN expected");
-    expect(help).not.toMatch(/12%|(?<![\d.])5%/);
+    expect(help).toContain("0x's price and quote cost 0.01 USDC each, paid from the worker's key on Base, and --dry pays for both as well");
+    expect(help).toContain("The wallet also pays gas on Robinhood Chain and keeps 0.0003 ETH there for the bridge's deposit.");
+    expect(help).toContain("Every quote is checked and simulated before anything is signed; a sale over 7% above the BRAIN's worth at Relay's price is refused.");
+    expect(help).toContain("Once the BRAIN arrives on BrainChain, run join.");
   });
 });
 

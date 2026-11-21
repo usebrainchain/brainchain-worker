@@ -208,7 +208,7 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
  * What stops this release from moving the stake token, or undefined. Its pins
  * must be the contracts BrainChain's service names active, so a release left
  * behind by a new set stops before it buys or bridges a token nothing stakes,
- * as one naming the $BRAIN from before the move of 17 November 2026 would.
+ * as one naming the BRAIN from before the move of 17 November 2026 would.
  * When the service cannot be read, `warn` says so and the token is held to
  * the chain alone: the parent chain's token must bridge to the one the
  * staking contract takes.
@@ -221,7 +221,7 @@ export async function stakeProblem(network: Network, chain: Pick<BridgeChain, "s
     const stale = releaseProblem(network, active.value);
     if (stale) return stale;
   } else {
-    warn(`Could not read the set BrainChain names active (${reason(active.reason).replace(/\.$/, "")}), so this release was not confirmed current; the stake token is checked on chain instead.`);
+    warn(`Could not read BrainChain's active contracts (${reason(active.reason).replace(/\.$/, "")}); checking the stake token on chain instead.`);
   }
   if (read.status === "rejected") return `Could not read which token the staking contract takes (${reason(read.reason).replace(/\.$/, "")}), so the stake token was not checked`;
   const tokens = read.value;
@@ -306,25 +306,25 @@ export async function stakeInFlight(
   ].sort((a, b) => b.at - a.at);
   if ((await chain.unmined()) > 0) {
     const named = last[0] && nowSec - last[0].at < DEPOSIT_DAY_SEC ? `, which may be ${last[0].what} it sent ${ago(last[0].at)} (${last[0].tx})` : "";
-    return `This wallet has a transaction on ${parent} that is not mined yet${named}, and buying now could buy the ${network.stakeSymbol} twice. Run buy-stake again once it is mined`;
+    return `This wallet has a transaction on ${parent} that is not mined yet${named}, and buying now could buy the ${network.stakeSymbol} twice. Run ${cli("buy-stake")} again once it is mined`;
   }
   for (const move of last) {
     if (nowSec - move.at >= UNSEEN_SEC || (await chain.transactionState(move.tx)) !== "unknown") continue;
-    return `${move.what[0]!.toUpperCase()}${move.what.slice(1)} this wallet sent ${ago(move.at)} (${move.tx}) is not on ${parent} yet, and buying now could buy the ${network.stakeSymbol} twice. Run buy-stake again once it is mined, or in ${Math.ceil((UNSEEN_SEC - (nowSec - move.at)) / 60)} minutes if it never is`;
+    return `${move.what[0]!.toUpperCase()}${move.what.slice(1)} this wallet sent ${ago(move.at)} (${move.tx}) is not on ${parent} yet, and buying now could buy the ${network.stakeSymbol} twice. Run ${cli("buy-stake")} again once it is mined, or in ${Math.ceil((UNSEEN_SEC - (nowSec - move.at)) / 60)} minutes if it never is`;
   }
   let deposits: { sent: StakeDeposit[]; arrived: StakeDeposit[] };
   try {
     deposits = await chain.stakeDeposits();
   } catch (error) {
     if (!saved.deposit || nowSec - saved.deposit.at >= DEPOSIT_DAY_SEC) return undefined;
-    return `Could not check whether the deposit of ${brains(saved.deposit.amount)} sent ${ago(saved.deposit.at)} (${saved.deposit.tx}) has arrived on ${network.name} (${reason(error).replace(/\.$/, "")}), and buying before it does could buy it twice. Run buy-stake again in a minute`;
+    return `Could not check whether the deposit of ${brains(saved.deposit.amount)} sent ${ago(saved.deposit.at)} (${saved.deposit.tx}) has arrived on ${network.name} (${reason(error).replace(/\.$/, "")}), and buying before it does could buy it twice. Run ${cli("buy-stake")} again in a minute`;
   }
   const waiting = unarrived(deposits.sent, deposits.arrived);
   const latest = waiting.at(-1);
   if (!latest) return undefined;
   return (
     `A deposit of ${brains(latest.amount)} from this wallet, sent ${ago(latest.at)} (${latest.tx}), has not arrived on ${network.name} yet, and buying now would buy it again. ` +
-    `Deposits arrive in about a minute: run buy-stake again once ${cli("status")} shows it`
+    `Deposits arrive in about a minute: run ${cli("buy-stake")} again once ${cli("status")} shows it`
   );
 }
 

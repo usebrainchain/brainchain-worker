@@ -48,7 +48,8 @@ export function createQuoter(zerox: NonNullable<Network["zerox"]>, account: Loca
               BigInt(r.amount) <= payment.price &&
               (r.extra as { name?: unknown } | undefined)?.name === "USD Coin",
           );
-          if (kept.length === 0) asked = requirements.map((r) => `${r.amount} of ${r.asset} on ${r.network}`).join(", ");
+          const offers = requirements.map((r) => (r.network === network && r.asset.toLowerCase() === payment.usdc.toLowerCase() ? `${usdc(r.amount)} on ${payment.name}` : `${r.amount} units of ${r.asset} on ${r.network}`));
+          if (kept.length === 0) asked = [...new Set(offers)].join(" or ");
           return kept;
         },
       ],

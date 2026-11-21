@@ -156,13 +156,13 @@ export const TESTNET: Network = {
   },
 };
 
-// The 3.6.0 set, whose staking and bonds take the $BRAIN of the 17 November move.
+// The 3.6.0 set, whose staking and bonds take the BRAIN of the 17 November move.
 const MAINNET_TASK_BOARD: Address = "0xf72857aABB25Fe1393b57d2356A090A7000ED13e";
 const MAINNET_WORKER_STAKING: Address = "0x1FD895474772081B20914839a9dD9042bCB60Ff0";
 const MAINNET_PROPOSAL_BONDS: Address = "0xfEFE2AEd07a28792fe395B07235c3d949be808f0";
 const MAINNET_DECISION_EXECUTOR: Address = "0x0eDd6c7dC362BC8ee4601A09d72eB7c651FcD88f";
 
-/** $BRAIN on BrainChain, and on Robinhood Chain, where the bridge's router maps the one to the other. */
+/** BRAIN on BrainChain, and on Robinhood Chain, where the bridge's router maps the one to the other. */
 const BRAIN: Address = "0x1d909E933A7743b29e13387fB34cB29608c3833F";
 const PARENT_BRAIN: Address = "0x42b96dbc55e79E930d866c1eE486A342366546BC";
 
@@ -216,7 +216,7 @@ export const MAINNET: Network = {
   },
   exitDesk: "0x97D558417c3D61f1074422AD843e1Db1E565b952",
   retired: [
-    // Its staking and bonds hold the $BRAIN from before the move.
+    // Its staking and bonds hold the BRAIN from before the move.
     { release: "3.5.0", taskBoard: "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211", staking: "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F" },
     { release: "3.4.0", taskBoard: "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4", staking: "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F" },
     { release: "3.3.0", taskBoard: "0x72C890AA996bF7efcA88e3F5063B626560215160", staking: "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee" },

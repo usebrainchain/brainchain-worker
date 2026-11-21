@@ -109,15 +109,15 @@ const ceiling = (token: string, decimals: number) => BigInt(Math.floor(((312_500
 // The lines buy-stake prints for the fixtures at PRICES, checked by hand.
 const SUMMARY_ETH = [
   "0x quotes 318,377 BRAIN for exactly 0.041438 ETH (66.49 USD, 5.2% over what 312,500 BRAIN is worth). The sale spends that and no more, so it is also the worst case; the swap reverts below 315,194 BRAIN, and join needs 312,500 BRAIN.",
-  "  For the 318,377 BRAIN expected in the simulation, that is 3.3% over Relay's price for each; the 5,877 BRAIN beyond what join needs stay in the wallet on Robinhood Chain.",
+  "  That is 3.3% over Relay's price per BRAIN received, for the 318,377 BRAIN expected in the simulation; the 5,877 BRAIN beyond what join needs stay in the wallet on Robinhood Chain.",
   "  At Relay's price of 0.000202 USD, 312,500 BRAIN is worth 63.19 USD, and buy-stake spends at most 7% over that, 0.042134 ETH. 0x's fee of 0.000063 ETH is included.",
-  "  Checked: 0x's signature (key 0x-signing-key-prod-24092026, signed 2 seconds ago); the transaction calls 0x's AllowanceHolder 0x0000…2734, which lets Settler 0xE885…EFb0, the one 0x's registry names, take exactly 0.041438 ETH; it pays the BRAIN to 0x8926…4a7D and reverts below 315,194 BRAIN.",
+  "  Checked: 0x's signature (key 0x-signing-key-prod-24092026, signed 2 seconds ago); the transaction calls 0x's AllowanceHolder 0x0000…2734, which lets Settler 0xE885…EFb0, the one 0x's registry names, take exactly 0.041438 ETH; it pays the BRAIN to 0x8926…4a7D, at least the minimum above.",
   "  Simulated on Robinhood Chain: it takes 0.041437 ETH and brings 318,377 BRAIN.",
   "  Gas on Robinhood Chain: about 0.000011 ETH for the swap.",
 ];
 const PROMPT_ETH = "Buy about 318,377 BRAIN, at least 315,194 BRAIN, for exactly 0.041438 ETH (66.49 USD, 5.2% over what 312,500 BRAIN is worth)? [y/N] ";
 const LACKS_ETH = `${TAKER} holds 0.042134 ETH on Robinhood Chain, and needs about 0.042469 ETH: up to 0.042135 ETH for the sale, 0.000034 ETH for gas and 0.0003 ETH kept for the bridge's deposit.\nNothing was paid.`;
-const DRY_LACKS_ETH = `${TAKER} holds 0.0002 ETH on Robinhood Chain, and needs about 0.042445 ETH: up to 0.042135 ETH for the sale, 0.000011 ETH for gas and 0.0003 ETH kept for the bridge's deposit.\nDry run: 0.02 USDC paid for a price and a quote, nothing else sent.`;
+const DRY_LACKS_ETH = `${TAKER} holds 0.0002 ETH on Robinhood Chain, and needs about 0.042445 ETH: up to 0.042135 ETH for the sale, 0.000011 ETH for gas and 0.0003 ETH kept for the bridge's deposit.\nDry run: 0.02 USDC paid for a price and a quote, nothing else sent. Run ${cli("buy-stake")} without --dry to buy; a new price and quote cost another 0.02 USDC.`;
 const LACKS_USDG_MOST = "67.619398";
 
 describe("buy-stake", () => {
@@ -149,7 +149,7 @@ describe("buy-stake", () => {
     const { chain, sent } = fakeChain();
     const { deps: d } = deps(chain, { price: async (token) => cheaper[token.toLowerCase()]! });
     await expect(run(d)).rejects.toThrow(
-      "0x prices 312,500 BRAIN at 0.040826 ETH, so a sale that brings at least that many spends 0.041438 ETH (66.49 USD, 8.5% over what 312,500 BRAIN is worth), more than the 7% buy-stake accepts, 0.04087 ETH. " +
+      "Buying at least 312,500 BRAIN would spend 0.041438 ETH (66.49 USD, 8.5% over what 312,500 BRAIN is worth), and buy-stake spends at most 7% over that worth, 0.04087 ETH. " +
         `Try again later, or buy at ripples.run and use ${cli("bridge --stake")}. The 0.01 USDC paid to 0x is spent; nothing else was sent.`,
     );
     expect(vi.mocked(d.quote).mock.calls.map((call) => call[1])).toEqual(["price"]);
@@ -176,7 +176,7 @@ describe("buy-stake", () => {
 
   it("buys nothing when nothing is missing, and says what to run instead", async () => {
     const cases: [Partial<BuyDeps>, bigint, string][] = [
-      [{ needs: async () => ({ need: 0n, held: 0n }) }, 0n, "This worker's stake is at the minimum and it applies for nothing, so there is no BRAIN to buy."],
+      [{ needs: async () => ({ need: 0n, held: 0n }) }, 0n, "This worker already stakes the minimum and has no application to bond, so there is no BRAIN to buy."],
       [{ needs: async () => ({ need: STAKE, held: STAKE }) }, 0n, `The wallet holds the 312,500 BRAIN join needs on BrainChain. Run ${cli("join")}.`],
       [{}, STAKE * 2n, `The wallet already holds 625,000 BRAIN on Robinhood Chain, which covers the 312,500 BRAIN join still needs. Move it with ${cli("bridge --stake 312500")}, then run ${cli("join")}.`],
     ];
@@ -272,7 +272,7 @@ describe("buy-stake", () => {
     expect(bridged).toEqual([]);
 
     const funded = await run(deps(fakeChain().chain).deps, { dry: true, yes: false });
-    expect(funded.at(-1)).toBe("Dry run: 0.02 USDC paid for a price and a quote, nothing else sent.");
+    expect(funded.at(-1)).toBe(`Dry run: 0.02 USDC paid for a price and a quote, nothing else sent. Run ${cli("buy-stake")} without --dry to buy; a new price and quote cost another 0.02 USDC.`);
   });
 
   it("asks before it buys, with the exact spend and the BRAIN expected, and before it bridges, and does neither on a no", async () => {
@@ -317,7 +317,7 @@ describe("buy-stake", () => {
     const { deps: d } = deps(chain, { fixture: USDG_QUOTE });
     const lines: string[] = [];
     await expect(buyStake(MAINNET, d, { pay: "usdg", dry: true, yes: false, log: (line) => lines.push(line) })).rejects.toThrow(
-      `${TAKER} holds 60 USDG on Robinhood Chain, and the sale may take up to ${LACKS_USDG_MOST} USDG.\nDry run: 0.02 USDC paid for a price and a quote, nothing else sent.`,
+      `${TAKER} holds 60 USDG on Robinhood Chain, and the sale may take up to ${LACKS_USDG_MOST} USDG.\nDry run: 0.02 USDC paid for a price and a quote, nothing else sent. Run ${cli("buy-stake")} without --dry to buy; a new price and quote cost another 0.02 USDC.`,
     );
     expect(chain.simulate).not.toHaveBeenCalled();
     expect(lines.some((line) => line.includes("Not simulated: the wallet holds 60 USDG of the 66.527993 USDG the sale takes."))).toBe(true);

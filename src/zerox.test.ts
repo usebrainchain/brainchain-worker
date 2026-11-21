@@ -55,14 +55,14 @@ describe("createQuoter", () => {
     expect(seen.map((s) => s.url)).toEqual([price.url, price.url]);
     expect(seen[1]!.headers.get("payment-signature")).toBeTruthy();
     const refused = await createQuoter(MAINNET.zerox!, account, gateway("20000").fetcher)({ chainId: "4663" }, "price").catch((e: unknown) => e);
-    expect((refused as Error).message).toMatch(/^0x's gateway asks 20000 of .* for a price, where buy-stake pays 0\.01 USDC on Base\. Nothing was paid\.$/);
+    expect((refused as Error).message).toBe("0x's gateway asks 0.02 USDC on Base for a price, where buy-stake pays 0.01 USDC on Base. Nothing was paid.");
   });
 
   it("pays nothing when the gateway asks more than 0.01 USDC, and says what it asked", async () => {
     const { fetcher, seen } = gateway("20000");
     const error = await createQuoter(MAINNET.zerox!, account, fetcher)({ chainId: "4663" }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(NotPaid);
-    expect((error as Error).message).toMatch(/^0x's gateway asks 20000 of 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 on eip155:8453, .* where buy-stake pays 0\.01 USDC on Base\. Nothing was paid\.$/);
+    expect((error as Error).message).toBe("0x's gateway asks 0.02 USDC on Base for a quote, where buy-stake pays 0.01 USDC on Base. Nothing was paid.");
     expect(seen.filter((s) => s.headers.get("payment-signature"))).toEqual([]);
   });
 

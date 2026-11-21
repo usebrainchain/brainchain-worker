@@ -130,17 +130,16 @@ describe("fund in the README and --help", () => {
 });
 
 describe("buy-stake in the README, --help and the skill", () => {
-  it("give the most it spends, measured over the BRAIN's worth, why the sale is exact-in, and no other limit", () => {
+  it("give what a run costs and the most it spends, measured over the BRAIN's worth", () => {
     const cap = `${Math.round(MAX_OVER_WORTH * 100)}%`;
-    const section = flat(readme.split("\n## Buy the stake\n")[1]!.split("\n## ")[0]!);
-    expect(section).toContain(`The sale may spend at most ${cap} over the worth, at Relay's price, of the BRAIN \`join\` needs`);
-    expect(section).toContain("It sells a fixed amount because the spend is then known before anything is signed");
-    expect(flat(help)).toContain(`spends at most ${cap} over the BRAIN's worth at Relay's price`);
+    const section = flat(readme.split("\n## Buy the stake\n")[1]!.split("\n## ")[0]!).trim();
+    expect(section.startsWith("Each run pays 0x 0.02 USDC on Base (0.01 for the price, 0.01 for the quote), `--dry` and refused quotes included")).toBe(true);
+    expect(section).toContain("The amount sold is fixed, so a run costs at most that amount, the gas and 0.02 USDC on Base.");
+    expect(section).toContain(`That amount may be at most ${cap} over the worth, at Relay's price, of the BRAIN \`join\` needs`);
+    expect(section).toContain("A dry run still pays for the price and quote, then reports the shortfall and exits 1.");
+    expect(section.endsWith("Once it arrives on BrainChain, about a minute later, run `join`.")).toBe(true);
+    expect(flat(help)).toContain(`a sale over ${cap} above the BRAIN's worth at Relay's price is refused`);
     expect(flat(skill)).toContain(`would spend more than ${cap} over that worth`);
-    for (const text of [section, flat(usage("buy-stake")), flat(skill)]) {
-      expect(text).toMatch(/spend is (?:then )?known before (?:anything is )?sign/);
-      expect(text).not.toMatch(/12%|at most 5%|5% over|exact-out quote/);
-    }
   });
 });
 
