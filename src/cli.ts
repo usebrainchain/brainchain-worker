@@ -19,7 +19,7 @@ import { buildCall, caseURI, createProposals, proposal, propose } from "./propos
 import { relayPrice } from "./relay.js";
 import { deliveries, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
 import { openStore, privateDir, readStakeMoves, readWatched, saveStakeMove, stateDir, writeWatched } from "./state.js";
-import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
+import { clearKeyFromEnvironment, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
@@ -860,7 +860,7 @@ export async function main(argv: string[]): Promise<void> {
       ...(gasUsdc ? { gasUsdc } : {}),
       stake: switches.has("stake"),
       ...(network.bridge.tokens?.stake ? { stakeToken: network.bridge.tokens.stake } : {}),
-      stakeProblem: () => stakeProblem(network, bridgeChain, console.log),
+      stakeProblem: () => stakeProblem(network, bridgeChain),
       dry: switches.has("dry"),
       log: console.log,
       parentEth: () => bridgeChain.parentEth(),
@@ -870,9 +870,11 @@ export async function main(argv: string[]): Promise<void> {
     });
   }
   if (command === "buy-stake") {
-    const pay = values.get("with") ?? "eth";
-    if (pay !== "eth" && pay !== "usdg") throw new UsageError(`--with is eth or usdg, what buy-stake sells for the BRAIN, not "${pay}"`);
+    const given = values.get("with") ?? "eth";
+    const pay = given.toLowerCase();
+    if (pay !== "eth" && pay !== "usdg") throw new UsageError(`--with is eth or usdg, what buy-stake sells for the BRAIN, not "${given}"`);
     if (!network.zerox || !network.bridge) throw new UsageError(`buy-stake works on mainnet only, where BRAIN trades on Robinhood Chain; on ${network.name}, join claims the ${network.stakeSymbol} from the faucet`);
+    refuseReadableKeyFile("buy-stake");
     const { account } = signer();
     const chain = createChain(network, account);
     const bridgeChain = createBridgeChain(network, account);
@@ -883,9 +885,9 @@ export async function main(argv: string[]): Promise<void> {
         chain: createBuyChain(network, account),
         async needs() {
           const [s, bond, held] = await Promise.all([snapshot(chain), chain.bond(), chain.stakeBalance()]);
-          return { need: s.toStake + (s.applying ? bond : 0n), held };
+          return { need: s.toStake + (s.applying ? bond : 0n), held, applying: s.applying };
         },
-        stakeProblem: () => stakeProblem(network, bridgeChain, console.log),
+        stakeProblem: () => stakeProblem(network, bridgeChain),
         inFlight: () => stakeInFlight(network, bridgeChain, readStakeMoves(account.address, network)),
         price: (token) => relayPrice(parentChainId, token),
         quote: createQuoter(network.zerox, account),

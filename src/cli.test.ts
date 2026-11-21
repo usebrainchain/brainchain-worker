@@ -484,6 +484,8 @@ describe("buy-stake's flags", () => {
     }
     await expect(main(["buy-stake", "--dry"])).rejects.toThrow(new UsageError("buy-stake works on mainnet only, where BRAIN trades on Robinhood Chain; on BrainChain testnet, join claims the tBRAIN from the faucet"));
     expect(() => parse("buy-stake", ["--with"])).toThrow("--with needs a value");
+    // Any case of eth or usdg gets past the check to the network's, which testnet fails.
+    for (const pay of ["ETH", "Usdg"]) await expect(main(["buy-stake", "--with", pay, "--dry"])).rejects.toThrow(/^buy-stake works on mainnet only/);
     expect(() => parse("buy-stake", ["--dry=1"])).toThrow("--dry takes no value");
   });
 

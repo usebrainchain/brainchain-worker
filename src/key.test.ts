@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { clearKeyFromEnvironment, handoffDir, keyConfigured, keyText, writeKeyFile } from "./key.js";
+import { clearKeyFromEnvironment, handoffDir, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
 
 const KEY = `0x${"4f".repeat(32)}`;
 const dir = () => mkdtempSync(join(tmpdir(), "brainchain-worker-"));
@@ -71,6 +71,16 @@ describe("keyText", () => {
     expect(keyConfigured({ BRAINCHAIN_WORKER_KEY_FILE: "/nowhere" })).toBe(true);
     expect(keyConfigured({ BRAINCHAIN_WORKER_KEY: KEY })).toBe(true);
     expect(keyConfigured({ BRAINCHAIN_WORKER_KEY: " " })).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("refuseReadableKeyFile", () => {
+  it("refuses a key file other users can read, for a command that spends from it, and leaves the rest to keyText", () => {
+    const open = keyFile(KEY, 0o644);
+    expect(() => refuseReadableKeyFile("buy-stake", { BRAINCHAIN_WORKER_KEY_FILE: open })).toThrow(`Other users can read ${open}, and buy-stake spends from that key. Run chmod 600 on it first.`);
+    expect(() => refuseReadableKeyFile("buy-stake", { BRAINCHAIN_WORKER_KEY_FILE: keyFile(KEY) })).not.toThrow();
+    expect(() => refuseReadableKeyFile("buy-stake", { BRAINCHAIN_WORKER_KEY_FILE: join(dir(), "missing.key") })).not.toThrow();
+    expect(() => refuseReadableKeyFile("buy-stake", { BRAINCHAIN_WORKER_KEY: KEY })).not.toThrow();
   });
 });
 

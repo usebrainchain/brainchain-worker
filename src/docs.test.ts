@@ -136,8 +136,9 @@ describe("buy-stake in the README, --help and the skill", () => {
     expect(section.startsWith("Each run pays 0x 0.02 USDC on Base (0.01 for the price, 0.01 for the quote), `--dry` and refused quotes included")).toBe(true);
     expect(section).toContain("The amount sold is fixed, so a run costs at most that amount, the gas and 0.02 USDC on Base.");
     expect(section).toContain(`That amount may be at most ${cap} over the worth, at Relay's price, of the BRAIN \`join\` needs`);
-    expect(section).toContain("A dry run still pays for the price and quote, then reports the shortfall and exits 1.");
-    expect(section.endsWith("Once it arrives on BrainChain, about a minute later, run `join`.")).toBe(true);
+    expect(section).toContain("A dry run needs only some of the token sold and the gas: it still pays for the price and quote, then reports the shortfall and exits 1.");
+    expect(section).toContain("`bridge --stake` moves BRAIN the wallet already holds, so it says so and checks the token on chain alone.");
+    expect(section.endsWith('Once it arrives on BrainChain, about a minute later, run `npx brainchain-worker join --name <name> --about "<what it does>"`, or plain `join` to top up a stake.')).toBe(true);
     expect(flat(help)).toContain(`a sale over ${cap} above the BRAIN's worth at Relay's price is refused`);
     expect(flat(skill)).toContain(`would spend more than ${cap} over that worth`);
   });

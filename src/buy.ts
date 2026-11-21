@@ -98,8 +98,8 @@ export interface BuyChain {
 
 export interface BuyDeps {
   chain: BuyChain;
-  /** What join needs on BrainChain, and what the wallet holds there. */
-  needs(): Promise<{ need: bigint; held: bigint }>;
+  /** What join needs on BrainChain, what the wallet holds there, and whether join still applies, which takes a name. */
+  needs(): Promise<{ need: bigint; held: bigint; applying?: boolean }>;
   stakeProblem(): Promise<string | undefined>;
   /** What this wallet has sent that could make another buy a second one, or undefined. */
   inFlight(): Promise<string | undefined>;
@@ -159,7 +159,7 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
 
   const problem = await deps.stakeProblem();
   if (problem) throw unpaid(problem);
-  const [{ need, held }, onParent] = await Promise.all([deps.needs(), chain.balance(brain)]);
+  const [{ need, held, applying = true }, onParent] = await Promise.all([deps.needs(), chain.balance(brain)]);
   if (need === 0n) return log(`This worker already stakes the minimum and has no application to bond, so there is no ${network.stakeSymbol} to buy.`);
   const missing = need > held ? need - held : 0n;
   if (missing === 0n) return log(`The wallet holds the ${brains(need)} join needs on ${network.name}. Run ${cli("join")}.`);
@@ -185,12 +185,6 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const baseUsdc = await chain.paymentBalance().catch((error: unknown) => {
     throw unpaid(`Could not read the wallet's USDC on ${zerox.payment.name} (${reason(error).replace(/\.$/, "")})`);
   });
-  if (baseUsdc < 2n * each) {
-    throw unpaid(
-      `buy-stake pays 0x ${usdc(each)} on ${zerox.payment.name} for a price and ${usdc(each)} for a quote, from the worker's own key, and ${chain.account} holds ${formatUnits(baseUsdc, 6)} USDC there. ` +
-        `Send that address at least ${usdc(2n * each)} on ${zerox.payment.name}`,
-    );
-  }
   let sellUsd: number;
   let brainUsd: number;
   try {
@@ -219,22 +213,38 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
     eth ? undefined : chain.allowance(sell.token, holder),
   ]);
   const balance = token ?? ethHeld;
+  const kept = `${formatUnits(PARENT_ETH_KEEP, 18)} ETH kept for the bridge's deposit`;
+  /** What the wallet lacks for a sale of up to `most`; with `most` 0, only what a dry run needs: some of the token, and gas. */
   const lacks = (most: bigint, gas: bigint) => {
     const keep = (eth ? most : 0n) + gas + PARENT_ETH_KEEP;
+    const ethShort = eth && most === 0n ? ethHeld <= keep : ethHeld < keep;
     return [
-      ...(!eth && balance < most ? [`${chain.account} holds ${sells(balance)} on ${parent.name}, and the sale may take up to ${sells(most, true)}.`] : []),
-      ...(ethHeld < keep
+      ...(!eth && most === 0n && balance === 0n ? [`${chain.account} holds no ${sell.symbol} on ${parent.name} to sell.`] : []),
+      ...(!eth && most > 0n && balance < most ? [`${chain.account} holds ${sells(balance)} on ${parent.name}, and the sale may take up to ${sells(most, true)}.`] : []),
+      ...(ethShort
         ? [
-            `${chain.account} holds ${figure(ethHeld, 18)} ETH on ${parent.name}, and needs about ${figure(keep, 18, true)} ETH: ` +
-              `${eth ? `up to ${sells(most, true)} for the sale, ` : ""}${figure(gas, 18, true)} ETH for gas and ${formatUnits(PARENT_ETH_KEEP, 18)} ETH kept for the bridge's deposit.`,
+            eth && most === 0n
+              ? `${chain.account} holds ${figure(ethHeld, 18)} ETH on ${parent.name}, which leaves none to sell after ${figure(gas, 18, true)} ETH for gas and ${kept}.`
+              : `${chain.account} holds ${figure(ethHeld, 18)} ETH on ${parent.name}, and needs about ${figure(keep, 18, true)} ETH: ` +
+                `${eth ? `up to ${sells(most, true)} for the sale, ` : ""}${figure(gas, 18, true)} ETH for gas and ${kept}.`,
           ]
         : []),
     ];
   };
   const gasFor = (swapGas: bigint, approves: boolean) => (swapGas + (approves ? APPROVE_GAS : 0n)) * gasPrice;
   const approvesFor = (spend: bigint) => allowance !== undefined && allowance < spend;
-  const shortfall = lacks(ceiling, gasFor(SWAP_GAS, approvesFor(ceiling)));
-  if (!options.dry && shortfall.length > 0) throw new Error(`${shortfall.join("\n")}\nNothing was paid.`);
+  // Every shortfall at once, so a wallet is topped up in one trip; a dry run still pays to see a quote the wallet can
+  // only partly fund, but not for one it cannot fund at all.
+  const shortfall = [
+    ...(baseUsdc < 2n * each
+      ? [
+          `${chain.account} holds ${formatUnits(baseUsdc, 6)} USDC on ${zerox.payment.name}, and buy-stake pays 0x ${usdc(each)} for a price and ${usdc(each)} for a quote from it: ` +
+            `send it at least ${usdc(2n * each)} on ${zerox.payment.name}.`,
+        ]
+      : []),
+    ...lacks(options.dry ? 0n : ceiling, gasFor(SWAP_GAS, approvesFor(ceiling))),
+  ];
+  if (shortfall.length > 0) throw new Error(`${shortfall.join("\n")}\nNothing was paid.`);
 
   log(
     options.dry
@@ -350,7 +360,7 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const total = fromParent + amount;
   const move = bridgeCommand(total);
   if (!options.yes && !yes(await options.ask!(`Move ${brains(total)} to ${network.name} now with ${move}? [y/N] `))) {
-    return log(`The BRAIN stays on ${parent.name}. ${move} moves it, then ${cli("join")} stakes it.`);
+    return log(`The BRAIN stays on ${parent.name}. ${move} moves it, then ${cli(applying ? 'join --name <name> --about "<what it does>"' : "join")} stakes it.`);
   }
   try {
     await deps.bridge(total);
@@ -358,7 +368,7 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
     if (error instanceof DepositSent) throw error;
     throw new Error(`${reason(error).replace(/\.?$/, ".")} The BRAIN is on ${parent.name}; ${move} moves it.`);
   }
-  log(`Once it arrives, ${cli("join")} stakes it.`);
+  log(`Once it arrives, ${cli(applying ? 'join --name <name> --about "<what it does>"' : "join")} stakes it.`);
 }
 
 const unknownKey = (keyid: string | undefined) => `0x signed it with key ${keyid}, which this release does not carry. Update with npx brainchain-worker@latest`;

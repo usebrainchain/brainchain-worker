@@ -117,7 +117,7 @@ const SUMMARY_ETH = [
 ];
 const PROMPT_ETH = "Buy about 318,377 BRAIN, at least 315,194 BRAIN, for exactly 0.041438 ETH (66.49 USD, 5.2% over what 312,500 BRAIN is worth)? [y/N] ";
 const LACKS_ETH = `${TAKER} holds 0.042134 ETH on Robinhood Chain, and needs about 0.042469 ETH: up to 0.042135 ETH for the sale, 0.000034 ETH for gas and 0.0003 ETH kept for the bridge's deposit.\nNothing was paid.`;
-const DRY_LACKS_ETH = `${TAKER} holds 0.0002 ETH on Robinhood Chain, and needs about 0.042445 ETH: up to 0.042135 ETH for the sale, 0.000011 ETH for gas and 0.0003 ETH kept for the bridge's deposit.\nDry run: 0.02 USDC paid for a price and a quote, nothing else sent. Run ${cli("buy-stake")} without --dry to buy; a new price and quote cost another 0.02 USDC.`;
+const DRY_LACKS_ETH = `${TAKER} holds 0.002 ETH on Robinhood Chain, and needs about 0.042445 ETH: up to 0.042135 ETH for the sale, 0.000011 ETH for gas and 0.0003 ETH kept for the bridge's deposit.\nDry run: 0.02 USDC paid for a price and a quote, nothing else sent. Run ${cli("buy-stake")} without --dry to buy; a new price and quote cost another 0.02 USDC.`;
 const LACKS_USDG_MOST = "67.619398";
 
 describe("buy-stake", () => {
@@ -193,9 +193,24 @@ describe("buy-stake", () => {
     const { chain } = fakeChain({ base: 19_999n });
     const { deps: d } = deps(chain);
     await expect(run(d, { dry: true })).rejects.toThrow(
-      `buy-stake pays 0x 0.01 USDC on Base for a price and 0.01 USDC for a quote, from the worker's own key, and ${TAKER} holds 0.019999 USDC there. Send that address at least 0.02 USDC on Base. Nothing was paid.`,
+      `${TAKER} holds 0.019999 USDC on Base, and buy-stake pays 0x 0.01 USDC for a price and 0.01 USDC for a quote from it: send it at least 0.02 USDC on Base.\nNothing was paid.`,
     );
     expect(d.quote).not.toHaveBeenCalled();
+  });
+
+  it("names every shortfall in one message before any request, a dry run's included, for a wallet with none of the token or no gas", async () => {
+    const empty = deps(fakeChain({ base: 0n, usdg: 0n, eth: 0n }).chain, { fixture: USDG_QUOTE }).deps;
+    await expect(run(empty, { pay: "usdg", dry: true })).rejects.toThrow(
+      new RegExp(
+        `^${TAKER} holds 0 USDC on Base, and buy-stake pays 0x 0\\.01 USDC for a price and 0\\.01 USDC for a quote from it: send it at least 0\\.02 USDC on Base\\.\\n` +
+          `${TAKER} holds no USDG on Robinhood Chain to sell\\.\\n` +
+          `${TAKER} holds 0 ETH on Robinhood Chain, and needs about 0\\.000\\d+ ETH: 0\\.0000\\d+ ETH for gas and 0\\.0003 ETH kept for the bridge's deposit\\.\\nNothing was paid\\.$`,
+      ),
+    );
+    expect(empty.quote).not.toHaveBeenCalled();
+    const noEth = deps(fakeChain({ eth: parseEther("0.0003") }).chain).deps;
+    await expect(run(noEth, { dry: true })).rejects.toThrow(/^0x8926.* holds 0\.0003 ETH on Robinhood Chain, which leaves none to sell after 0\.0000\d+ ETH for gas and 0\.0003 ETH kept for the bridge's deposit\.\nNothing was paid\.$/);
+    expect(noEth.quote).not.toHaveBeenCalled();
   });
 
   it("stops before any request on a release BrainChain has moved past, without Relay's prices, or with a paused or unread Settler registry", async () => {
@@ -259,7 +274,7 @@ describe("buy-stake", () => {
   });
 
   it("says a dry run costs 0.02 USDC, buys the price and the quote, simulates as if funded, sends nothing else and exits 1 on what the wallet lacks", async () => {
-    const { chain, sent } = fakeChain({ eth: parseEther("0.0002") });
+    const { chain, sent } = fakeChain({ eth: parseEther("0.002") });
     const { deps: d, bridged } = deps(chain);
     const lines: string[] = [];
     const dry = buyStake(MAINNET, d, { pay: "eth", dry: true, yes: false, log: (line) => lines.push(line) });
@@ -287,7 +302,11 @@ describe("buy-stake", () => {
     answers.push("y", "no");
     const lines = await run(d, { yes: false, ask });
     expect(ask).toHaveBeenLastCalledWith(`Move 312,500 BRAIN to BrainChain now with ${cli("bridge --stake 312500")}? [y/N] `);
-    expect(lines.at(-1)).toBe(`The BRAIN stays on Robinhood Chain. ${cli("bridge --stake 312500")} moves it, then ${cli("join")} stakes it.`);
+    expect(lines.at(-1)).toBe(`The BRAIN stays on Robinhood Chain. ${cli("bridge --stake 312500")} moves it, then ${cli('join --name <name> --about "<what it does>"')} stakes it.`);
+
+    const topUp = deps(fakeChain().chain, { needs: async () => ({ need: STAKE, held: 0n, applying: false }) }).deps;
+    expect((await run(topUp)).at(-1)).toBe(`Once it arrives, ${cli("join")} stakes it.`);
+    expect((await run(deps(fakeChain().chain).deps)).at(-1)).toBe(`Once it arrives, ${cli('join --name <name> --about "<what it does>"')} stakes it.`);
     expect(sent).toHaveLength(1);
     expect(bridged).toEqual([]);
   });

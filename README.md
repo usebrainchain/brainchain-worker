@@ -245,15 +245,14 @@ The amount sold is fixed, so a run costs at most that amount, the gas and 0.02 U
 
 Before it pays for anything, it stops and says why when any of these holds:
 
-- the wallet holds less than 0.02 USDC on Base;
-- BrainChain names other contracts than this release's as its active set;
+- BrainChain names other contracts than this release's as its active set, or its service cannot be read;
 - a transaction from this wallet on Robinhood Chain is not mined yet, the last swap is not there yet, or a BRAIN deposit from the last day has not arrived on BrainChain, since buying then could buy the stake twice;
 - the wallet's address has code on Robinhood Chain, an EIP-7702 delegation or a contract wallet, since `buy-stake` needs a plain key;
 - this machine's clock is more than 30 seconds from Robinhood Chain's;
 - 0x has paused swaps on Robinhood Chain;
-- the wallet cannot cover the most the sale may spend, the gas, and the 0.0003 ETH it keeps on Robinhood Chain for the bridge's deposit. A dry run still pays for the price and quote, then reports the shortfall and exits 1.
+- the wallet lacks 0.02 USDC on Base, or the most the sale may spend, the gas and the 0.0003 ETH it keeps on Robinhood Chain for the bridge's deposit. Every shortfall is named in one message. A dry run needs only some of the token sold and the gas: it still pays for the price and quote, then reports the shortfall and exits 1.
 
-`bridge --stake` and `fund --stake` make the same release check before they move anything: BrainChain's service must name this release's contracts as its active set, or they stop and say to update. The token is then checked against the staking contract. When the service cannot be read, they say so and check the token on chain alone.
+`bridge --stake` and `fund --stake` make the same release check before they move anything: BrainChain's service must name this release's contracts as its active set, or they stop and say to update. The token is then checked against the staking contract. When the service cannot be read, `buy-stake` and `fund --stake`, which spend, stop and say to try again. `bridge --stake` moves BRAIN the wallet already holds, so it says so and checks the token on chain alone.
 
 Nothing is signed on Robinhood Chain until the quote passes these checks, all made by [brainchain-verify](https://www.npmjs.com/package/brainchain-verify):
 
@@ -261,7 +260,7 @@ Nothing is signed on Robinhood Chain until the quote passes these checks, all ma
 - **The transaction is this swap.** It calls 0x's AllowanceHolder `0x0000000000001fF3684f28c67538d4D072C22734`, which lets the Settler take exactly the ETH or USDG sold and no other token. The Settler is the one 0x's registry names. It pays the BRAIN to the worker's own address and reverts below the BRAIN `join` needs.
 - **It works.** The swap is simulated on Robinhood Chain's latest block, from the worker's address and within the quote's own gas, and must bring the BRAIN.
 
-It then shows the spend, the BRAIN expected and the least it may bring, 0x's fee as the quote states it, the gas and the checks, and asks before buying. A quote expires about five minutes after 0x makes it: one that has expired by the time you answer says so, and a new price and quote cost another 0.02 USDC. Before sending anything it simulates again. A USDG sale then approves exactly the amount sold to AllowanceHolder, which moves tokens only in a transaction this wallet sends. A swap that reverts says nothing was bought and whether the approval stays. Once the swap lands, it offers to run `bridge --stake` for what `join` needs, counting any BRAIN the wallet already held on Robinhood Chain. `--yes` buys and bridges without asking. Once it arrives on BrainChain, about a minute later, run `join`.
+It then shows the spend, the BRAIN expected and the least it may bring, 0x's fee as the quote states it, the gas and the checks, and asks before buying. A quote expires about five minutes after 0x makes it: one that has expired by the time you answer says so, and a new price and quote cost another 0.02 USDC. Before sending anything it simulates again. A USDG sale then approves exactly the amount sold to AllowanceHolder, which moves tokens only in a transaction this wallet sends. A swap that reverts says nothing was bought and whether the approval stays. Once the swap lands, it offers to run `bridge --stake` for what `join` needs, counting any BRAIN the wallet already held on Robinhood Chain. `--yes` buys and bridges without asking. Once it arrives on BrainChain, about a minute later, run `npx brainchain-worker join --name <name> --about "<what it does>"`, or plain `join` to top up a stake.
 
 ## From Solana
 
