@@ -130,15 +130,16 @@ describe("fund in the README and --help", () => {
 });
 
 describe("buy-stake in the README, --help and the skill", () => {
-  it("give the worst case it accepts, measured over the BRAIN's worth, and no other limit", () => {
+  it("give the most it spends, measured over the BRAIN's worth, why the sale is exact-in, and no other limit", () => {
     const cap = `${Math.round(MAX_OVER_WORTH * 100)}%`;
     const section = flat(readme.split("\n## Buy the stake\n")[1]!.split("\n## ")[0]!);
-    expect(section).toContain(`the swap may take at most ${cap} over the BRAIN's worth at Relay's price`);
-    expect(flat(help)).toContain(`can take at most ${cap} over the BRAIN's worth at Relay's price`);
-    expect(flat(skill)).toContain(`could take more than ${cap} over that worth`);
+    expect(section).toContain(`The sale may spend at most ${cap} over the worth, at Relay's price, of the BRAIN \`join\` needs`);
+    expect(section).toContain("It sells a fixed amount because the spend is then known before anything is signed");
+    expect(flat(help)).toContain(`spends at most ${cap} over the BRAIN's worth at Relay's price`);
+    expect(flat(skill)).toContain(`would spend more than ${cap} over that worth`);
     for (const text of [section, flat(usage("buy-stake")), flat(skill)]) {
-      expect(text).toMatch(/expected cost and the worst case/);
-      expect(text).not.toMatch(/at most 5%|5% over/);
+      expect(text).toMatch(/spend is (?:then )?known before (?:anything is )?sign/);
+      expect(text).not.toMatch(/12%|at most 5%|5% over|exact-out quote/);
     }
   });
 });

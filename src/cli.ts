@@ -138,16 +138,19 @@ const COMMAND_USAGE: Record<string, string> = {
                                             other; the wallet needs about 0.002 SOL for fees. --dry quotes the
                                             move, then says what the wallet lacks, and sends nothing. Mainnet.`,
   "buy-stake": `  brainchain-worker buy-stake [--with eth|usdg] [--dry] [--yes]
-                                            Buy the BRAIN join still needs, with ETH (the default) or USDG on
-                                            Robinhood Chain, through 0x, then offer to bridge it to BrainChain.
-                                            0x's quote costs 0.01 USDC, paid from the worker's key on Base, and
-                                            --dry buys one too: it shows the quote, sends nothing else, and exits
-                                            1 when the wallet lacks what the buy needs. Nothing is signed on
-                                            Robinhood Chain until 0x's signature on the quote verifies, its
-                                            calldata swaps only for this wallet and can take at most 12% over the
-                                            BRAIN's worth at Relay's price, and a simulation brings the BRAIN. It
-                                            shows the expected cost and the worst case, in tokens, USD and percent
-                                            over that worth, and asks before buying and before bridging; --yes
+                                            Buy at least the BRAIN join still needs, with ETH (the default) or
+                                            USDG on Robinhood Chain, through 0x, then offer to bridge what join
+                                            needs to BrainChain; any extra stays in the wallet. It sells a fixed
+                                            amount, 0x's price for that BRAIN plus 1.5%, so the spend is known
+                                            before signing. 0x's price and quote cost 0.01 USDC each, paid from the
+                                            worker's key on Base, and --dry buys both too: it shows the quote, sends
+                                            nothing else, and exits 1 when the wallet lacks what the buy needs.
+                                            Nothing is signed on Robinhood Chain until 0x's signature on the quote
+                                            verifies, its calldata swaps only for this wallet, spends at most 7%
+                                            over the BRAIN's worth at Relay's price and brings at least what join
+                                            needs, and a simulation shows it. It shows the exact spend, which is
+                                            also the worst case, in tokens, USD and percent over that worth, and
+                                            the BRAIN expected, and asks before buying and before bridging; --yes
                                             does both without asking. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]

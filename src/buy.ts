@@ -1,10 +1,11 @@
-// `buy-stake`: a worker that holds ETH or USDG on Robinhood Chain buys exactly the BRAIN join still needs, through 0x.
-// The quote is bought from 0x's keyless gateway for 0.01 USDC on Base, so everything that can stop the buy without a
-// quote is checked before it is paid for. Nothing is signed on Robinhood Chain until 0x's signature on the quote
-// verifies, its calldata does only this swap for this wallet and can take no more than the worst case this command
-// accepts, and a simulation brings the BRAIN.
+// `buy-stake`: a worker that holds ETH or USDG on Robinhood Chain buys at least the BRAIN join still needs, through 0x.
+// It buys 0x's price for that BRAIN, then an exact-in quote that sells a little more than the price says, so the spend
+// is known before anything is signed and the least the swap may bring still covers the need. Each costs 0.01 USDC on
+// Base, so everything that can stop the buy without them is checked before they are paid for. Nothing is signed on
+// Robinhood Chain until 0x's signature on the quote verifies, its calldata does only this swap for this wallet, spends
+// no more than this command accepts and brings at least the BRAIN needed, and a simulation shows it doing so.
 
-import { ALLOWANCE_HOLDER, NATIVE, readSettlers, verifyQuote, type Quote, type Settlers } from "brainchain-verify/zerox";
+import { ALLOWANCE_HOLDER, NATIVE, readSettlers, signedRequestOf, verifyQuote, verifyResponse, type Quote, type Settlers } from "brainchain-verify/zerox";
 import {
   BaseError,
   createPublicClient,
@@ -28,17 +29,22 @@ import { NATIVE as RELAY_NATIVE } from "./relay.js";
 import { PARENT_ETH_KEEP } from "./solana.js";
 import { PROBE_CODE, probeAbi } from "./probe.js";
 import { grouped } from "./standing.js";
-import type { PaidQuote } from "./zerox.js";
+import { printable } from "./work.js";
+import { NotPaid, type PaidQuote } from "./zerox.js";
 
 export type Pay = "eth" | "usdg";
 
 /**
- * The most the swap may take, as a share over the BRAIN's worth at Relay's
- * price. 0x's own ceiling on an exact-out BRAIN quote runs about 10% over it:
- * the market's spread of about 4%, 0x's 0.15% fee, and about 6% of room 0x
- * leaves at the slippage below, of which 4.9% stays at no slippage at all.
+ * The most the sale may spend, as a share over the worth at Relay's price of
+ * the BRAIN join needs. It spends exactly 0x's estimate for that BRAIN, which
+ * has run 3.6% to 4.5% over its worth, plus the room below.
  */
-export const MAX_OVER_WORTH = 0.12;
+export const MAX_OVER_WORTH = 0.07;
+/**
+ * Per mille added to 0x's estimate of the sale the BRAIN needs, so that the
+ * least the sale may bring, the quote less its slippage, still covers it.
+ */
+const ROOM_PER_MILLE = 15n;
 /** 0x's default, asked for by name so the room above holds if the default moves. */
 export const SLIPPAGE_BPS = 100;
 /** Gas for an approval, which a USDG sale needs once. */
@@ -99,7 +105,8 @@ export interface BuyDeps {
   inFlight(): Promise<string | undefined>;
   /** A token's price in USD, by its address as Relay names it. */
   price(token: string): Promise<number>;
-  quote(query: Record<string, string>): Promise<PaidQuote>;
+  /** Buys 0x's price or quote for this query. */
+  quote(query: Record<string, string>, kind: "price" | "quote"): Promise<PaidQuote>;
   /** Hears the swap's hash once it is sent. */
   swapSent?(hash: Hex): void;
   bridge(amount: bigint): Promise<void>;
@@ -142,7 +149,11 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const sell = eth ? { token: NATIVE, relay: RELAY_NATIVE, symbol: "ETH", decimals: 18 } : { token: usdgToken, relay: usdgToken, symbol: network.bountySymbol, decimals: 6 };
   const sells = (amount: bigint, up = false) => `${figure(amount, sell.decimals, up)} ${sell.symbol}`;
   const brains = (amount: bigint) => `${grouped(amount, 18)} ${network.stakeSymbol}`;
-  const quotePrice = `${formatUnits(zerox.payment.price, 6)} USDC`;
+  // What a sale brings is rarely a whole number of BRAIN, so figures drop the fraction, and one still to buy rounds up.
+  const whole = (amount: bigint) => brains(amount - (amount % 10n ** 18n));
+  const wholeUp = (amount: bigint) => whole(amount + 10n ** 18n - 1n);
+  const usdc = (amount: bigint) => `${formatUnits(amount, 6)} USDC`;
+  const each = zerox.payment.price;
   const now = deps.now ?? Date.now;
   const unpaid = (message: string) => new Error(`${message.replace(/\.?$/, ".")} Nothing was paid.`);
 
@@ -158,8 +169,8 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   if (amount === 0n) {
     return log(`The wallet already holds ${brains(onParent)} on ${parent.name}, which covers the ${brains(missing)} join still needs. Move it with ${bridgeCommand(missing)}, then run ${cli("join")}.`);
   }
-  const holds = `${brains(held)} on ${network.name}${onParent > 0n ? ` and ${brains(onParent)} on ${parent.name}` : ""}`;
-  log(`join needs ${brains(need)} on ${network.name}. ${chain.account} holds ${holds}, so this buys ${brains(amount)} with ${sell.symbol} on ${parent.name}, through 0x.`);
+  const holds = `${whole(held)} on ${network.name}${onParent > 0n ? ` and ${whole(onParent)} on ${parent.name}` : ""}`;
+  log(`join needs ${brains(need)} on ${network.name}. ${chain.account} holds ${holds}, so this buys at least ${wholeUp(amount)} with ${sell.symbol} on ${parent.name}, through 0x.`);
 
   const [busy, code, blockTime] = await Promise.all([deps.inFlight(), chain.code(), chain.blockTime()]);
   if (busy) throw unpaid(busy);
@@ -174,10 +185,10 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const paidWith = await chain.paymentBalance().catch((error: unknown) => {
     throw unpaid(`Could not read the wallet's USDC on ${zerox.payment.name} (${reason(error).replace(/\.$/, "")})`);
   });
-  if (paidWith < zerox.payment.price) {
+  if (paidWith < 2n * each) {
     throw unpaid(
-      `buy-stake pays 0x ${quotePrice} on ${zerox.payment.name} for its quote, from the worker's own key, and ${chain.account} holds ${formatUnits(paidWith, 6)} USDC there. ` +
-        `Send that address at least ${quotePrice} on ${zerox.payment.name}`,
+      `buy-stake pays 0x ${usdc(each)} on ${zerox.payment.name} for a price and ${usdc(each)} for a quote, from the worker's own key, and ${chain.account} holds ${formatUnits(paidWith, 6)} USDC there. ` +
+        `Send that address at least ${usdc(2n * each)} on ${zerox.payment.name}`,
     );
   }
   let sellUsd: number;
@@ -185,14 +196,13 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   try {
     [sellUsd, brainUsd] = await Promise.all([deps.price(sell.relay), deps.price(brain)]);
   } catch (error) {
-    throw unpaid(`Could not read prices from Relay, which the worst case is measured against (${reason(error).replace(/\.$/, "")})`);
+    throw unpaid(`Could not read prices from Relay, which the spend is measured against (${reason(error).replace(/\.$/, "")})`);
   }
   const worth = Number(formatUnits(amount, 18)) * brainUsd;
   const ceiling = BigInt(Math.floor(((worth * (1 + MAX_OVER_WORTH)) / sellUsd) * 10 ** sell.decimals));
-  const cost = (spent: bigint) => {
-    const inUsd = Number(formatUnits(spent, sell.decimals)) * sellUsd;
-    return `${sells(spent, true)} (${usd(inUsd)} USD, ${percent(inUsd / worth - 1)} over the BRAIN's worth)`;
-  };
+  const cap = `${Math.round(MAX_OVER_WORTH * 100)}%`;
+  const inUsd = (spent: bigint) => Number(formatUnits(spent, sell.decimals)) * sellUsd;
+  const cost = (spent: bigint) => `${sells(spent, true)} (${usd(inUsd(spent))} USD, ${percent(inUsd(spent) / worth - 1)} over what ${brains(amount)} is worth)`;
 
   const holder = ALLOWANCE_HOLDER[parent.chainId]!;
   let settlers: Settlers;
@@ -212,97 +222,118 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
   const lacks = (most: bigint, gas: bigint) => {
     const keep = (eth ? most : 0n) + gas + PARENT_ETH_KEEP;
     return [
-      ...(!eth && balance < most ? [`${chain.account} holds ${sells(balance)} on ${parent.name}, and the swap may take up to ${sells(most, true)}.`] : []),
+      ...(!eth && balance < most ? [`${chain.account} holds ${sells(balance)} on ${parent.name}, and the sale may take up to ${sells(most, true)}.`] : []),
       ...(ethHeld < keep
         ? [
             `${chain.account} holds ${figure(ethHeld, 18)} ETH on ${parent.name}, and needs about ${figure(keep, 18, true)} ETH: ` +
-              `${eth ? `up to ${sells(most, true)} for the swap, ` : ""}${figure(gas, 18, true)} ETH for gas and ${formatUnits(PARENT_ETH_KEEP, 18)} ETH kept for the bridge's deposit.`,
+              `${eth ? `up to ${sells(most, true)} for the sale, ` : ""}${figure(gas, 18, true)} ETH for gas and ${formatUnits(PARENT_ETH_KEEP, 18)} ETH kept for the bridge's deposit.`,
           ]
         : []),
     ];
   };
   const gasFor = (swapGas: bigint, approves: boolean) => (swapGas + (approves ? APPROVE_GAS : 0n)) * gasPrice;
-  const budget = gasFor(SWAP_GAS, allowance !== undefined && allowance < ceiling);
-  const shortfall = lacks(ceiling, budget);
+  const approvesFor = (spend: bigint) => allowance !== undefined && allowance < spend;
+  const shortfall = lacks(ceiling, gasFor(SWAP_GAS, approvesFor(ceiling)));
   if (!options.dry && shortfall.length > 0) throw new Error(`${shortfall.join("\n")}\nNothing was paid.`);
 
-  log(options.dry ? `Dry run: buys one quote from 0x for ${quotePrice} on ${zerox.payment.name}, and sends nothing else.` : `Buying a quote from 0x for ${quotePrice} on ${zerox.payment.name}...`);
-  const intent = { chainId: parent.chainId, taker: chain.account, sellToken: sell.token, buyToken: brain, buyAmount: amount, maxSellAmount: ceiling, slippageBps: SLIPPAGE_BPS };
-  const paid = await deps.quote({
-    chainId: String(parent.chainId),
-    sellToken: sell.token,
-    buyToken: brain,
-    buyAmount: amount.toString(),
-    taker: chain.account,
-    slippageBps: String(SLIPPAGE_BPS),
-  });
-  if (paid.payment) log(`Paid 0x ${quotePrice} on ${zerox.payment.name}: ${paid.payment}`);
-  const spentQuote = `The quote's ${quotePrice} is spent`;
-  const report = await verifyQuote(paid.response, paid.url, intent, { settlers: () => chain.settlers(), now });
+  log(
+    options.dry
+      ? `Dry run: buys a price and a quote from 0x, ${usdc(each)} each on ${zerox.payment.name}, and sends nothing else.`
+      : `Buying a price and a quote from 0x, ${usdc(each)} each on ${zerox.payment.name}...`,
+  );
+  let paid = 0n;
+  const spentLine = () => `The ${usdc(paid)} paid to 0x is spent`;
+  const query = { chainId: String(parent.chainId), sellToken: sell.token, buyToken: brain, taker: chain.account };
+  const priced = await deps.quote({ ...query, buyAmount: amount.toString() }, "price");
+  paid += each;
+  if (priced.payment) log(`Paid 0x ${usdc(each)} on ${zerox.payment.name} for a price: ${priced.payment}`);
+  const estimate = estimateOf(priced, { sellToken: sell.token, buyToken: brain, buyAmount: amount }, now);
+  if (typeof estimate === "string") throw new Error(`0x's price could not be used: ${estimate.replace(/\.?$/, ".")} ${spentLine()}; nothing else was sent.`);
+  const sellAmount = (estimate * (1000n + ROOM_PER_MILLE) + 999n) / 1000n;
+  if (sellAmount > ceiling) {
+    throw new Error(
+      `0x prices ${brains(amount)} at ${sells(estimate, true)}, so a sale that brings at least that many spends ${cost(sellAmount)}, more than the ${cap} buy-stake accepts, ${sells(ceiling)}. ` +
+        `Try again later, or buy at ripples.run and use ${cli("bridge --stake")}. ${spentLine()}; nothing else was sent.`,
+    );
+  }
+
+  let bought: PaidQuote;
+  try {
+    bought = await deps.quote({ ...query, sellAmount: sellAmount.toString(), slippageBps: String(SLIPPAGE_BPS) }, "quote");
+  } catch (error) {
+    if (error instanceof NotPaid) throw new Error(`${error.message.replace(/ Nothing was paid\.$/, "")} Nothing was paid for the quote; the price's ${usdc(each)} is spent.`);
+    throw new Error(`${reason(error).replace(/\.?$/, ".")} The price bought before it cost ${usdc(each)}.`);
+  }
+  paid += each;
+  if (bought.payment) log(`Paid 0x ${usdc(each)} on ${zerox.payment.name} for a quote: ${bought.payment}`);
+  const intent = { chainId: parent.chainId, taker: chain.account, sellToken: sell.token, buyToken: brain, sellAmount, minBuyAmount: amount, slippageBps: SLIPPAGE_BPS };
+  const report = await verifyQuote(bought.response, bought.url, intent, { settlers: () => chain.settlers(), now });
   const failed = report.checks.find((c) => c.status === "fail");
   if (failed || !report.quote || !report.decoded) {
-    const most = report.quote?.maxSellAmount;
+    const promised = report.decoded?.minAmountOut;
     const why =
       failed?.name === "zerox-key"
-        ? `0x signed it with key ${report.signature.keyid}, which this release does not carry. Update with npx brainchain-worker@latest`
-        : failed?.name === "quote-exec" && most !== undefined && most > ceiling
-          ? `it could take up to ${cost(most)}, and buy-stake accepts at most ${Math.round(MAX_OVER_WORTH * 100)}% over that worth, ${sells(ceiling)}. ` +
-            `Try again later, or buy at ripples.run and use ${cli("bridge --stake")}`
+        ? unknownKey(report.signature.keyid)
+        : failed?.name === "quote-min-out" && promised !== undefined && promised < amount
+          ? `for ${sells(sellAmount, true)} it promises only ${whole(promised)}, under the ${brains(amount)} join needs, so the price moved after 0x gave it. Try again`
           : (failed?.message ?? "it could not be read");
-    throw new Error(`0x's quote was refused before anything was signed: ${why.replace(/\.?$/, ".")} ${spentQuote}; nothing else was sent.`);
+    throw new Error(`0x's quote was refused before anything was signed: ${why.replace(/\.?$/, ".")} ${spentLine()}; nothing else was sent.`);
   }
   const quote: Quote = report.quote;
-  const most = quote.maxSellAmount!;
+  const floor = report.decoded.minAmountOut;
   const swap: Swap = { to: quote.transaction.to, data: quote.transaction.data, value: quote.transaction.value, ...(quote.transaction.gas ? { gas: quote.transaction.gas } : {}) };
-  const approves = allowance !== undefined && allowance < most;
-  const how = { approves, most, wants: amount, eth, quotePrice };
+  const approves = approvesFor(sellAmount);
+  const how = { approves, most: sellAmount, wants: amount, eth, rerun: usdc(2n * each) };
 
-  const simulated = await simulateBuy(chain, swap, sell.token, brain, { ...how, covered: balance >= most });
-  if (typeof simulated === "string") throw new Error(`${simulated}. ${spentQuote}; nothing else was sent.`);
-  const expected = simulated?.spent ?? quote.estimatedNetSellAmount ?? most;
+  const simulated = await simulateBuy(chain, swap, sell.token, brain, { ...how, covered: balance >= sellAmount });
+  if (typeof simulated === "string") throw new Error(`${simulated}. ${spentLine()}; nothing else was sent.`);
+  const expected = simulated?.gained ?? quote.buyAmount;
+  const extra = expected > amount ? expected - amount : 0n;
+  const perBrain = inUsd(sellAmount) / (Number(formatUnits(expected, 18)) * brainUsd) - 1;
   const gas = gasFor(swap.gas ?? SWAP_GAS, approves);
-  const fee = feeOf(paid.response.body, sell.token);
+  const fee = feeOf(bought.response.body, sell.token);
   const signedAgo = report.signature.created === undefined ? "" : `, signed ${Math.max(0, Math.round(now() / 1000) - report.signature.created)} seconds ago`;
   log(
     [
-      `0x quotes ${brains(amount)} for an expected ${cost(expected)}${simulated ? "" : " as 0x estimates it"}, and at worst ${cost(most)}. What the swap does not use comes back in the same transaction.`,
-      `  At Relay's price of ${brainUsd.toPrecision(3)} USD, ${brains(amount)} is worth ${usd(worth)} USD, and buy-stake accepts a worst case of up to ${Math.round(MAX_OVER_WORTH * 100)}% over that, ${sells(ceiling)}.` +
+      `0x quotes ${whole(quote.buyAmount)} for exactly ${cost(sellAmount)}. The sale spends that and no more, so it is also the worst case; the swap reverts below ${whole(floor)}, and join needs ${brains(amount)}.`,
+      `  For the ${whole(expected)} expected${simulated ? " in the simulation" : ""}, that is ${percent(perBrain)} over Relay's price for each; the ${whole(extra)} beyond what join needs stay in the wallet on ${parent.name}.`,
+      `  At Relay's price of ${brainUsd.toPrecision(3)} USD, ${brains(amount)} is worth ${usd(worth)} USD, and buy-stake spends at most ${cap} over that, ${sells(ceiling)}.` +
         (fee === undefined ? "" : ` 0x's fee of ${sells(fee, true)} is included.`),
-      `  Checked: 0x's signature (key ${report.signature.keyid}${signedAgo}); the transaction calls 0x's AllowanceHolder ${short(holder)}, which lets Settler ${short(report.decoded.settler)}, the one 0x's registry names, take at most ${sells(most, true)}; it pays the BRAIN to ${short(chain.account)} and reverts below ${brains(amount)}.`,
+      `  Checked: 0x's signature (key ${report.signature.keyid}${signedAgo}); the transaction calls 0x's AllowanceHolder ${short(holder)}, which lets Settler ${short(report.decoded.settler)}, the one 0x's registry names, take exactly ${sells(sellAmount, true)}; it pays the BRAIN to ${short(chain.account)} and reverts below ${whole(floor)}.`,
       simulated
-        ? `  Simulated on ${parent.name}${simulated.lent ? `, as if the wallet held the ${sell.symbol}` : ""}: it takes ${sells(simulated.spent)} and brings ${brains(simulated.gained)}.`
-        : `  Not simulated: the wallet holds ${sells(balance)} of the ${sells(most, true)} the swap may take.`,
-      `  Gas on ${parent.name}: about ${figure(gas, 18, true)} ETH for ${approves ? `an approval of ${sells(most, true)} to AllowanceHolder and the swap` : "the swap"}.`,
+        ? `  Simulated on ${parent.name}${simulated.lent ? `, as if the wallet held the ${sell.symbol}` : ""}: it takes ${sells(simulated.spent)} and brings ${whole(simulated.gained)}.`
+        : `  Not simulated: the wallet holds ${sells(balance)} of the ${sells(sellAmount, true)} the sale takes.`,
+      `  Gas on ${parent.name}: about ${figure(gas, 18, true)} ETH for ${approves ? `an approval of ${sells(sellAmount, true)} to AllowanceHolder and the swap` : "the swap"}.`,
     ].join("\n"),
   );
   if (options.dry) {
-    // Held to the same worst case a real run holds the wallet to before it pays, so the two agree.
-    const lacking = lacks(ceiling, gasFor(swap.gas ?? SWAP_GAS, allowance !== undefined && allowance < ceiling));
-    const done = `Dry run: ${quotePrice} paid for the quote, nothing else sent.`;
+    // Held to the most a real run holds the wallet to before it pays, so the two agree.
+    const lacking = lacks(ceiling, gasFor(swap.gas ?? SWAP_GAS, approvesFor(ceiling)));
+    const done = `Dry run: ${usdc(paid)} paid for a price and a quote, nothing else sent.`;
     if (lacking.length > 0) throw new Error([...lacking, done].join("\n"));
     return log(done);
   }
-  const lacking = lacks(most, gas);
-  if (lacking.length > 0) throw new Error(`${lacking.join("\n")}\n${spentQuote}; nothing else was sent.`);
+  const lacking = lacks(sellAmount, gas);
+  if (lacking.length > 0) throw new Error(`${lacking.join("\n")}\n${spentLine()}; nothing else was sent.`);
   if (!options.yes) {
-    const question = `Buy ${brains(amount)} for an expected ${cost(expected)}, at worst ${cost(most)}? [y/N] `;
-    if (!yes(await options.ask!(question))) return log(`Nothing sent. ${spentQuote}.`);
+    const question = `Buy about ${whole(expected)}, at least ${whole(floor)}, for exactly ${cost(sellAmount)}? [y/N] `;
+    if (!yes(await options.ask!(question))) return log(`Nothing sent. ${spentLine()}.`);
   }
 
   // Again on the latest block, before the approval: a quote that expired or a price that moved while the person
   // answered then costs nothing more.
   const again = await simulateBuy(chain, swap, sell.token, brain, { ...how, covered: true });
-  if (typeof again === "string" || again === undefined) throw new Error(`${again ?? "The swap could not be simulated"}. Nothing was sent. ${spentQuote}.`);
+  if (typeof again === "string" || again === undefined) throw new Error(`${again ?? "The swap could not be simulated"}. Nothing was sent. ${spentLine()}.`);
   if (approves) {
-    log(`Approving ${sells(most, true)} for 0x's AllowanceHolder...`);
+    log(`Approving ${sells(sellAmount, true)} for 0x's AllowanceHolder...`);
     try {
-      await chain.approve(sell.token, holder, most);
+      await chain.approve(sell.token, holder, sellAmount);
     } catch (error) {
-      throw new Error(`The approval did not go through (${reason(error).replace(/\.$/, "")}). Nothing was bought. ${spentQuote}.`);
+      throw new Error(`The approval did not go through (${reason(error).replace(/\.$/, "")}). Nothing was bought. ${spentLine()}.`);
     }
   }
-  const left = approves ? ` The approval of ${sells(most, true)} to AllowanceHolder stays, and only this wallet's own transactions can use it.` : "";
-  log(`Buying ${brains(amount)}...`);
+  const left = approves ? ` The approval of ${sells(sellAmount, true)} to AllowanceHolder stays, and only this wallet's own transactions can use it.` : "";
+  log(`Buying at least ${brains(amount)}...`);
   const before = await chain.balance(brain);
   let tx: Hex;
   try {
@@ -313,7 +344,8 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
     throw new Error(`The swap could not be sent (${reason(error).replace(/\.$/, "")}), so nothing was bought.${left}`);
   }
   const after = await chain.balance(brain);
-  log(`Bought ${brains(after > before ? after - before : 0n)} on ${parent.name}: ${tx}`);
+  const got = after > before ? after - before : 0n;
+  log(`Bought ${whole(got)} on ${parent.name}: ${tx}${got > amount ? `. The ${whole(got - amount)} beyond what join needs stay in the wallet there.` : ""}`);
 
   const total = fromParent + amount;
   const move = bridgeCommand(total);
@@ -327,6 +359,41 @@ export async function buyStake(network: Network, deps: BuyDeps, options: BuyOpti
     throw new Error(`${reason(error).replace(/\.?$/, ".")} The BRAIN is on ${parent.name}; ${move} moves it.`);
   }
   log(`Once it arrives, ${cli("join")} stakes it.`);
+}
+
+const unknownKey = (keyid: string | undefined) => `0x signed it with key ${keyid}, which this release does not carry. Update with npx brainchain-worker@latest`;
+
+/**
+ * 0x's estimate of the sale that brings `buyAmount`, from a signed exact-out
+ * price, or why it cannot be used. It only sizes the quote bought next, which
+ * is then checked in full.
+ */
+function estimateOf(paid: PaidQuote, wants: { sellToken: Address; buyToken: Address; buyAmount: bigint }, now: () => number): bigint | string {
+  const signature = verifyResponse(paid.response, signedRequestOf(paid.url), { now });
+  const failed = signature.checks.find((c) => c.status === "fail");
+  if (failed) return failed.name === "zerox-key" ? unknownKey(signature.keyid) : failed.message;
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(Buffer.from(paid.response.body).toString("utf8")) as Record<string, unknown>;
+  } catch {
+    return "the body 0x signed is not JSON";
+  }
+  if (paid.response.status !== 200) {
+    const said = [body.name, body.message].filter((part): part is string => typeof part === "string").map((part) => printable(part).slice(0, 200));
+    return `0x answered ${paid.response.status}${said.length > 0 ? ` ${said.join(": ")}` : ""}`;
+  }
+  if (body.liquidityAvailable === false) return "0x has no route for this trade right now";
+  const net = body.estimatedNetSellAmount;
+  const fits =
+    body.mode === "exact-out" &&
+    typeof body.sellToken === "string" &&
+    same(body.sellToken, wants.sellToken) &&
+    typeof body.buyToken === "string" &&
+    same(body.buyToken, wants.buyToken) &&
+    body.buyAmount === wants.buyAmount.toString() &&
+    typeof net === "string" &&
+    /^[1-9]\d{0,77}$/.test(net);
+  return fits ? BigInt(net as string) : "it is not an exact-out price for this trade";
 }
 
 /** 0x's own fee in the token sold, as the signed body states it. */
@@ -356,7 +423,7 @@ async function simulateBuy(
   swap: Swap,
   sold: Address,
   bought: Address,
-  how: { approves: boolean; most: bigint; wants: bigint; covered: boolean; eth: boolean; quotePrice: string },
+  how: { approves: boolean; most: bigint; wants: bigint; covered: boolean; eth: boolean; rerun: string },
 ): Promise<{ spent: bigint; gained: bigint; lent: boolean } | string | undefined> {
   if (!how.covered && !how.eth) return undefined;
   const lend = !how.covered ? swap.value + LENT : undefined;
@@ -366,7 +433,7 @@ async function simulateBuy(
     if (result.gained < how.wants) return `The swap brings ${result.gained} when simulated, less than the ${how.wants} asked for`;
     return { ...result, lent: lend !== undefined };
   } catch (error) {
-    if (expired(error)) return `The quote expired before it was sent: run buy-stake again (a new quote costs ${how.quotePrice})`;
+    if (expired(error)) return `The quote expired before it was sent: run buy-stake again (a new price and quote cost ${how.rerun})`;
     return `0x's transaction fails when simulated on Robinhood Chain: ${reason(error).replace(/\.$/, "")}`;
   }
 }
