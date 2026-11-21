@@ -466,7 +466,7 @@ export function createBuyChain(network: Network, account: PrivateKeyAccount, rec
     code: () => read.getCode({ address: self }),
     blockTime: async () => (await read.getBlock()).timestamp,
     paymentBalance: () => payment.readContract({ address: zerox.payment.usdc, abi: erc20Abi, functionName: "balanceOf", args: [self] }),
-    settlers: () => readSettlers(read),
+    settlers: () => readSettlers(read, bridge.chainId),
     async simulate(swap, sold, gotten, options = {}) {
       const { data } = await read.call({
         // From the wallet, as the swap is sent, and within the swap's own gas, so a route that runs short fails here.
