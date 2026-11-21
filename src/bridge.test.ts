@@ -5,12 +5,15 @@ import { decodeAbiParameters, decodeFunctionData, encodeAbiParameters, parseAbi,
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
-import { bridge, createBridgeChain, DepositSent, stakeInFlight, stakeProblem, unarrived, type Asset, type BridgeChain, type StakeDeposit } from "./bridge.js";
+import { bridge, createBridgeChain, DepositSent, stakeInFlight, stakeProblem, unarrived, type ActiveSet, type Asset, type BridgeChain, type StakeDeposit } from "./bridge.js";
 import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
 const TX: Hex = `0x${"fe".repeat(32)}`;
+const { taskBoard, staking, bonds, executor, registry, log } = MAINNET.contracts;
+/** The active set as BrainChain's service names it once set 3.6.0 is active: this release's pins. */
+const PINNED: ActiveSet = { contracts: { TaskBoard: taskBoard, WorkerStaking: staking, ProposalBonds: bonds, DecisionExecutor: executor, ModelRegistry: registry, DecisionLog: log } };
 
 function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cost?: bigint; staked?: Address } = {}) {
   const sent: string[] = [];
@@ -30,6 +33,7 @@ function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cos
       return TX;
     }),
     stakeTokens: vi.fn(async () => ({ bridged: MAINNET.contracts.stakeToken, staked: options.staked ?? MAINNET.contracts.stakeToken })),
+    activeSet: vi.fn(async () => PINNED),
     stakeDeposits: vi.fn(async () => ({ sent: [], arrived: [] })),
     transactionState: vi.fn(async () => "mined" as const),
   };
@@ -269,6 +273,59 @@ describe("the stake token", () => {
       parent.close();
       child.close();
     }
+  });
+});
+
+describe("the release BrainChain names active", () => {
+  const OTHER: Address = "0x00000000000000000000000000000000000000B2";
+
+  it("refuses a release BrainChain has moved past, and says to update", async () => {
+    const { chain, sent } = fakeChain();
+    chain.activeSet = vi.fn(async () => ({ contracts: { ...PINNED.contracts, TaskBoard: OTHER, WorkerStaking: OTHER } }));
+    await expect(run(chain, "stake", "1000")).rejects.toThrow(
+      `BrainChain names ${OTHER} as the active TaskBoard, and this release of brainchain-worker pins ${taskBoard}, so it is for an earlier set. Update with npx brainchain-worker@latest. Nothing was sent.`,
+    );
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses while BrainChain still names the set before this release's", async () => {
+    const { chain, sent } = fakeChain();
+    const previous = MAINNET.retired![0]!;
+    chain.activeSet = vi.fn(async () => ({ contracts: { ...PINNED.contracts, TaskBoard: previous.taskBoard, WorkerStaking: previous.staking } }));
+    expect(await stakeProblem(MAINNET, chain)).toBe(
+      "BrainChain still names set 3.5.0 active, and this release of brainchain-worker stakes on the set after it, which is not active yet. Run it again once BrainChain has switched",
+    );
+    await expect(run(chain, "stake", "1000")).rejects.toThrow(/Nothing was sent\.$/);
+    expect(sent).toEqual([]);
+  });
+
+  it("says so when the service cannot be read, and holds the token to the chain alone", async () => {
+    const { chain, sent } = fakeChain();
+    chain.activeSet = vi.fn(async () => Promise.reject(new Error("https://brain.usebrainchain.com/network.json answered 503")));
+    const lines = await run(chain, "stake", "1000");
+    expect(lines[0]).toBe(
+      "Could not read the set BrainChain names active (https://brain.usebrainchain.com/network.json answered 503), so this release was not confirmed current; the stake token is checked on chain instead.",
+    );
+    expect(sent).toHaveLength(1);
+    const old = fakeChain({ staked: "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37" });
+    old.chain.activeSet = chain.activeSet;
+    await expect(run(old.chain, "stake", "1000")).rejects.toThrow(/the staking contract takes 0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37/);
+    expect(old.sent).toEqual([]);
+  });
+
+  it("reads the active set from the service's network.json, for this chain only", async () => {
+    const manifest = (chainId: number) => ({ manifest: { chainId, activeSet: { fromBlock: 2787, contracts: { ...PINNED.contracts, Extra: 7 } } }, signed: "", signature: "0x" });
+    const asked: string[] = [];
+    const fetcher = (body: unknown, status = 200) =>
+      vi.fn(async (url: string | URL | Request) => {
+        asked.push(String(url));
+        return new Response(JSON.stringify(body), { status });
+      }) as unknown as typeof fetch;
+    const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
+    expect(await createBridgeChain(MAINNET, account, 50, fetcher(manifest(MAINNET.chainId))).activeSet()).toEqual(PINNED);
+    expect(asked).toEqual(["https://brain.usebrainchain.com/network.json"]);
+    await expect(createBridgeChain(MAINNET, account, 50, fetcher(manifest(TESTNET.chainId))).activeSet()).rejects.toThrow("https://brain.usebrainchain.com/network.json names no active set for BrainChain");
+    await expect(createBridgeChain(MAINNET, account, 50, fetcher({}, 502)).activeSet()).rejects.toThrow("answered 502");
   });
 });
 

@@ -46,6 +46,7 @@ const stakingTokenAbi = parseAbi(["function token() view returns (address)"]);
 
 /** About a day of Robinhood Chain blocks, which the gateway's own logs are read over with one request. */
 const DEPOSIT_WINDOW_BLOCKS = 750_000n;
+const MANIFEST_MS = 10_000;
 
 /** A deposit that was sent and not confirmed: it can still land, so what it carries may be on its way to BrainChain. */
 export class DepositSent extends Error {}
@@ -55,6 +56,11 @@ export interface StakeDeposit {
   tx: Hex;
   amount: bigint;
   at: number;
+}
+
+/** The contracts BrainChain's service names as the active set, by their contract names. */
+export interface ActiveSet {
+  contracts: Record<string, string>;
 }
 
 /** What a deposit needs from the parent chain. */
@@ -72,13 +78,15 @@ export interface BridgeChain {
   depositToken(asset: Exclude<Asset, "eth">, amount: bigint, value: bigint, sent?: (hash: Hex) => void): Promise<Hex>;
   /** What the parent chain's stake token becomes on BrainChain, and what the staking contract takes there. */
   stakeTokens(): Promise<{ bridged: Address; staked: Address }>;
+  /** The active set in the service's /network.json; throws when it cannot be read. */
+  activeSet(): Promise<ActiveSet>;
   /** Stake-token deposits this wallet sent itself in about the last day, and every one that arrived on BrainChain. */
   stakeDeposits(): Promise<{ sent: StakeDeposit[]; arrived: StakeDeposit[] }>;
   /** Where a transaction sent from this wallet is: in a block, waiting to be mined, or unknown to the RPC. */
   transactionState(hash: Hex): Promise<"mined" | "pending" | "unknown">;
 }
 
-export function createBridgeChain(network: Network, account: PrivateKeyAccount, receiptMs = RECEIPT_MS): BridgeChain {
+export function createBridgeChain(network: Network, account: PrivateKeyAccount, receiptMs = RECEIPT_MS, fetchImpl: typeof fetch = fetch): BridgeChain {
   const bridge = network.bridge;
   if (!bridge) throw new Error(`${network.name} has no bridge from a parent chain`);
   const parent = parentChainOf(bridge);
@@ -116,6 +124,15 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
         child.readContract({ address: network.contracts.staking, abi: stakingTokenAbi, functionName: "token" }),
       ]);
       return { bridged, staked };
+    },
+    async activeSet() {
+      const url = `${network.service}/network.json`;
+      const response = await fetchImpl(url, { signal: AbortSignal.timeout(MANIFEST_MS) });
+      if (!response.ok) throw new Error(`${url} answered ${response.status}`);
+      const body = (await response.json().catch(() => undefined)) as { manifest?: { chainId?: unknown; activeSet?: { contracts?: unknown } } } | undefined;
+      const contracts = body?.manifest?.activeSet?.contracts;
+      if (body?.manifest?.chainId !== network.chainId || typeof contracts !== "object" || contracts === null) throw new Error(`${url} names no active set for ${network.name}`);
+      return { contracts: Object.fromEntries(Object.entries(contracts).filter((entry): entry is [string, string] => typeof entry[1] === "string")) };
     },
     async stakeDeposits() {
       const stake = token("stake");
@@ -188,26 +205,55 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
 }
 
 /**
- * What is wrong with this release's stake token, or undefined when the token
- * it names on the parent chain bridges to the one the staking contract takes.
- * A token that moves to new contracts, as $BRAIN did on 17 November 2026,
- * leaves a release that names the old one buying and bridging what nothing
- * stakes.
+ * What stops this release from moving the stake token, or undefined. Its pins
+ * must be the contracts BrainChain's service names active, so a release left
+ * behind by a new set stops before it buys or bridges a token nothing stakes,
+ * as one naming the $BRAIN from before the move of 17 November 2026 would.
+ * When the service cannot be read, `warn` says so and the token is held to
+ * the chain alone: the parent chain's token must bridge to the one the
+ * staking contract takes.
  */
-export async function stakeProblem(network: Network, chain: Pick<BridgeChain, "stakeTokens">): Promise<string | undefined> {
+export async function stakeProblem(network: Network, chain: Pick<BridgeChain, "stakeTokens" | "activeSet">, warn: (line: string) => void = () => {}): Promise<string | undefined> {
   const parent = network.bridge?.tokens?.stake;
   if (!parent) return `${network.name}'s stake token is not bridged from a parent chain`;
-  let tokens: { bridged: Address; staked: Address };
-  try {
-    tokens = await chain.stakeTokens();
-  } catch (error) {
-    return `Could not read which token the staking contract takes (${reason(error).replace(/\.$/, "")}), so the stake token was not checked`;
+  const [active, read] = await Promise.allSettled([chain.activeSet(), chain.stakeTokens()]);
+  if (active.status === "fulfilled") {
+    const stale = releaseProblem(network, active.value);
+    if (stale) return stale;
+  } else {
+    warn(`Could not read the set BrainChain names active (${reason(active.reason).replace(/\.$/, "")}), so this release was not confirmed current; the stake token is checked on chain instead.`);
   }
+  if (read.status === "rejected") return `Could not read which token the staking contract takes (${reason(read.reason).replace(/\.$/, "")}), so the stake token was not checked`;
+  const tokens = read.value;
   const { stakeToken } = network.contracts;
   if (same(tokens.bridged, stakeToken) && same(tokens.staked, stakeToken)) return undefined;
   return (
     `This release of brainchain-worker names ${parent} as ${network.stakeSymbol} on ${network.bridge!.name}, which the bridge turns into ${tokens.bridged} on ${network.name}, ` +
     `and the staking contract takes ${tokens.staked}. Buying or bridging it would bring a token nothing stakes. Update with npx brainchain-worker@latest`
+  );
+}
+
+function releaseProblem(network: Network, active: ActiveSet): string | undefined {
+  const { taskBoard, staking, bonds, executor, registry, log } = network.contracts;
+  const pins: [string, Address][] = [
+    ["TaskBoard", taskBoard],
+    ["WorkerStaking", staking],
+    ["ProposalBonds", bonds],
+    ["DecisionExecutor", executor],
+    ["ModelRegistry", registry],
+    ["DecisionLog", log],
+  ];
+  const differ = pins.filter(([name, pinned]) => !same(active.contracts[name] ?? "", pinned));
+  if (differ.length === 0) return undefined;
+  const named = active.contracts.WorkerStaking ?? "";
+  const earlier = network.retired?.find((set) => same(set.staking, named));
+  if (earlier) {
+    return `BrainChain still names set ${earlier.release} active, and this release of brainchain-worker stakes on the set after it, which is not active yet. Run it again once BrainChain has switched`;
+  }
+  const [name, pinned] = differ[0]!;
+  return (
+    `BrainChain names ${active.contracts[name] ?? "no contract"} as the active ${name}, and this release of brainchain-worker pins ${pinned}, so it is for an earlier set. ` +
+    "Update with npx brainchain-worker@latest"
   );
 }
 
@@ -341,7 +387,7 @@ export async function bridge(
   }
 
   if (asset === "stake") {
-    const problem = await stakeProblem(network, chain);
+    const problem = await stakeProblem(network, chain, log);
     if (problem) throw new Error(`${problem}. Nothing was sent.`);
   }
   const [held, value] = await Promise.all([chain.tokenBalance(asset), chain.arrivalCost(asset, amount)]);

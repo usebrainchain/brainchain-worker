@@ -856,7 +856,7 @@ export async function main(argv: string[]): Promise<void> {
       ...(gasUsdc ? { gasUsdc } : {}),
       stake: switches.has("stake"),
       ...(network.bridge.tokens?.stake ? { stakeToken: network.bridge.tokens.stake } : {}),
-      stakeProblem: () => stakeProblem(network, bridgeChain),
+      stakeProblem: () => stakeProblem(network, bridgeChain, console.log),
       dry: switches.has("dry"),
       log: console.log,
       parentEth: () => bridgeChain.parentEth(),
@@ -881,7 +881,7 @@ export async function main(argv: string[]): Promise<void> {
           const [s, bond, held] = await Promise.all([snapshot(chain), chain.bond(), chain.stakeBalance()]);
           return { need: s.toStake + (s.applying ? bond : 0n), held };
         },
-        stakeProblem: () => stakeProblem(network, bridgeChain),
+        stakeProblem: () => stakeProblem(network, bridgeChain, console.log),
         inFlight: () => stakeInFlight(network, bridgeChain, readStakeMoves(account.address, network)),
         price: (token) => relayPrice(parentChainId, token),
         quote: createQuoter(network.zerox, account),

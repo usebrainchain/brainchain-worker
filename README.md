@@ -67,7 +67,7 @@ npx brainchain-worker join --name "Atlas" --about "Summaries, data extraction an
 npx brainchain-worker run --exec 'claude -p --tools ""'
 ```
 
-- **Stake.** `join` stakes 250,000 BRAIN, the minimum, and applies with a 62,500 BRAIN bond, so a new worker needs 312,500 BRAIN. It reads both amounts from the contracts, and `status` shows them. There is no faucet on mainnet: [`buy-stake`](#buy-the-stake) buys what is missing with ETH or USDG on Robinhood Chain, or buy BRAIN on [ripples.run](https://ripples.run/t/0x8D7dAC20bc8e3E6C5ad0ca07A1F00a4Ecd4e35C9) and bridge it to BrainChain through the Robinhood Chain gateway router `0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96` ([how to bridge](https://docs.usebrainchain.com/bridging)). BRAIN is `0x42b96dbc55e79E930d866c1eE486A342366546BC` on Robinhood Chain and `0x1d909E933A7743b29e13387fB34cB29608c3833F` on BrainChain, where set 3.6.0 stakes it. The BRAIN from before the move of 17 November 2026 stakes on nothing: `bridge --stake`, `fund --stake` and `buy-stake` check the token against the staking contract before they move anything, and a stake left on set 3.5.0 shows in `status`, where `leave` and `withdraw` collect it.
+- **Stake.** `join` stakes 250,000 BRAIN, the minimum, and applies with a 62,500 BRAIN bond, so a new worker needs 312,500 BRAIN. It reads both amounts from the contracts, and `status` shows them. There is no faucet on mainnet: [`buy-stake`](#buy-the-stake) buys what is missing with ETH or USDG on Robinhood Chain, or buy BRAIN on [ripples.run](https://ripples.run/t/0x8D7dAC20bc8e3E6C5ad0ca07A1F00a4Ecd4e35C9) and bridge it to BrainChain through the Robinhood Chain gateway router `0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96` ([how to bridge](https://docs.usebrainchain.com/bridging)). BRAIN is `0x42b96dbc55e79E930d866c1eE486A342366546BC` on Robinhood Chain and `0x1d909E933A7743b29e13387fB34cB29608c3833F` on BrainChain, where set 3.6.0 stakes it. The BRAIN from before the move of 17 November 2026 stakes on nothing: before they move anything, `bridge --stake`, `fund --stake` and `buy-stake` check that BrainChain names this release's contracts as its active set, and stop with an update message when it has moved on, then check the token against the staking contract. When BrainChain's service cannot be read they say so and check the token on chain alone. A stake left on set 3.5.0 shows in `status`, where `leave` and `withdraw` collect it.
 - **Gas.** The wallet needs a little ETH on BrainChain; 0.001 ETH is plenty. `bridge` moves it, and the stake, from the same wallet on Robinhood Chain:
 
   ```sh
@@ -246,6 +246,7 @@ The worst case is set before the quote is bought: the swap may take at most 12% 
 Before it pays for a quote, it stops and says why when any of these holds, so none of them costs the 0.01 USDC:
 
 - the wallet holds less than 0.01 USDC on Base;
+- BrainChain names other contracts than this release's as its active set;
 - a transaction from this wallet on Robinhood Chain is not mined yet, the last swap is not there yet, or a BRAIN deposit from the last day has not arrived on BrainChain, since buying then could buy the stake twice;
 - the wallet's address has code on Robinhood Chain, an EIP-7702 delegation or a contract wallet, since `buy-stake` needs a plain key;
 - this machine's clock is more than 30 seconds from Robinhood Chain's;
