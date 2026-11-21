@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline/promises";
 import { verifyDecision } from "brainchain-verify";
+import { fetchZeroxKeys } from "brainchain-verify/zerox";
 import { createPublicClient } from "viem";
 
 import { formatEther, formatUnits, parseUnits, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
@@ -9,12 +10,14 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
 import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
 import { assetOf, bridge, createBridgeChain, stakeProblem, type Asset } from "./bridge.js";
+import { buyStake, createBuyChain, type Pay } from "./buy.js";
 import { checkToSolana, createExitChain, exit as exitToParent } from "./exit.js";
 import { createSolanaFunding, fundFromSolana, solanaKeypair } from "./solana.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, rpcTransport, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
+import { relayPrice } from "./relay.js";
 import { deliveries, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
 import { openStore, privateDir, readWatched, stateDir, writeWatched } from "./state.js";
 import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
@@ -23,6 +26,7 @@ import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { CLI, cli } from "./invoked.js";
 import { createWork, execProblems, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
+import { createQuoter } from "./zerox.js";
 
 /** How many of the latest decisions a first watch --once checks. */
 const FIRST_RUN_DECISIONS = 10n;
@@ -134,6 +138,16 @@ const COMMAND_USAGE: Record<string, string> = {
                                             with BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE, one or the
                                             other; the wallet needs about 0.002 SOL for fees. --dry quotes the
                                             move, then says what the wallet lacks, and sends nothing. Mainnet.`,
+  "buy-stake": `  brainchain-worker buy-stake [--with eth|usdg] [--dry] [--yes]
+                                            Buy the BRAIN join still needs, with ETH (the default) or USDG on
+                                            Robinhood Chain, through 0x, then offer to bridge it to BrainChain.
+                                            0x's quote costs 0.01 USDC, paid from the worker's key on Base, and
+                                            --dry buys one too: it shows the quote and sends nothing else.
+                                            Nothing is signed on Robinhood Chain until 0x's signature on the
+                                            quote verifies, its calldata swaps only for this wallet, a simulation
+                                            brings the BRAIN, and the swap costs at most 5% over BRAIN's price on
+                                            Relay (or 0.50 USD on a small buy). Asks before buying and before
+                                            bridging; --yes does both without asking. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]
                                             Bond the stake token and propose a change to BrainChain for Jev to
@@ -190,6 +204,7 @@ const EXAMPLES: Record<string, string> = {
   bridge: "BRAINCHAIN_NETWORK=mainnet brainchain-worker bridge --bounty 5 --dry",
   exit: "brainchain-worker exit --amount 5 --dry",
   fund: "BRAINCHAIN_NETWORK=mainnet brainchain-worker fund --from-solana --usdc 120 --stake --dry",
+  "buy-stake": "BRAINCHAIN_NETWORK=mainnet brainchain-worker buy-stake --with usdg --dry",
   propose: `BRAINCHAIN_NETWORK=mainnet brainchain-worker propose --target board --call setPaused --args '[true]' --title "Pause new posts" --rationale "Why the change is better" --dry`,
   proposal: "brainchain-worker proposal 2",
   watch: "brainchain-worker watch --once",
@@ -249,6 +264,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   bridge: { eth: false, stake: false, bounty: false, dry: true },
   exit: { amount: false, "to-solana": false, dry: true },
   fund: { "from-solana": true, usdc: false, stake: true, "gas-usdc": false, dry: true },
+  "buy-stake": { with: false, dry: true, yes: true },
   watch: { veto: true, once: true },
   credit: { "agent-id": false, premium: false },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true, yes: true },
@@ -829,6 +845,31 @@ export async function main(argv: string[]): Promise<void> {
       parentStake: () => bridgeChain.tokenBalance("stake"),
       bridgeOn: (asset, amount) => bridge(network, bridgeChain, { asset, amount: formatUnits(amount, assetOf(network, asset).decimals), dry: false, log: console.log }),
     });
+  }
+  if (command === "buy-stake") {
+    const pay = values.get("with") ?? "eth";
+    if (pay !== "eth" && pay !== "usdg") throw new UsageError(`--with is eth or usdg, what buy-stake sells for the BRAIN, not "${pay}"`);
+    if (!network.zerox || !network.bridge) throw new UsageError(`buy-stake works on mainnet only, where BRAIN trades on Robinhood Chain; on ${network.name}, join claims the ${network.stakeSymbol} from the faucet`);
+    const { account } = signer();
+    const chain = createChain(network, account);
+    const bridgeChain = createBridgeChain(network, account);
+    const parentChainId = network.bridge.chainId;
+    return buyStake(
+      network,
+      {
+        chain: createBuyChain(network, account),
+        async needs() {
+          const [s, bond, held] = await Promise.all([snapshot(chain), chain.bond(), chain.stakeBalance()]);
+          return { need: s.toStake + (s.applying ? bond : 0n), held };
+        },
+        stakeProblem: () => stakeProblem(network, bridgeChain),
+        price: (token) => relayPrice(parentChainId, token),
+        quote: createQuoter(network.zerox, account),
+        keys: () => fetchZeroxKeys(),
+        bridge: (amount) => bridge(network, bridgeChain, { asset: "stake", amount: formatUnits(amount, 18), dry: false, log: console.log }),
+      },
+      { pay: pay as Pay, dry: switches.has("dry"), yes: switches.has("yes"), ...terminal(), log: console.log },
+    );
   }
   if (command === "credit") {
     if (!network.priors) throw new UsageError(`credit works on mainnet only, where Priors' credit pool runs; ${network.name} has none`);

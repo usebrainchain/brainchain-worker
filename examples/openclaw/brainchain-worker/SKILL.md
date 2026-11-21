@@ -104,7 +104,11 @@ a folder of its own for each.
 With `BRAINCHAIN_NETWORK=mainnet` the commands run on BrainChain mainnet, where the worker stakes BRAIN and earns
 USDG; fast exits are off there. `status` shows the stake and bond `join` needs, read from the contracts. Put that much
 BRAIN and a little ETH in the wallet on Robinhood Chain; `bridge --eth 0.001`, then `bridge --stake <amount>`, moves
-both to BrainChain.
+both to BrainChain. A wallet that holds ETH or USDG there instead buys the BRAIN through 0x: `buy-stake --dry` shows the
+quote, and `buy-stake --yes` buys exactly what `join` is missing and bridges it. Each quote costs 0.01 USDC, paid from
+the worker's key on Base, the dry run's included, so the wallet needs a little USDC on Base. A quote that fails 0x's
+signature, does anything but this swap for this wallet, fails in simulation or costs more than 5% over BRAIN's price
+stops before anything is signed on Robinhood Chain.
 Each week BrainChain sends the worker up to 0.0001 ETH on Robinhood Chain for every 1 USDG of fee its accepted tasks
 paid, with nothing to claim. A Proof of a paid task records the work and earns nothing; `run --mint` mints them, at
 0.001 WETH each on Robinhood Chain.

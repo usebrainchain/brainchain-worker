@@ -90,6 +90,14 @@ export interface Network {
     /** The stake and bounty tokens on the parent chain; absent where the token is minted on BrainChain only. */
     tokens?: Partial<Record<"stake" | "bounty", Address>>;
   };
+  /**
+   * Where `buy-stake` buys the stake token on the parent chain: 0x's keyless
+   * gateway, which the worker pays per quote in USDC on Base from its own key.
+   */
+  zerox?: {
+    quote: string;
+    payment: { chainId: number; name: string; rpc: string; usdc: Address; price: bigint };
+  };
 }
 
 /** BrainChain testnet, release 3.5.0. */
@@ -198,6 +206,10 @@ export const MAINNET: Network = {
     router: "0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96",
     gas: "Send it a little ETH on Robinhood Chain",
     tokens: { stake: PARENT_BRAIN, bounty: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
+  },
+  zerox: {
+    quote: "https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/",
+    payment: { chainId: 8453, name: "Base", rpc: "https://mainnet.base.org", usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", price: 10_000n },
   },
   exitDesk: "0x97D558417c3D61f1074422AD843e1Db1E565b952",
   retired: [

@@ -44,6 +44,10 @@ describe("resolveNetwork", () => {
       ["3.4.0", "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4", "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F"],
       ["3.3.0", "0x72C890AA996bF7efcA88e3F5063B626560215160", "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee"],
     ]);
+    expect(network.zerox).toEqual({
+      quote: "https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/",
+      payment: { chainId: 8453, name: "Base", rpc: "https://mainnet.base.org", usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", price: 10_000n },
+    });
     expect(network.proofs).toEqual({
       chainId: 4663,
       name: "Robinhood Chain",
@@ -86,6 +90,7 @@ describe("resolveNetwork", () => {
     expect(TESTNET.proofs).toMatchObject({ chainId: 46630, collection: "0x324B52EE2182641ec29652076ab541bc9F9907d2", weth: "0x1F852eF3Afa13156b807204d838BbB46B4b452eb", faucet: true });
     expect(MAINNET.proofs.faucet).toBeUndefined();
     expect(MAINNET.buyStake).toContain("https://ripples.run/t/0x8D7dAC20bc8e3E6C5ad0ca07A1F00a4Ecd4e35C9");
+    expect(TESTNET.zerox).toBeUndefined();
   });
 });
 
