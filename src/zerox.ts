@@ -68,7 +68,9 @@ export function createQuoter(zerox: NonNullable<Network["zerox"]>, account: Loca
       throw new NotPaid(`Could not buy a quote from 0x's gateway: ${reason(error).replace(/\.$/, "")}. Nothing was paid.`);
     }
     if (response.status === 402) throw new NotPaid(`0x's gateway refused the payment (402). Nothing was paid; check the wallet's USDC on ${payment.name}.`);
-    const body = await capped(response);
+    const body = await capped(response).catch((error: unknown) => {
+      throw new Error(`0x's gateway was paid ${usdc(payment.price)} and its answer could not be read (${reason(error).replace(/\.$/, "")}). Nothing else was sent.`);
+    });
     const receipt = response.headers.get("payment-response");
     let paid: string | undefined;
     try {

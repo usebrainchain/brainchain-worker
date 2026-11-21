@@ -4,17 +4,17 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import type { Settlers } from "brainchain-verify/zerox";
-import { decodeFunctionData, encodeFunctionResult, parseEther, parseUnits, type Address, type Hex } from "viem";
+import { BaseError, decodeFunctionData, encodeFunctionResult, parseEther, parseUnits, toFunctionSelector, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
-import { buyStake, createBuyChain, type BuyChain, type BuyDeps, type BuyOptions } from "./buy.js";
+import { buyStake, createBuyChain, MAX_OVER_WORTH, SwapReverted, SwapSent, type BuyChain, type BuyDeps, type BuyOptions } from "./buy.js";
 import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
 import { PROBE_CODE, probeAbi } from "./probe.js";
 import type { PaidQuote } from "./zerox.js";
 
-// Signed quotes bought through 0x's keyless gateway on 2026-11-21 for a throwaway taker that holds nothing.
+// Signed exact-out quotes from 0x's Swap API on 2026-11-21, with slippageBps=100, for a throwaway taker that holds nothing.
 const recorded = (name: string) => {
   const f = JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), "utf8")) as { url: string; status: number; headers: Record<string, string>; body: string };
   const body = Buffer.from(f.body, "base64");
@@ -31,10 +31,11 @@ const HOLDER: Address = "0x0000000000001fF3684f28c67538d4D072C22734";
 const SETTLERS: Settlers = { current: "0xE8852602f84e04e284286d8Db01a41Edd0CCEFb0", previous: "0x24A4d86c8A76B00EE9566eD9C9Ff4f0c3Faf0da7" };
 const STAKE = 312_500n * 10n ** 18n;
 const TX: Hex = `0x${"ab".repeat(32)}`;
-// Relay's prices on 2026-11-21.
-const PRICES: Record<string, number> = { "0x0000000000000000000000000000000000000000": 1620.674657, [USDG.toLowerCase()]: 0.999919, [BRAIN.toLowerCase()]: 0.000397345866278 };
+const ETH = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+// Relay's prices when the quotes were recorded: 312,500 BRAIN was worth 63.16 USD.
+const PRICES: Record<string, number> = { "0x0000000000000000000000000000000000000000": 1614.984115, [USDG.toLowerCase()]: 0.999816, [BRAIN.toLowerCase()]: 0.0002021248193 };
 
-function fakeChain(options: { eth?: bigint; usdg?: bigint; brain?: bigint; allowance?: bigint; base?: bigint; spent?: bigint; fails?: boolean } = {}) {
+function fakeChain(options: { eth?: bigint; usdg?: bigint; brain?: bigint; allowance?: bigint; base?: bigint; spent?: bigint; fails?: Error; code?: Hex; reverts?: boolean } = {}) {
   const sent: string[] = [];
   let brain = options.brain ?? 0n;
   const chain: BuyChain = {
@@ -42,11 +43,13 @@ function fakeChain(options: { eth?: bigint; usdg?: bigint; brain?: bigint; allow
     eth: vi.fn(async () => options.eth ?? parseEther("1")),
     balance: vi.fn(async (token: Address) => (token === BRAIN ? brain : (options.usdg ?? parseUnits("500", 6)))),
     allowance: vi.fn(async () => options.allowance ?? 0n),
-    gasPrice: vi.fn(async () => 22_560_750n),
+    gasPrice: vi.fn(async () => 22_563_000n),
+    code: vi.fn(async () => options.code),
+    blockTime: vi.fn(async () => BigInt(ETH_QUOTE.created)),
     paymentBalance: vi.fn(async () => options.base ?? 1_000_000n),
     settlers: vi.fn(async () => SETTLERS),
     simulate: vi.fn(async (_swap, sold: Address) => {
-      if (options.fails) throw new Error("execution reverted");
+      if (options.fails) throw options.fails;
       const quote = sold === USDG ? USDG_QUOTE : ETH_QUOTE;
       return { spent: options.spent ?? BigInt(quote.json.estimatedNetSellAmount), gained: STAKE };
     }),
@@ -54,8 +57,10 @@ function fakeChain(options: { eth?: bigint; usdg?: bigint; brain?: bigint; allow
       sent.push(`approve ${token} ${spender} ${amount}`);
       return TX;
     }),
-    send: vi.fn(async (swap) => {
+    send: vi.fn(async (swap, onSent?: (hash: Hex) => void) => {
       sent.push(`swap ${swap.to} ${swap.value} ${swap.data.slice(0, 10)}`);
+      onSent?.(TX);
+      if (options.reverts) throw new SwapReverted(TX);
       brain += STAKE;
       return TX;
     }),
@@ -64,13 +69,14 @@ function fakeChain(options: { eth?: bigint; usdg?: bigint; brain?: bigint; allow
 }
 
 function deps(chain: BuyChain, overrides: Partial<BuyDeps> & { fixture?: ReturnType<typeof recorded> } = {}) {
-  const fixture = overrides.fixture ?? ETH_QUOTE;
+  const { fixture = ETH_QUOTE, ...rest } = overrides;
   const asked: Record<string, string>[] = [];
   const bridged: bigint[] = [];
   const d: BuyDeps = {
     chain,
     needs: async () => ({ need: STAKE, held: 0n }),
     stakeProblem: async () => undefined,
+    inFlight: async () => undefined,
     price: async (token) => PRICES[token.toLowerCase()]!,
     quote: vi.fn(async (query): Promise<PaidQuote> => {
       asked.push(query);
@@ -78,7 +84,7 @@ function deps(chain: BuyChain, overrides: Partial<BuyDeps> & { fixture?: ReturnT
     }),
     bridge: async (amount) => void bridged.push(amount),
     now: () => (fixture.created + 2) * 1000,
-    ...overrides,
+    ...rest,
   };
   return { deps: d, asked, bridged };
 }
@@ -89,22 +95,43 @@ async function run(d: BuyDeps, options: Partial<BuyOptions> = {}) {
   return lines;
 }
 
+/** The worst case buy-stake accepts for 312,500 BRAIN at PRICES, in the sold token's smallest units. */
+const ceiling = (token: string, decimals: number) => BigInt(Math.floor(((312_500 * PRICES[BRAIN.toLowerCase()]! * (1 + MAX_OVER_WORTH)) / PRICES[token]!) * 10 ** decimals));
+
 describe("buy-stake", () => {
   it("buys exactly the BRAIN join is short of, checks 0x's quote, sends it and bridges it", async () => {
     const { chain, sent } = fakeChain();
-    const { deps: d, asked, bridged } = deps(chain);
+    const saved: Hex[] = [];
+    const { deps: d, asked, bridged } = deps(chain, { swapSent: (hash) => void saved.push(hash) });
     const lines = await run(d);
-    expect(asked).toEqual([{ chainId: "4663", sellToken: "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", buyToken: BRAIN, buyAmount: STAKE.toString(), taker: TAKER }]);
+    expect(asked).toEqual([{ chainId: "4663", sellToken: ETH, buyToken: BRAIN, buyAmount: STAKE.toString(), taker: TAKER, slippageBps: "100" }]);
     expect(sent).toEqual([`swap ${HOLDER} ${ETH_QUOTE.json.maxSellAmount} 0x2213bc0b`]);
+    expect(saved).toEqual([TX]);
     expect(bridged).toEqual([STAKE]);
     expect(lines[0]).toBe(`join needs 312,500 BRAIN on BrainChain. ${TAKER} holds 0 BRAIN on BrainChain, so this buys 312,500 BRAIN with ETH on Robinhood Chain, through 0x.`);
     expect(lines).toContain("Paid 0x 0.01 USDC on Base: 0xpaid");
-    const shown = lines.find((line) => line.startsWith("0x quotes"))!;
-    expect(shown).toContain("0x quotes 312,500 BRAIN for 0.07966 ETH (129.10 USD), at most 0.084363 ETH; what the swap does not use comes back in the same transaction.");
-    expect(shown).toContain("At Relay's price of 0.000397 USD, 312,500 BRAIN is worth 124.17 USD: the route costs 3.8% more, 0x's 0.15% fee included, within the 5% this command accepts.");
-    expect(shown).toContain("Checked: 0x's signature (key 0x-signing-key-prod-24092026, signed 2 seconds ago); the transaction calls 0x's AllowanceHolder 0x0000…2734, which lets Settler 0xE885…EFb0, the one 0x's registry names, take at most 0.084363 ETH");
-    expect(shown).toContain("Simulated on Robinhood Chain: it takes 0.07966 ETH and brings 312,500 BRAIN.");
+    const shown = lines.find((line) => line.startsWith("0x quotes"))!.split("\n");
+    expect(shown).toEqual([
+      "0x quotes 312,500 BRAIN for an expected 0.040787 ETH (65.87 USD, 4.3% over the BRAIN's worth), and at worst 0.043218 ETH (69.80 USD, 10.5% over the BRAIN's worth). What the swap does not use comes back in the same transaction.",
+      "  At Relay's price of 0.000202 USD, 312,500 BRAIN is worth 63.16 USD, and buy-stake accepts a worst case of up to 12% over that, 0.043804 ETH. 0x's fee of 0.000065 ETH is included.",
+      `  Checked: 0x's signature (key 0x-signing-key-prod-24092026, signed 2 seconds ago); the transaction calls 0x's AllowanceHolder 0x0000…2734, which lets Settler 0xE885…EFb0, the one 0x's registry names, take at most 0.043218 ETH; it pays the BRAIN to 0x8926…4a7D and reverts below 312,500 BRAIN.`,
+      "  Simulated on Robinhood Chain: it takes 0.040786 ETH and brings 312,500 BRAIN.",
+      "  Gas on Robinhood Chain: about 0.000015 ETH for the swap.",
+    ]);
     expect(lines).toContain(`Bought 312,500 BRAIN on Robinhood Chain: ${TX}`);
+  });
+
+  it("asks 0x for no more than the worst case, and refuses a quote whose ceiling is over it", async () => {
+    // At a BRAIN price 5% lower the same quote's ceiling is about 16% over the BRAIN's worth.
+    const cheaper = { ...PRICES, [BRAIN.toLowerCase()]: PRICES[BRAIN.toLowerCase()]! * 0.95 };
+    const { chain, sent } = fakeChain();
+    const { deps: d } = deps(chain, { price: async (token) => cheaper[token.toLowerCase()]! });
+    await expect(run(d)).rejects.toThrow(
+      "0x's quote was refused before anything was signed: it could take up to 0.043218 ETH (69.80 USD, 16.3% over the BRAIN's worth), and buy-stake accepts at most 12% over that worth, 0.041614 ETH. " +
+        `Try again later, or buy at ripples.run and use ${cli("bridge --stake")}. The quote's 0.01 USDC is spent; nothing else was sent.`,
+    );
+    expect(chain.simulate).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
   });
 
   it("counts BRAIN on BrainChain and on Robinhood Chain, buys the rest, and bridges both", async () => {
@@ -139,18 +166,59 @@ describe("buy-stake", () => {
     expect(d.quote).not.toHaveBeenCalled();
   });
 
-  it("stops before any request on a stake token nothing stakes, without Relay's prices, or for a wallet that cannot pay BRAIN's price", async () => {
-    for (const [overrides, chainOptions, message] of [
-      [{ stakeProblem: async () => "This release of brainchain-worker names an old token" }, {}, "This release of brainchain-worker names an old token. Nothing was paid."],
-      [{ price: async () => Promise.reject(new Error("Relay has no price")) }, {}, "Could not read prices from Relay, which the loss limit is measured against (Relay has no price). Nothing was paid."],
-      [{}, { eth: parseEther("0.05") }, `${TAKER} holds 0.05 ETH on Robinhood Chain. 312,500 BRAIN is worth 124.17 USD at BRAIN's price, about 0.076617 ETH, before 0x's fee and the market's cost. Nothing was paid.`],
-    ] as [Partial<BuyDeps>, Parameters<typeof fakeChain>[0], string][]) {
-      const { chain, sent } = fakeChain(chainOptions);
+  it("stops before any request on a release BrainChain has moved past, without Relay's prices, or with a paused or unread Settler registry", async () => {
+    const paused = fakeChain().chain;
+    paused.settlers = async () => ({});
+    const unread = fakeChain().chain;
+    unread.settlers = async () => Promise.reject(new Error("fetch failed"));
+    for (const [chain, overrides, message] of [
+      [fakeChain().chain, { stakeProblem: async () => "This release of brainchain-worker is for an earlier set. Update with npx brainchain-worker@latest" }, "This release of brainchain-worker is for an earlier set. Update with npx brainchain-worker@latest. Nothing was paid."],
+      [fakeChain().chain, { price: async () => Promise.reject(new Error("Relay has no price")) }, "Could not read prices from Relay, which the worst case is measured against (Relay has no price). Nothing was paid."],
+      [paused, {}, "0x's registry on Robinhood Chain says its Settler is paused, so no quote could be sent now. Try again later. Nothing was paid."],
+      [unread, {}, "Could not read 0x's Settler registry on Robinhood Chain (fetch failed). Nothing was paid."],
+    ] as [BuyChain, Partial<BuyDeps>, string][]) {
       const { deps: d } = deps(chain, overrides);
-      await expect(run(d)).rejects.toThrow(message);
+      await expect(run(d, { dry: true })).rejects.toThrow(message);
       expect(d.quote).not.toHaveBeenCalled();
-      expect(sent).toEqual([]);
     }
+  });
+
+  it("stops before any request while an earlier swap or deposit from this wallet is in flight", async () => {
+    const { chain, sent } = fakeChain();
+    const inFlight = "A deposit of 312,500 BRAIN from this wallet, sent 2 minutes ago (0xfe), has not arrived on BrainChain yet, and buying now would buy it again";
+    const { deps: d } = deps(chain, { inFlight: async () => inFlight });
+    await expect(run(d, { dry: true })).rejects.toThrow(`${inFlight}. Nothing was paid.`);
+    expect(d.quote).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
+  it("stops before any request for an address with code, such as an EIP-7702 delegation, or a clock off the chain's", async () => {
+    const delegated = fakeChain({ code: `0xef0100${"11".repeat(20)}` });
+    const { deps: d } = deps(delegated.chain);
+    await expect(run(d)).rejects.toThrow(
+      `buy-stake needs a plain key: ${TAKER} has code on Robinhood Chain, an EIP-7702 delegation or a contract wallet, and the swap is checked as if it had none. Nothing was paid.`,
+    );
+    expect(d.quote).not.toHaveBeenCalled();
+    expect(await run(deps(fakeChain({ code: "0x" }).chain).deps)).toContain(`Bought 312,500 BRAIN on Robinhood Chain: ${TX}`);
+
+    const skewed = deps(fakeChain().chain, { now: () => (ETH_QUOTE.created + 31) * 1000 }).deps;
+    await expect(run(skewed)).rejects.toThrow("This machine's clock is 31 seconds ahead of Robinhood Chain's latest block, and 0x's quote is checked against it. Set the clock right and run again. Nothing was paid.");
+    expect(skewed.quote).not.toHaveBeenCalled();
+  });
+
+  it("stops before any request when the wallet cannot cover the worst case, gas and the ETH kept, or lacks ETH for gas on a USDG buy", async () => {
+    const worst = ceiling("0x0000000000000000000000000000000000000000", 18);
+    const poor = deps(fakeChain({ eth: worst }).chain).deps;
+    await expect(run(poor)).rejects.toThrow(
+      `${TAKER} holds 0.043804 ETH on Robinhood Chain, and needs about 0.044139 ETH: up to 0.043805 ETH for the swap, 0.000034 ETH for gas and 0.0003 ETH kept for the bridge's deposit.\nNothing was paid.`,
+    );
+    expect(poor.quote).not.toHaveBeenCalled();
+    const noGas = deps(fakeChain({ eth: parseEther("0.0001") }).chain, { fixture: USDG_QUOTE }).deps;
+    await expect(run(noGas, { pay: "usdg" })).rejects.toThrow(new RegExp(`^${TAKER} holds 0\\.0001 ETH on Robinhood Chain, and needs about 0\\.000\\d+ ETH: 0\\.0000\\d+ ETH for gas and 0\\.0003 ETH kept`));
+    expect(noGas.quote).not.toHaveBeenCalled();
+    const fewUsdg = deps(fakeChain({ usdg: parseUnits("60", 6) }).chain, { fixture: USDG_QUOTE }).deps;
+    await expect(run(fewUsdg, { pay: "usdg" })).rejects.toThrow(`${TAKER} holds 60 USDG on Robinhood Chain, and the swap may take up to 70.756705 USDG.\nNothing was paid.`);
+    expect(fewUsdg.quote).not.toHaveBeenCalled();
   });
 
   it("refuses to start without a terminal or --yes, before it pays for anything", async () => {
@@ -160,27 +228,32 @@ describe("buy-stake", () => {
     expect(d.quote).not.toHaveBeenCalled();
   });
 
-  it("says a dry run costs 0.01 USDC, buys the quote, simulates it as if funded, and sends nothing else", async () => {
+  it("says a dry run costs 0.01 USDC, buys the quote, simulates it as if funded, sends nothing else and exits 1 on what the wallet lacks", async () => {
     const { chain, sent } = fakeChain({ eth: parseEther("0.0002") });
     const { deps: d, bridged } = deps(chain);
-    const lines = await run(d, { dry: true, yes: false });
+    const lines: string[] = [];
+    const dry = buyStake(MAINNET, d, { pay: "eth", dry: true, yes: false, log: (line) => lines.push(line) });
+    await expect(dry).rejects.toThrow(
+      `${TAKER} holds 0.0002 ETH on Robinhood Chain, and needs about 0.04412 ETH: up to 0.043805 ETH for the swap, 0.000015 ETH for gas and 0.0003 ETH kept for the bridge's deposit.\nDry run: 0.01 USDC paid for the quote, nothing else sent.`,
+    );
     expect(lines[1]).toBe("Dry run: buys one quote from 0x for 0.01 USDC on Base, and sends nothing else.");
     expect(d.quote).toHaveBeenCalledOnce();
-    expect(chain.simulate).toHaveBeenCalledWith(expect.anything(), "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", BRAIN, { lend: BigInt(ETH_QUOTE.json.maxSellAmount) + parseEther("10") });
-    expect(lines.some((line) => line.includes("Simulated on Robinhood Chain, as if the wallet held the ETH: it takes 0.07966 ETH"))).toBe(true);
-    expect(lines.at(-2)).toMatch(new RegExp(`^${TAKER} holds 0.0002 ETH on Robinhood Chain, and needs about 0.0846\\d+ ETH: up to 0.084363 ETH for the swap, 0.0000\\d+ ETH for gas and 0.0003 ETH kept for the bridge's deposit.$`));
-    expect(lines.at(-1)).toBe("Dry run: 0.01 USDC paid for the quote, nothing else sent.");
+    expect(chain.simulate).toHaveBeenCalledWith(expect.anything(), ETH, BRAIN, { lend: BigInt(ETH_QUOTE.json.maxSellAmount) + parseEther("10") });
+    expect(lines.some((line) => line.includes("Simulated on Robinhood Chain, as if the wallet held the ETH: it takes 0.040786 ETH"))).toBe(true);
     expect(sent).toEqual([]);
     expect(bridged).toEqual([]);
+
+    const funded = await run(deps(fakeChain().chain).deps, { dry: true, yes: false });
+    expect(funded.at(-1)).toBe("Dry run: 0.01 USDC paid for the quote, nothing else sent.");
   });
 
-  it("asks before it buys and before it bridges, and does neither on a no", async () => {
+  it("asks before it buys, with the expected cost and the worst case, and before it bridges, and does neither on a no", async () => {
     const answers = ["n"];
     const { chain, sent } = fakeChain();
     const { deps: d, bridged } = deps(chain);
     const ask = vi.fn(async () => answers.shift() ?? "n");
     expect((await run(d, { yes: false, ask })).at(-1)).toBe("Nothing sent. The quote's 0.01 USDC is spent.");
-    expect(ask).toHaveBeenCalledWith("Buy 312,500 BRAIN for at most 0.084363 ETH? [y/N] ");
+    expect(ask).toHaveBeenCalledWith("Buy 312,500 BRAIN for an expected 0.040787 ETH (65.87 USD, 4.3% over the BRAIN's worth), at worst 0.043218 ETH (69.80 USD, 10.5% over the BRAIN's worth)? [y/N] ");
     expect(sent).toEqual([]);
 
     answers.push("y", "no");
@@ -191,84 +264,99 @@ describe("buy-stake", () => {
     expect(bridged).toEqual([]);
   });
 
-  it("approves exactly the most a USDG swap may take, to AllowanceHolder, and simulates the approval with it first", async () => {
+  it("approves exactly the most a USDG swap may take, to AllowanceHolder, after simulating with the approval twice", async () => {
     const { chain, sent } = fakeChain({ usdg: parseUnits("200", 6) });
-    const { deps: d } = deps(chain, { fixture: USDG_QUOTE });
-    await run(d, { pay: "usdg" });
+    const order: string[] = [];
+    chain.simulate = vi.fn(async (_swap, _sold, _bought, options) => {
+      order.push(`simulate ${options?.approve}`);
+      return { spent: BigInt(USDG_QUOTE.json.estimatedNetSellAmount), gained: STAKE };
+    });
+    const approve = chain.approve;
+    chain.approve = vi.fn(async (token: Address, spender: Address, amount: bigint) => {
+      order.push("approve");
+      return approve(token, spender, amount);
+    });
+    const { deps: d, asked } = deps(chain, { fixture: USDG_QUOTE });
+    const lines = await run(d, { pay: "usdg" });
+    expect(asked[0]!.sellToken).toBe(USDG);
     expect(sent).toEqual([`approve ${USDG} ${HOLDER} ${USDG_QUOTE.json.maxSellAmount}`, `swap ${HOLDER} 0 0x2213bc0b`]);
-    expect(vi.mocked(chain.simulate).mock.calls.map((call) => call[3])).toEqual([{ approve: BigInt(USDG_QUOTE.json.maxSellAmount) }, {}]);
+    expect(order).toEqual([`simulate ${USDG_QUOTE.json.maxSellAmount}`, `simulate ${USDG_QUOTE.json.maxSellAmount}`, "approve"]);
+    expect(lines.join("\n")).toContain("0x's fee of 0.104848 USDG is included.");
   });
 
-  it("does not simulate a USDG swap the wallet cannot fund, and says what it lacks", async () => {
-    const { chain } = fakeChain({ usdg: parseUnits("100", 6) });
+  it("does not simulate a USDG swap the wallet cannot fund on a dry run, and says what it lacks", async () => {
+    const { chain } = fakeChain({ usdg: parseUnits("60", 6) });
     const { deps: d } = deps(chain, { fixture: USDG_QUOTE });
-    const lines = await run(d, { pay: "usdg", dry: true });
+    const lines: string[] = [];
+    await expect(buyStake(MAINNET, d, { pay: "usdg", dry: true, yes: false, log: (line) => lines.push(line) })).rejects.toThrow(
+      `${TAKER} holds 60 USDG on Robinhood Chain, and the swap may take up to 70.756705 USDG.\nDry run: 0.01 USDC paid for the quote, nothing else sent.`,
+    );
     expect(chain.simulate).not.toHaveBeenCalled();
-    expect(lines.some((line) => line.includes("Not simulated: the wallet holds 100 USDG of the 136.450213 USDG the swap may take."))).toBe(true);
-    expect(lines).toContain(`${TAKER} holds 100 USDG on Robinhood Chain, and the swap may take up to 136.450213 USDG.`);
+    expect(lines.some((line) => line.includes("Not simulated: the wallet holds 60 USDG of the 69.898834 USDG the swap may take."))).toBe(true);
+    expect(lines.some((line) => line.includes("for an expected 65.961495 USDG (65.95 USD, 4.4% over the BRAIN's worth) as 0x estimates it"))).toBe(true);
   });
 
   it("refuses a quote that fails a check, saying which and that the 0.01 USDC is spent", async () => {
+    // A quote that took long to arrive: signed 70 seconds before it was checked, by a clock that agrees with the chain's.
+    const late = fakeChain();
+    late.chain.blockTime = async () => BigInt(ETH_QUOTE.created + 70);
+    await expect(run(deps(late.chain, { now: () => (ETH_QUOTE.created + 70) * 1000 }).deps)).rejects.toThrow(
+      /^0x's quote was refused before anything was signed: 0x signed 70 seconds ago, outside the 60 seconds .*\. The quote's 0\.01 USDC is spent; nothing else was sent\.$/,
+    );
+    // The registry read before paying names the Settler, and the one read to check the quote names another.
+    const counterfeit = fakeChain();
+    let reads = 0;
+    counterfeit.chain.settlers = async () => (reads++ === 0 ? SETTLERS : { current: "0x4444444444444444444444444444444444444444" });
+    await expect(run(deps(counterfeit.chain).deps)).rejects.toThrow(/Settler 0xE8852602f84e04e284286d8Db01a41Edd0CCEFb0 is neither the registry's current Settler/);
     const { chain, sent } = fakeChain();
-    const stale = deps(chain, { now: () => (ETH_QUOTE.created + 90) * 1000 }).deps;
-    await expect(run(stale)).rejects.toThrow(/^0x's quote was refused before anything was signed: 0x signed 90 seconds ago, outside the 60 seconds .*\. The quote's 0\.01 USDC is spent; nothing else was sent\.$/);
-    const counterfeit = deps({ ...chain, settlers: async () => ({ current: "0x4444444444444444444444444444444444444444" }) }).deps;
-    await expect(run(counterfeit)).rejects.toThrow(/Settler 0xE8852602f84e04e284286d8Db01a41Edd0CCEFb0 is neither the registry's current Settler/);
     const other = deps(chain, { needs: async () => ({ need: STAKE + 1n, held: 0n }) }).deps;
     await expect(run(other)).rejects.toThrow(/the request 0x answered is not this trade: buyAmount=312500000000000000000000 where 312500000000000000000001 was meant/);
-    expect(sent).toEqual([]);
+    expect([...late.sent, ...counterfeit.sent, ...sent]).toEqual([]);
   });
 
-  it("looks up 0x's published keys when the quote is signed by one this build does not carry", async () => {
-    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-    const created = ETH_QUOTE.created;
-    const params = `("@status" "content-type" "content-digest" "@method";req "@authority";req "@path";req "@query";req);created=${created};keyid="0x-signing-key-next";alg="ed25519";tag="0x-swap-api"`;
-    const base = [
-      `"@status": 200`,
-      `"content-type": ${ETH_QUOTE.headers["content-type"]}`,
-      `"content-digest": ${ETH_QUOTE.headers["content-digest"]}`,
-      `"@method";req: GET`,
-      `"@authority";req: api.0x.org`,
-      `"@path";req: /swap/allowance-holder/quote`,
-      `"@query";req: ${new URL(ETH_QUOTE.url).search}`,
-      `"@signature-params": ${params}`,
-    ].join("\n");
-    const rotated = { ...ETH_QUOTE, headers: { ...ETH_QUOTE.headers, "signature-input": `sig=${params}`, signature: `sig=:${sign(null, Buffer.from(base), privateKey).toString("base64")}:` } };
-    const next = { keyid: "0x-signing-key-next", x: publicKey.export({ format: "jwk" }).x! };
-
+  it("refuses a quote signed by a key this release does not carry, and says to update", async () => {
+    const { privateKey } = generateKeyPairSync("ed25519");
+    const params = `("@status" "content-type" "content-digest" "@method";req "@authority";req "@path";req "@query";req);created=${ETH_QUOTE.created};keyid="0x-signing-key-next";alg="ed25519";tag="0x-swap-api"`;
+    const rotated = { ...ETH_QUOTE, headers: { ...ETH_QUOTE.headers, "signature-input": `sig=${params}`, signature: `sig=:${sign(null, Buffer.from("any"), privateKey).toString("base64")}:` } };
     const { chain, sent } = fakeChain();
-    const keys = vi.fn(async () => [next]);
-    await run(deps(chain, { fixture: rotated, keys }).deps);
-    expect(keys).toHaveBeenCalledOnce();
-    expect(sent).toHaveLength(1);
-
-    await expect(run(deps(fakeChain().chain, { fixture: rotated, keys: async () => [] }).deps)).rejects.toThrow(/signed with key 0x-signing-key-next, which is not among the keys this check trusts/);
-  });
-
-  it("holds the route to the stake leg's loss limit, on the simulated spend", async () => {
-    const { chain, sent } = fakeChain({ spent: parseEther("0.0825") });
-    await expect(run(deps(chain).deps)).rejects.toThrow(
-      "The route costs 9.54 USD more than the BRAIN is worth, 7.1%, more than the 6.69 this command accepts (5%, or 0.50 USD on a small buy). The quote's 0.01 USDC is spent; nothing else was sent.",
+    await expect(run(deps(chain, { fixture: rotated }).deps)).rejects.toThrow(
+      "0x's quote was refused before anything was signed: 0x signed it with key 0x-signing-key-next, which this release does not carry. Update with npx brainchain-worker@latest. The quote's 0.01 USDC is spent; nothing else was sent.",
     );
     expect(sent).toEqual([]);
   });
 
-  it("sends nothing when the swap fails in simulation, before or after the person answers", async () => {
-    const failing = fakeChain({ fails: true });
+  it("sends nothing when the swap fails in simulation, before or after the person answers, and says when the quote expired", async () => {
+    const failing = fakeChain({ fails: new Error("execution reverted") });
     await expect(run(deps(failing.chain).deps)).rejects.toThrow("0x's transaction fails when simulated on Robinhood Chain: execution reverted. The quote's 0.01 USDC is spent; nothing else was sent.");
     expect(failing.sent).toEqual([]);
 
     const { chain, sent } = fakeChain({ usdg: parseUnits("200", 6) });
     let simulations = 0;
+    const expired = new BaseError("execution reverted", { cause: Object.assign(new Error("reverted"), { data: `${toFunctionSelector("SignatureExpired(uint256)")}${"00".repeat(31)}01` }) });
     chain.simulate = vi.fn(async () => {
       simulations += 1;
-      if (simulations > 1) throw new Error("execution reverted");
+      if (simulations > 1) throw expired;
       return { spent: BigInt(USDG_QUOTE.json.estimatedNetSellAmount), gained: STAKE };
     });
     await expect(run(deps(chain, { fixture: USDG_QUOTE }).deps, { pay: "usdg" })).rejects.toThrow(
-      "0x's transaction fails when simulated on Robinhood Chain: execution reverted. Nothing was bought. The approval stays, and AllowanceHolder lets only this wallet's own transactions use it.",
+      "The quote expired before it was sent: run buy-stake again (a new quote costs 0.01 USDC). Nothing was sent. The quote's 0.01 USDC is spent.",
     );
-    expect(sent).toEqual([`approve ${USDG} ${HOLDER} ${USDG_QUOTE.json.maxSellAmount}`]);
+    expect(sent).toEqual([]);
+  });
+
+  it("says nothing was bought when the swap reverts or cannot be sent, and whether the approval stays", async () => {
+    const usdg = fakeChain({ usdg: parseUnits("200", 6), reverts: true });
+    await expect(run(deps(usdg.chain, { fixture: USDG_QUOTE }).deps, { pay: "usdg" })).rejects.toThrow(
+      `The swap reverted on Robinhood Chain (${TX}), so nothing was bought. The approval of 69.898834 USDG to AllowanceHolder stays, and only this wallet's own transactions can use it.`,
+    );
+    const eth = fakeChain({ reverts: true });
+    await expect(run(deps(eth.chain).deps)).rejects.toThrow(new RegExp(`^The swap reverted on Robinhood Chain \\(${TX}\\), so nothing was bought\\.$`));
+    const refused = fakeChain();
+    refused.chain.send = async () => Promise.reject(new Error("nonce too low"));
+    await expect(run(deps(refused.chain).deps)).rejects.toThrow("The swap could not be sent (nonce too low), so nothing was bought.");
+    const unconfirmed = fakeChain();
+    unconfirmed.chain.send = async () => Promise.reject(new SwapSent("The swap was sent on Robinhood Chain (0xab) and could not be confirmed"));
+    await expect(run(deps(unconfirmed.chain).deps)).rejects.toThrow(/^The swap was sent on Robinhood Chain \(0xab\) and could not be confirmed$/);
   });
 
   it("says where the BRAIN is when the bridge fails after the buy", async () => {
@@ -282,15 +370,15 @@ describe("buy-stake", () => {
     await expect(buyStake(TESTNET, deps(chain).deps, { pay: "eth", dry: true, yes: false, log: () => {} })).rejects.toThrow("buy-stake works on mainnet only");
   });
 
-  it("simulates in one eth_call, with the probe placed at the worker's own address and the approval made from it", async () => {
+  it("simulates in one eth_call from the worker, within the swap's gas, with the probe placed at its address and the approval made from it", async () => {
     const worker = privateKeyToAccount(`0x${"77".repeat(32)}`);
-    const calls: { to: string; data: Hex; override: Record<string, { code?: string; balance?: string }> }[] = [];
+    const calls: { from?: string; gas?: string; to: string; data: Hex; override: Record<string, { code?: string; balance?: string }> }[] = [];
     const server = createServer((request, response) => {
       let body = "";
       request.on("data", (chunk) => (body += chunk));
       request.on("end", () => {
-        const { id, params } = JSON.parse(body) as { id: number; params: [{ to: string; data: Hex }, string, Record<string, { code?: string; balance?: string }>] };
-        calls.push({ to: params[0].to, data: params[0].data, override: params[2] });
+        const { id, params } = JSON.parse(body) as { id: number; params: [{ from?: string; gas?: string; to: string; data: Hex }, string, Record<string, { code?: string; balance?: string }>] };
+        calls.push({ ...params[0], override: params[2] });
         const result = encodeFunctionResult({ abi: probeAbi, functionName: "probe", result: [5n, STAKE] });
         response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result }));
       });
@@ -299,13 +387,16 @@ describe("buy-stake", () => {
     try {
       const rpc = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
       const chain = createBuyChain({ ...MAINNET, bridge: { ...MAINNET.bridge!, rpc } }, worker);
-      const swap = { to: HOLDER, data: ETH_QUOTE.json.transaction.data, value: 0n };
+      const swap = { to: HOLDER, data: ETH_QUOTE.json.transaction.data, value: 0n, gas: 1_000_000n };
       expect(await chain.simulate(swap, USDG, BRAIN, { approve: 7n })).toEqual({ spent: 5n, gained: STAKE });
       expect(calls[0]!.to.toLowerCase()).toBe(worker.address.toLowerCase());
+      expect(calls[0]!.from?.toLowerCase()).toBe(worker.address.toLowerCase());
+      expect(BigInt(calls[0]!.gas!)).toBe(1_060_000n);
       expect(calls[0]!.override[worker.address]).toEqual({ code: PROBE_CODE });
       const { args } = decodeFunctionData({ abi: probeAbi, data: calls[0]!.data });
       expect(args).toEqual([USDG, BRAIN, 7n, HOLDER, 0n, ETH_QUOTE.json.transaction.data]);
-      await chain.simulate({ ...swap, value: 1n }, "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", BRAIN, { lend: 10n });
+      await chain.simulate({ ...swap, value: 1n }, ETH, BRAIN, { lend: 10n });
+      expect(BigInt(calls[1]!.gas!)).toBe(1_000_000n);
       expect(calls[1]!.override[worker.address]).toEqual({ code: PROBE_CODE, balance: "0xa" });
     } finally {
       server.close();

@@ -239,16 +239,26 @@ npx brainchain-worker buy-stake --dry              # 0x's quote for what join is
 npx brainchain-worker buy-stake                    # with ETH; --with usdg sells USDG
 ```
 
-`buy-stake` reads what `join` needs on BrainChain, takes off the BRAIN the wallet holds there and on Robinhood Chain, and asks 0x for exactly the rest: an exact-out quote, so the wallet gets that many BRAIN and the swap takes no more than the quote's ceiling, with the unused part coming back in the same transaction. Each quote is bought from 0x's keyless gateway for 0.01 USDC, paid from the worker's key on Base by a signed USDC authorization, so the wallet needs a little USDC on Base and no ETH there. The payment is made before 0x answers, so `--dry` costs 0.01 USDC too, and so does a quote that is then refused. A wallet with less than 0.01 USDC on Base is told so and nothing is paid.
+`buy-stake` reads what `join` needs on BrainChain, takes off the BRAIN the wallet holds there and on Robinhood Chain, and asks 0x for exactly the rest: an exact-out quote, so the wallet gets that many BRAIN and the swap takes no more than the quote's ceiling, with the unused part coming back in the same transaction. Each quote is bought from 0x's keyless gateway for 0.01 USDC, paid from the worker's key on Base by a signed USDC authorization, so the wallet needs a little USDC on Base and no ETH there. The payment is made before 0x answers, so `--dry` costs 0.01 USDC too, and so does a quote that is then refused.
+
+The worst case is set before the quote is bought: the swap may take at most 12% over the BRAIN's worth at Relay's price. 0x's own ceiling on a BRAIN quote has been about 10% over that worth, at the 1% slippage `buy-stake` asks for: the market's spread of about 4%, 0x's 0.15% fee, and room for the price to move, which comes back unused. Each figure `buy-stake` shows, the expected cost and the worst case, is in tokens, in USD and as a percent over the BRAIN's worth.
+
+Before it pays for a quote, it stops and says why when any of these holds, so none of them costs the 0.01 USDC:
+
+- the wallet holds less than 0.01 USDC on Base;
+- a transaction from this wallet on Robinhood Chain is not mined yet, the last swap is not there yet, or a BRAIN deposit from the last day has not arrived on BrainChain, since buying then could buy the stake twice;
+- the wallet's address has code on Robinhood Chain, an EIP-7702 delegation or a contract wallet, since `buy-stake` needs a plain key;
+- this machine's clock is more than 30 seconds from Robinhood Chain's;
+- 0x's Settler registry says Settler is paused;
+- the wallet cannot cover the worst case, the gas, and the 0.0003 ETH it keeps on Robinhood Chain for the bridge's deposit. A dry run says so after the quote and exits 1.
 
 Nothing is signed on Robinhood Chain until the quote passes these checks, all made by [brainchain-verify](https://www.npmjs.com/package/brainchain-verify):
 
-- **0x signed it.** The response carries 0x's Ed25519 signature over its body and over the exact request, made within the last 60 seconds. A key this release does not carry is looked up on the page where 0x publishes its keys.
-- **The transaction is this swap.** It calls 0x's AllowanceHolder `0x0000000000001fF3684f28c67538d4D072C22734`, which lets the Settler take only the ETH or USDG sold, at most the quote's ceiling. The Settler is the one 0x's registry names. It pays the BRAIN to the worker's own address and reverts below the amount asked for.
-- **It works.** The swap is simulated on Robinhood Chain's latest block, and must bring the BRAIN.
-- **The price is fair.** What the simulation spends is held to the stake leg's loss limit that `fund` uses: at most 5% over the BRAIN's worth at Relay's price, or 0.50 USD on a small buy. 0x's 0.15% fee counts toward it.
+- **0x signed it.** The response carries 0x's Ed25519 signature over its body and over the exact request, made within the last 60 seconds, with a key this release pins. A quote signed with a key 0x added later asks you to update with `npx brainchain-worker@latest`.
+- **The transaction is this swap.** It calls 0x's AllowanceHolder `0x0000000000001fF3684f28c67538d4D072C22734`, which lets the Settler take only the ETH or USDG sold, at most the worst case above. The Settler is the one 0x's registry names. It pays the BRAIN to the worker's own address and reverts below the amount asked for.
+- **It works.** The swap is simulated on Robinhood Chain's latest block, from the worker's address and within the quote's own gas, and must bring the BRAIN.
 
-It then shows what the swap spends, its ceiling, the gas and the checks, and asks before buying. A USDG sale first approves exactly the ceiling to AllowanceHolder. Before sending, it simulates again. Once the BRAIN has arrived, it offers to run `bridge --stake` for it and for any BRAIN the wallet already held on Robinhood Chain toward the stake. `--yes` buys and bridges without asking. The wallet keeps 0.0003 ETH on Robinhood Chain for the bridge's deposit.
+It then shows the expected cost and the worst case, 0x's fee as the quote states it, the gas and the checks, and asks before buying. A quote expires about five minutes after 0x makes it: one that has expired by the time you answer says so, and a new quote costs another 0.01 USDC. Before sending anything it simulates again. A USDG sale then approves exactly the quote's ceiling to AllowanceHolder; whatever the swap leaves of that approval stays with AllowanceHolder, which moves tokens only in a transaction this wallet sends. A swap that reverts says nothing was bought and whether the approval stays. Once the BRAIN has arrived, it offers to run `bridge --stake` for it and for any BRAIN the wallet already held on Robinhood Chain toward the stake. `--yes` buys and bridges without asking.
 
 ## From Solana
 

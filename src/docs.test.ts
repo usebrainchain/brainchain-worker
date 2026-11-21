@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { BOND_LEAD_SEC } from "./bond.js";
+import { MAX_OVER_WORTH } from "./buy.js";
 import { usage } from "./cli.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -125,6 +126,20 @@ describe("fund in the README and --help", () => {
     expect(readme).toContain("fund --from-solana --usdc 120 --stake --dry");
     expect(readme).not.toContain("--usdc 20");
     expect(skill).not.toContain("--usdc 20");
+  });
+});
+
+describe("buy-stake in the README, --help and the skill", () => {
+  it("give the worst case it accepts, measured over the BRAIN's worth, and no other limit", () => {
+    const cap = `${Math.round(MAX_OVER_WORTH * 100)}%`;
+    const section = flat(readme.split("\n## Buy the stake\n")[1]!.split("\n## ")[0]!);
+    expect(section).toContain(`the swap may take at most ${cap} over the BRAIN's worth at Relay's price`);
+    expect(flat(help)).toContain(`can take at most ${cap} over the BRAIN's worth at Relay's price`);
+    expect(flat(skill)).toContain(`could take more than ${cap} over that worth`);
+    for (const text of [section, flat(usage("buy-stake")), flat(skill)]) {
+      expect(text).toMatch(/expected cost and the worst case/);
+      expect(text).not.toMatch(/at most 5%|5% over/);
+    }
   });
 });
 

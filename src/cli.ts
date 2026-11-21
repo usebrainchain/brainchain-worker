@@ -1,7 +1,6 @@
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline/promises";
 import { verifyDecision } from "brainchain-verify";
-import { fetchZeroxKeys } from "brainchain-verify/zerox";
 import { createPublicClient } from "viem";
 
 import { formatEther, formatUnits, parseUnits, zeroAddress, type Address, type Hex, type PrivateKeyAccount } from "viem";
@@ -9,7 +8,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
 import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
-import { assetOf, bridge, createBridgeChain, stakeProblem, type Asset } from "./bridge.js";
+import { assetOf, bridge, createBridgeChain, stakeInFlight, stakeProblem, type Asset, type StakeMoves } from "./bridge.js";
 import { buyStake, createBuyChain, type Pay } from "./buy.js";
 import { checkToSolana, createExitChain, exit as exitToParent } from "./exit.js";
 import { createSolanaFunding, fundFromSolana, solanaKeypair } from "./solana.js";
@@ -19,7 +18,7 @@ import { chainOf, resolveNetwork, rpcTransport, type Network } from "./network.j
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
 import { relayPrice } from "./relay.js";
 import { deliveries, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
-import { openStore, privateDir, readWatched, stateDir, writeWatched } from "./state.js";
+import { openStore, privateDir, readStakeMoves, readWatched, saveStakeMove, stateDir, writeWatched } from "./state.js";
 import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
@@ -142,12 +141,14 @@ const COMMAND_USAGE: Record<string, string> = {
                                             Buy the BRAIN join still needs, with ETH (the default) or USDG on
                                             Robinhood Chain, through 0x, then offer to bridge it to BrainChain.
                                             0x's quote costs 0.01 USDC, paid from the worker's key on Base, and
-                                            --dry buys one too: it shows the quote and sends nothing else.
-                                            Nothing is signed on Robinhood Chain until 0x's signature on the
-                                            quote verifies, its calldata swaps only for this wallet, a simulation
-                                            brings the BRAIN, and the swap costs at most 5% over BRAIN's price on
-                                            Relay (or 0.50 USD on a small buy). Asks before buying and before
-                                            bridging; --yes does both without asking. Mainnet.`,
+                                            --dry buys one too: it shows the quote, sends nothing else, and exits
+                                            1 when the wallet lacks what the buy needs. Nothing is signed on
+                                            Robinhood Chain until 0x's signature on the quote verifies, its
+                                            calldata swaps only for this wallet and can take at most 12% over the
+                                            BRAIN's worth at Relay's price, and a simulation brings the BRAIN. It
+                                            shows the expected cost and the worst case, in tokens, USD and percent
+                                            over that worth, and asks before buying and before bridging; --yes
+                                            does both without asking. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]
                                             Bond the stake token and propose a change to BrainChain for Jev to
@@ -719,6 +720,21 @@ function terminal(): { ask?: (question: string) => Promise<string> } {
   };
 }
 
+/** Saves a swap or stake deposit as it is sent, so buy-stake waits for it before it buys again. */
+function remember(network: Network, address: Address, move: StakeMoves): void {
+  try {
+    saveStakeMove(address, network, move);
+  } catch (error) {
+    // The transaction is already sent, so a folder that cannot be written to must not stop it being waited for.
+    const tx = (move.swap ?? move.deposit)!.tx;
+    console.log(`warning: could not save ${tx} in ${stateDir()} (${reason(error).replace(/\.$/, "")}); buy-stake still checks the chain for it before it buys again`);
+  }
+}
+
+function stakeSaver(network: Network, address: Address) {
+  return ({ tx, amount }: { tx: Hex; amount: bigint }) => remember(network, address, { deposit: { tx, amount, at: Math.floor(Date.now() / 1000) } });
+}
+
 async function bondCommand(network: Network, positional: string[], yes: boolean): Promise<void> {
   const args = bondArgs(positional);
   const config = network.proofs.bonds;
@@ -809,7 +825,9 @@ export async function main(argv: string[]): Promise<void> {
     if (!new RegExp(`^\\d{1,12}(\\.\\d{1,${decimals}})?$`).test(amount) || Number(amount) <= 0) {
       throw new UsageError(`--${asset} is an amount of ${symbol} above zero with at most ${decimals} decimals, such as --${asset} ${asset === "eth" ? "0.001" : "1"}`);
     }
-    return bridge(network, createBridgeChain(network, signer().account), { asset, amount, dry: switches.has("dry"), log: console.log });
+    const { account } = signer();
+    const sent = stakeSaver(network, account.address);
+    return bridge(network, createBridgeChain(network, account), { asset, amount, dry: switches.has("dry"), log: console.log, sent });
   }
   if (command === "exit") {
     const amount = values.get("amount");
@@ -843,7 +861,8 @@ export async function main(argv: string[]): Promise<void> {
       log: console.log,
       parentEth: () => bridgeChain.parentEth(),
       parentStake: () => bridgeChain.tokenBalance("stake"),
-      bridgeOn: (asset, amount) => bridge(network, bridgeChain, { asset, amount: formatUnits(amount, assetOf(network, asset).decimals), dry: false, log: console.log }),
+      bridgeOn: (asset, amount) =>
+        bridge(network, bridgeChain, { asset, amount: formatUnits(amount, assetOf(network, asset).decimals), dry: false, log: console.log, sent: stakeSaver(network, worker.account.address) }),
     });
   }
   if (command === "buy-stake") {
@@ -863,10 +882,11 @@ export async function main(argv: string[]): Promise<void> {
           return { need: s.toStake + (s.applying ? bond : 0n), held };
         },
         stakeProblem: () => stakeProblem(network, bridgeChain),
+        inFlight: () => stakeInFlight(network, bridgeChain, readStakeMoves(account.address, network)),
         price: (token) => relayPrice(parentChainId, token),
         quote: createQuoter(network.zerox, account),
-        keys: () => fetchZeroxKeys(),
-        bridge: (amount) => bridge(network, bridgeChain, { asset: "stake", amount: formatUnits(amount, 18), dry: false, log: console.log }),
+        swapSent: (tx) => remember(network, account.address, { swap: { tx, at: Math.floor(Date.now() / 1000) } }),
+        bridge: (amount) => bridge(network, bridgeChain, { asset: "stake", amount: formatUnits(amount, 18), dry: false, log: console.log, sent: stakeSaver(network, account.address) }),
       },
       { pay: pay as Pay, dry: switches.has("dry"), yes: switches.has("yes"), ...terminal(), log: console.log },
     );

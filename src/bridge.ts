@@ -12,6 +12,7 @@ import {
 } from "viem";
 
 import { reason, RECEIPT_MS } from "./chain.js";
+import { cli } from "./invoked.js";
 import { chainOf, parentChainOf, rpcTransport, type Network } from "./network.js";
 import { grouped } from "./standing.js";
 
@@ -26,7 +27,12 @@ const routerAbi = parseAbi([
   "function calculateL2TokenAddress(address token) view returns (address)",
   "function outboundTransferCustomRefund(address token, address refundTo, address to, uint256 amount, uint256 maxGas, uint256 gasPriceBid, bytes data) payable returns (bytes)",
 ]);
-const gatewayAbi = parseAbi(["function getOutboundCalldata(address token, address from, address to, uint256 amount, bytes data) view returns (bytes)"]);
+const gatewayAbi = parseAbi([
+  "function getOutboundCalldata(address token, address from, address to, uint256 amount, bytes data) view returns (bytes)",
+  "function counterpartGateway() view returns (address)",
+  "event DepositInitiated(address l1Token, address indexed _from, address indexed _to, uint256 indexed _sequenceNumber, uint256 _amount)",
+  "event DepositFinalized(address indexed l1Token, address indexed _from, address indexed _to, uint256 _amount)",
+]);
 const erc20Abi = parseAbi([
   "function balanceOf(address) view returns (uint256)",
   "function allowance(address owner, address spender) view returns (uint256)",
@@ -38,8 +44,18 @@ const DEPOSIT_GAS = 300_000n;
 
 const stakingTokenAbi = parseAbi(["function token() view returns (address)"]);
 
+/** About a day of Robinhood Chain blocks, which the gateway's own logs are read over with one request. */
+const DEPOSIT_WINDOW_BLOCKS = 750_000n;
+
 /** A deposit that was sent and not confirmed: it can still land, so what it carries may be on its way to BrainChain. */
 export class DepositSent extends Error {}
+
+/** A stake-token deposit from the wallet to itself, by its time in seconds: sent on the parent chain, or arrived on BrainChain. */
+export interface StakeDeposit {
+  tx: Hex;
+  amount: bigint;
+  at: number;
+}
 
 /** What a deposit needs from the parent chain. */
 export interface BridgeChain {
@@ -52,10 +68,14 @@ export interface BridgeChain {
   /** The ETH a token deposit sends along to pay for its arrival. */
   arrivalCost(asset: Exclude<Asset, "eth">, amount: bigint): Promise<bigint>;
   depositEth(amount: bigint): Promise<Hex>;
-  /** Approves the token's gateway when needed and sends the deposit. */
-  depositToken(asset: Exclude<Asset, "eth">, amount: bigint, value: bigint): Promise<Hex>;
+  /** Approves the token's gateway when needed and sends the deposit; `sent` hears its hash before it is mined. */
+  depositToken(asset: Exclude<Asset, "eth">, amount: bigint, value: bigint, sent?: (hash: Hex) => void): Promise<Hex>;
   /** What the parent chain's stake token becomes on BrainChain, and what the staking contract takes there. */
   stakeTokens(): Promise<{ bridged: Address; staked: Address }>;
+  /** Stake-token deposits this wallet sent itself in about the last day, and every one that arrived on BrainChain. */
+  stakeDeposits(): Promise<{ sent: StakeDeposit[]; arrived: StakeDeposit[] }>;
+  /** Where a transaction sent from this wallet is: in a block, waiting to be mined, or unknown to the RPC. */
+  transactionState(hash: Hex): Promise<"mined" | "pending" | "unknown">;
 }
 
 export function createBridgeChain(network: Network, account: PrivateKeyAccount, receiptMs = RECEIPT_MS): BridgeChain {
@@ -97,6 +117,32 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
       ]);
       return { bridged, staked };
     },
+    async stakeDeposits() {
+      const stake = token("stake");
+      const parentGateway = await gateway(stake);
+      const [childGateway, head] = await Promise.all([read.readContract({ address: parentGateway, abi: gatewayAbi, functionName: "counterpartGateway" }), read.getBlockNumber()]);
+      const self = account.address;
+      const [initiated, finalized] = await Promise.all([
+        read.getLogs({ address: parentGateway, event: gatewayAbi[2], args: { _from: self, _to: self }, fromBlock: head > DEPOSIT_WINDOW_BLOCKS ? head - DEPOSIT_WINDOW_BLOCKS : 0n, toBlock: head }),
+        // BrainChain makes a block only for a transaction, so its whole history is one small request.
+        child.getLogs({ address: childGateway, event: gatewayAbi[3], args: { l1Token: stake, _from: self, _to: self }, fromBlock: 0n }),
+      ]);
+      const times = async (client: typeof read | typeof child, blocks: bigint[]) => {
+        const unique = [...new Set(blocks)];
+        const found = await Promise.all(unique.map((blockNumber) => client.getBlock({ blockNumber })));
+        return new Map(unique.map((n, i) => [n, Number(found[i]!.timestamp)]));
+      };
+      const ours = initiated.filter((log) => same(log.args.l1Token!, stake));
+      const [sentAt, arrivedAt] = await Promise.all([times(read, ours.map((l) => l.blockNumber)), times(child, finalized.map((l) => l.blockNumber))]);
+      return {
+        sent: ours.map((log) => ({ tx: log.transactionHash, amount: log.args._amount!, at: sentAt.get(log.blockNumber)! })),
+        arrived: finalized.map((log) => ({ tx: log.transactionHash, amount: log.args._amount!, at: arrivedAt.get(log.blockNumber)! })),
+      };
+    },
+    async transactionState(hash) {
+      if (await read.getTransactionReceipt({ hash }).catch(() => undefined)) return "mined";
+      return (await read.getTransaction({ hash }).catch(() => undefined)) ? "pending" : "unknown";
+    },
     tokenBalance: (asset) => read.readContract({ address: token(asset), abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     async arrivalCost(asset, amount) {
       const address = token(asset);
@@ -118,7 +164,7 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
       return submission * 3n + DEPOSIT_GAS * ((await child.getGasPrice()) * 2n);
     },
     depositEth: async (amount) => wait(await wallet.writeContract({ address: bridge.inbox, abi: inboxAbi, functionName: "depositEth", value: amount }), true),
-    async depositToken(asset, amount, value) {
+    async depositToken(asset, amount, value, sent) {
       const address = token(asset);
       const spender = await gateway(address);
       // Ahead of the approval, so a refusal has sent nothing at all.
@@ -128,16 +174,15 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
       const allowance = await read.readContract({ address, abi: erc20Abi, functionName: "allowance", args: [account.address, spender] });
       if (allowance < amount) await wait(await wallet.writeContract({ address, abi: erc20Abi, functionName: "approve", args: [spender, amount] }));
       const data = encodeAbiParameters([{ type: "uint256" }, { type: "bytes" }], [maxSubmissionCost, "0x"]);
-      return wait(
-        await wallet.writeContract({
-          address: bridge.router,
-          abi: routerAbi,
-          functionName: "outboundTransferCustomRefund",
-          args: [address, account.address, account.address, amount, DEPOSIT_GAS, gasPriceBid, data],
-          value,
-        }),
-        true,
-      );
+      const hash = await wallet.writeContract({
+        address: bridge.router,
+        abi: routerAbi,
+        functionName: "outboundTransferCustomRefund",
+        args: [address, account.address, account.address, amount, DEPOSIT_GAS, gasPriceBid, data],
+        value,
+      });
+      sent?.(hash);
+      return wait(hash, true);
     },
   };
 }
@@ -166,6 +211,77 @@ export async function stakeProblem(network: Network, chain: Pick<BridgeChain, "s
   );
 }
 
+/** The stake deposits sent that no arrival accounts for, matched by amount, oldest first, each arrival once. */
+export function unarrived(sent: StakeDeposit[], arrived: StakeDeposit[]): StakeDeposit[] {
+  // An arrival is stamped by BrainChain's clock and a deposit by the parent chain's, which can differ by a little.
+  const SLACK_SEC = 120;
+  const left = [...arrived].sort((a, b) => a.at - b.at);
+  return [...sent]
+    .sort((a, b) => a.at - b.at)
+    .filter((deposit) => {
+      const i = left.findIndex((arrival) => arrival.amount === deposit.amount && arrival.at >= deposit.at - SLACK_SEC);
+      if (i < 0) return true;
+      left.splice(i, 1);
+      return false;
+    });
+}
+
+/** What buy-stake saved of its last swap and of the last stake deposit, in seconds since the epoch. */
+export interface StakeMoves {
+  swap?: { tx: Hex; at: number };
+  deposit?: { tx: Hex; amount: bigint; at: number };
+}
+
+/** A transaction the RPC does not know may still be on its way to it this long after it was sent. */
+const UNSEEN_SEC = 600;
+const DEPOSIT_DAY_SEC = 86_400;
+
+/**
+ * Why buying the stake now could buy it twice, or undefined: a transaction of
+ * this wallet's still unmined, the last swap not yet seen, or a stake deposit
+ * of the last day that has not arrived on BrainChain, where `join` cannot see
+ * it yet.
+ */
+export async function stakeInFlight(
+  network: Network,
+  chain: Pick<BridgeChain, "unmined" | "stakeDeposits" | "transactionState">,
+  saved: StakeMoves,
+  nowSec = Math.floor(Date.now() / 1000),
+): Promise<string | undefined> {
+  const parent = network.bridge!.name;
+  const ago = (at: number) => {
+    const minutes = Math.max(0, Math.floor((nowSec - at) / 60));
+    return minutes === 0 ? "less than a minute ago" : minutes === 1 ? "a minute ago" : minutes < 120 ? `${minutes} minutes ago` : `${Math.round(minutes / 60)} hours ago`;
+  };
+  const brains = (amount: bigint) => `${grouped(amount, 18)} ${network.stakeSymbol}`;
+  const last = [
+    ...(saved.swap ? [{ what: "the swap", ...saved.swap }] : []),
+    ...(saved.deposit ? [{ what: `the deposit of ${brains(saved.deposit.amount)}`, ...saved.deposit }] : []),
+  ].sort((a, b) => b.at - a.at);
+  if ((await chain.unmined()) > 0) {
+    const named = last[0] && nowSec - last[0].at < DEPOSIT_DAY_SEC ? `, which may be ${last[0].what} it sent ${ago(last[0].at)} (${last[0].tx})` : "";
+    return `This wallet has a transaction on ${parent} that is not mined yet${named}, and buying now could buy the ${network.stakeSymbol} twice. Run buy-stake again once it is mined`;
+  }
+  for (const move of last) {
+    if (nowSec - move.at >= UNSEEN_SEC || (await chain.transactionState(move.tx)) !== "unknown") continue;
+    return `${move.what[0]!.toUpperCase()}${move.what.slice(1)} this wallet sent ${ago(move.at)} (${move.tx}) is not on ${parent} yet, and buying now could buy the ${network.stakeSymbol} twice. Run buy-stake again once it is mined, or in ${Math.ceil((UNSEEN_SEC - (nowSec - move.at)) / 60)} minutes if it never is`;
+  }
+  let deposits: { sent: StakeDeposit[]; arrived: StakeDeposit[] };
+  try {
+    deposits = await chain.stakeDeposits();
+  } catch (error) {
+    if (!saved.deposit || nowSec - saved.deposit.at >= DEPOSIT_DAY_SEC) return undefined;
+    return `Could not check whether the deposit of ${brains(saved.deposit.amount)} sent ${ago(saved.deposit.at)} (${saved.deposit.tx}) has arrived on ${network.name} (${reason(error).replace(/\.$/, "")}), and buying before it does could buy it twice. Run buy-stake again in a minute`;
+  }
+  const waiting = unarrived(deposits.sent, deposits.arrived);
+  const latest = waiting.at(-1);
+  if (!latest) return undefined;
+  return (
+    `A deposit of ${brains(latest.amount)} from this wallet, sent ${ago(latest.at)} (${latest.tx}), has not arrived on ${network.name} yet, and buying now would buy it again. ` +
+    `Deposits arrive in about a minute: run buy-stake again once ${cli("status")} shows it`
+  );
+}
+
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** The amount flag's decimals and the name the worker sees. */
@@ -181,7 +297,14 @@ export function assetOf(network: Network, asset: Asset): { decimals: number; sym
 export async function bridge(
   network: Network,
   chain: BridgeChain,
-  options: { asset: Asset; amount: string; dry: boolean; log: (line: string) => void },
+  options: {
+    asset: Asset;
+    amount: string;
+    dry: boolean;
+    log: (line: string) => void;
+    /** Hears a stake deposit's hash once it is sent. */
+    sent?: (deposit: { tx: Hex; amount: bigint }) => void;
+  },
 ): Promise<void> {
   const { asset, dry, log } = options;
   const parent = network.bridge;
@@ -233,6 +356,6 @@ export async function bridge(
   ]);
   if (dry) return log("dry run: nothing sent");
   await settled();
-  const tx = await chain.depositToken(asset, amount, value);
+  const tx = await chain.depositToken(asset, amount, value, asset === "stake" ? (hash) => options.sent?.({ tx: hash, amount }) : undefined);
   log(`sent, arrives on ${network.name} in about a minute: ${tx}`);
 }

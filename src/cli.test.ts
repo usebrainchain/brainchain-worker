@@ -487,8 +487,12 @@ describe("buy-stake's flags", () => {
     expect(() => parse("buy-stake", ["--dry=1"])).toThrow("--dry takes no value");
   });
 
-  it("says in its help that a dry run buys a quote too", () => {
-    expect(usage("buy-stake").replace(/\s+/g, " ")).toContain("0x's quote costs 0.01 USDC, paid from the worker's key on Base, and --dry buys one too: it shows the quote and sends nothing else");
+  it("says in its help that a dry run buys a quote too, and what the worst case is", () => {
+    const help = usage("buy-stake").replace(/\s+/g, " ");
+    expect(help).toContain("0x's quote costs 0.01 USDC, paid from the worker's key on Base, and --dry buys one too: it shows the quote, sends nothing else, and exits 1 when the wallet lacks what the buy needs");
+    expect(help).toContain("can take at most 12% over the BRAIN's worth at Relay's price");
+    expect(help).toContain("shows the expected cost and the worst case, in tokens, USD and percent over that worth");
+    expect(help).not.toContain("5%");
   });
 });
 
