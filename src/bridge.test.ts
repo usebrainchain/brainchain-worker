@@ -5,13 +5,13 @@ import { decodeAbiParameters, decodeFunctionData, encodeAbiParameters, parseAbi,
 import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
-import { bridge, createBridgeChain, DepositSent, type Asset, type BridgeChain } from "./bridge.js";
+import { bridge, createBridgeChain, DepositSent, stakeProblem, type Asset, type BridgeChain } from "./bridge.js";
 import { MAINNET, TESTNET } from "./network.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
 const TX: Hex = `0x${"fe".repeat(32)}`;
 
-function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cost?: bigint } = {}) {
+function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cost?: bigint; staked?: Address } = {}) {
   const sent: string[] = [];
   const chain: BridgeChain = {
     account: ACCOUNT,
@@ -27,6 +27,7 @@ function fakeChain(options: { eth?: bigint; stake?: bigint; bounty?: bigint; cos
       sent.push(`${asset} ${amount} value ${value}`);
       return TX;
     }),
+    stakeTokens: vi.fn(async () => ({ bridged: MAINNET.contracts.stakeToken, staked: options.staked ?? MAINNET.contracts.stakeToken })),
   };
   return { chain, sent };
 }
@@ -208,5 +209,61 @@ describe("depositToken", () => {
     expect((outcome as Error).message).toMatch(
       new RegExp(`^The deposit was sent on Robinhood Chain \\(0x0{63}2\\) and could not be confirmed \\(.+\\)\\. It can still land, so check it before running bridge again: another run sends another deposit\\.$`),
     );
+  });
+});
+
+describe("the stake token", () => {
+  const OLD: Address = "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37";
+
+  it("bridges only when the token this release names bridges to the one the staking contract takes", async () => {
+    expect(await stakeProblem(MAINNET, fakeChain().chain)).toBeUndefined();
+    const { chain, sent } = fakeChain({ staked: OLD });
+    await expect(run(chain, "stake", "1000")).rejects.toThrow(
+      `This release of brainchain-worker names 0x42b96dbc55e79E930d866c1eE486A342366546BC as BRAIN on Robinhood Chain, which the bridge turns into ${MAINNET.contracts.stakeToken} on BrainChain, ` +
+        `and the staking contract takes ${OLD}. Buying or bridging it would bring a token nothing stakes. Update with npx brainchain-worker@latest. Nothing was sent.`,
+    );
+    await run(chain, "bounty", "5");
+    expect(sent).toEqual([expect.stringMatching(/^bounty /)]);
+  });
+
+  it("refuses when the staking contract cannot be read, rather than bridge unchecked", async () => {
+    const { chain, sent } = fakeChain();
+    chain.stakeTokens = vi.fn(async () => {
+      throw new Error("rpc.usebrainchain.com did not answer");
+    });
+    await expect(run(chain, "stake", "1000")).rejects.toThrow(/Could not read which token the staking contract takes \(rpc.usebrainchain.com did not answer\), so the stake token was not checked\. Nothing was sent\./);
+    expect(sent).toEqual([]);
+  });
+
+  it("reads the router's mapping on the parent chain and the staking contract's token on BrainChain", async () => {
+    const calls: { chain: string; to: string; data: string }[] = [];
+    const server = (name: string, answer: (data: string) => string) =>
+      createServer((request, response) => {
+        let body = "";
+        request.on("data", (c) => (body += c));
+        request.on("end", () => {
+          const { id, params } = JSON.parse(body) as { id: number; params: [{ to: string; data: string }] };
+          calls.push({ chain: name, ...params[0] });
+          response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id, result: answer(params[0].data) }));
+        });
+      });
+    const word = (address: string) => `0x${address.slice(2).toLowerCase().padStart(64, "0")}`;
+    const parent = server("parent", () => word(MAINNET.contracts.stakeToken));
+    const child = server("child", () => word(MAINNET.contracts.stakeToken));
+    await Promise.all([parent, child].map((s) => new Promise<void>((resolve) => s.listen(0, "127.0.0.1", resolve))));
+    const url = (s: typeof parent) => `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+    try {
+      const network = { ...MAINNET, rpc: url(child), bridge: { ...MAINNET.bridge!, rpc: url(parent) } };
+      const chain = createBridgeChain(network, privateKeyToAccount(`0x${"11".repeat(32)}`));
+      expect(await chain.stakeTokens()).toEqual({ bridged: MAINNET.contracts.stakeToken, staked: MAINNET.contracts.stakeToken });
+      const routerCall = calls.find((c) => c.chain === "parent")!;
+      expect(routerCall.to.toLowerCase()).toBe(MAINNET.bridge!.router.toLowerCase());
+      expect(routerCall.data).toBe(`${toFunctionSelector("calculateL2TokenAddress(address)")}${word(MAINNET.bridge!.tokens!.stake!).slice(2)}`);
+      const stakingCall = calls.find((c) => c.chain === "child")!;
+      expect([stakingCall.to.toLowerCase(), stakingCall.data]).toEqual([MAINNET.contracts.staking.toLowerCase(), toFunctionSelector("token()")]);
+    } finally {
+      parent.close();
+      child.close();
+    }
   });
 });

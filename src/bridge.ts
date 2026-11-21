@@ -23,6 +23,7 @@ const inboxAbi = parseAbi([
 ]);
 const routerAbi = parseAbi([
   "function getGateway(address token) view returns (address)",
+  "function calculateL2TokenAddress(address token) view returns (address)",
   "function outboundTransferCustomRefund(address token, address refundTo, address to, uint256 amount, uint256 maxGas, uint256 gasPriceBid, bytes data) payable returns (bytes)",
 ]);
 const gatewayAbi = parseAbi(["function getOutboundCalldata(address token, address from, address to, uint256 amount, bytes data) view returns (bytes)"]);
@@ -34,6 +35,8 @@ const erc20Abi = parseAbi([
 
 /** Gas for the token's arrival on BrainChain; what it does not use comes back to the worker there. */
 const DEPOSIT_GAS = 300_000n;
+
+const stakingTokenAbi = parseAbi(["function token() view returns (address)"]);
 
 /** A deposit that was sent and not confirmed: it can still land, so what it carries may be on its way to BrainChain. */
 export class DepositSent extends Error {}
@@ -51,6 +54,8 @@ export interface BridgeChain {
   depositEth(amount: bigint): Promise<Hex>;
   /** Approves the token's gateway when needed and sends the deposit. */
   depositToken(asset: Exclude<Asset, "eth">, amount: bigint, value: bigint): Promise<Hex>;
+  /** What the parent chain's stake token becomes on BrainChain, and what the staking contract takes there. */
+  stakeTokens(): Promise<{ bridged: Address; staked: Address }>;
 }
 
 export function createBridgeChain(network: Network, account: PrivateKeyAccount, receiptMs = RECEIPT_MS): BridgeChain {
@@ -85,6 +90,13 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
       return pending - latest;
     },
     parentEth: () => read.getBalance({ address: account.address }),
+    async stakeTokens() {
+      const [bridged, staked] = await Promise.all([
+        read.readContract({ address: bridge.router, abi: routerAbi, functionName: "calculateL2TokenAddress", args: [token("stake")] }),
+        child.readContract({ address: network.contracts.staking, abi: stakingTokenAbi, functionName: "token" }),
+      ]);
+      return { bridged, staked };
+    },
     tokenBalance: (asset) => read.readContract({ address: token(asset), abi: erc20Abi, functionName: "balanceOf", args: [account.address] }),
     async arrivalCost(asset, amount) {
       const address = token(asset);
@@ -129,6 +141,32 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
     },
   };
 }
+
+/**
+ * What is wrong with this release's stake token, or undefined when the token
+ * it names on the parent chain bridges to the one the staking contract takes.
+ * A token that moves to new contracts, as $BRAIN did on 17 November 2026,
+ * leaves a release that names the old one buying and bridging what nothing
+ * stakes.
+ */
+export async function stakeProblem(network: Network, chain: Pick<BridgeChain, "stakeTokens">): Promise<string | undefined> {
+  const parent = network.bridge?.tokens?.stake;
+  if (!parent) return `${network.name}'s stake token is not bridged from a parent chain`;
+  let tokens: { bridged: Address; staked: Address };
+  try {
+    tokens = await chain.stakeTokens();
+  } catch (error) {
+    return `Could not read which token the staking contract takes (${reason(error).replace(/\.$/, "")}), so the stake token was not checked`;
+  }
+  const { stakeToken } = network.contracts;
+  if (same(tokens.bridged, stakeToken) && same(tokens.staked, stakeToken)) return undefined;
+  return (
+    `This release of brainchain-worker names ${parent} as ${network.stakeSymbol} on ${network.bridge!.name}, which the bridge turns into ${tokens.bridged} on ${network.name}, ` +
+    `and the staking contract takes ${tokens.staked}. Buying or bridging it would bring a token nothing stakes. Update with npx brainchain-worker@latest`
+  );
+}
+
+const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** The amount flag's decimals and the name the worker sees. */
 export function assetOf(network: Network, asset: Asset): { decimals: number; symbol: string } {
@@ -179,6 +217,10 @@ export async function bridge(
     return log(`sent, arrives on ${network.name} in about a minute: ${tx}`);
   }
 
+  if (asset === "stake") {
+    const problem = await stakeProblem(network, chain);
+    if (problem) throw new Error(`${problem}. Nothing was sent.`);
+  }
   const [held, value] = await Promise.all([chain.tokenBalance(asset), chain.arrivalCost(asset, amount)]);
   const needs = value + parseUnits("0.0001", 18);
   log(

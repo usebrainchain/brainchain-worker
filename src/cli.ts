@@ -8,7 +8,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
 import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
-import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
+import { assetOf, bridge, createBridgeChain, stakeProblem, type Asset } from "./bridge.js";
 import { checkToSolana, createExitChain, exit as exitToParent } from "./exit.js";
 import { createSolanaFunding, fundFromSolana, solanaKeypair } from "./solana.js";
 import { claim, createIncome } from "./claim.js";
@@ -822,6 +822,7 @@ export async function main(argv: string[]): Promise<void> {
       ...(gasUsdc ? { gasUsdc } : {}),
       stake: switches.has("stake"),
       ...(network.bridge.tokens?.stake ? { stakeToken: network.bridge.tokens.stake } : {}),
+      stakeProblem: () => stakeProblem(network, bridgeChain),
       dry: switches.has("dry"),
       log: console.log,
       parentEth: () => bridgeChain.parentEth(),

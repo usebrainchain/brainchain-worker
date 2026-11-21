@@ -146,29 +146,31 @@ export const TESTNET: Network = {
   },
 };
 
-// The 3.5.0 set. Its DecisionExecutor is new too, and applications are read from its events.
-const MAINNET_TASK_BOARD: Address = "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211";
-const MAINNET_WORKER_STAKING: Address = "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F";
-const MAINNET_PROPOSAL_BONDS: Address = "0x33260Cd6b4F368031F5AF2B5413d0CE6bb2aFAA4";
-const MAINNET_DECISION_EXECUTOR: Address = "0xFD268Ae2c1Ec0Db03C3C6b17E1AEDE973729FE29";
+// The 3.6.0 set, whose staking and bonds take the $BRAIN of the 17 November move.
+const MAINNET_TASK_BOARD: Address = "0xf72857aABB25Fe1393b57d2356A090A7000ED13e";
+const MAINNET_WORKER_STAKING: Address = "0x1FD895474772081B20914839a9dD9042bCB60Ff0";
+const MAINNET_PROPOSAL_BONDS: Address = "0xfEFE2AEd07a28792fe395B07235c3d949be808f0";
+const MAINNET_DECISION_EXECUTOR: Address = "0x0eDd6c7dC362BC8ee4601A09d72eB7c651FcD88f";
 
-const BRAIN: Address = "0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37";
+/** $BRAIN on BrainChain, and on Robinhood Chain, where the bridge's router maps the one to the other. */
+const BRAIN: Address = "0x1d909E933A7743b29e13387fB34cB29608c3833F";
+const PARENT_BRAIN: Address = "0x42b96dbc55e79E930d866c1eE486A342366546BC";
 
-/** BrainChain mainnet, release 3.5.0. */
+/** BrainChain mainnet, release 3.6.0. */
 export const MAINNET: Network = {
   id: "mainnet",
   name: "BrainChain",
   chainId: 274663,
   rpc: "https://rpc.usebrainchain.com",
   service: "https://brain.usebrainchain.com",
-  fromBlock: 965n,
+  fromBlock: 2787n,
   explorer: "https://usebrainchain.com",
   stakeSymbol: "BRAIN",
   bountySymbol: "USDG",
   gas: `Send this address ETH on Robinhood Chain, then move it here with ${cli("bridge --eth 0.001")}`,
   buyStake:
-    "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
-    `${cli("bridge --stake <amount>")} (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is ${BRAIN}.`,
+    "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0x8D7dAC20bc8e3E6C5ad0ca07A1F00a4Ecd4e35C9) and move it to BrainChain with " +
+    `${cli("bridge --stake <amount>")} (docs: https://docs.usebrainchain.com/bridging); BRAIN is ${PARENT_BRAIN} on Robinhood Chain and ${BRAIN} on BrainChain.`,
   proofs: {
     chainId: 4663,
     name: "Robinhood Chain",
@@ -195,10 +197,12 @@ export const MAINNET: Network = {
     inbox: "0x139a54F81d6Fdf7135D633CBCfB2373F0edfa2dd",
     router: "0x03f06a370A59AfB23de029F4EF5EA2F9EB034F96",
     gas: "Send it a little ETH on Robinhood Chain",
-    tokens: { stake: "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418", bounty: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
+    tokens: { stake: PARENT_BRAIN, bounty: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
   },
   exitDesk: "0x97D558417c3D61f1074422AD843e1Db1E565b952",
   retired: [
+    // Its staking and bonds hold the $BRAIN from before the move.
+    { release: "3.5.0", taskBoard: "0x44b8464342Bbfb9B565FAE494DfDefa37D33A211", staking: "0xa4351E2b84eb634E93D9082907B2d0D3Aa91B98F" },
     { release: "3.4.0", taskBoard: "0x8385bb4b8990411CcdD8e851B2676da1A4C1f3C4", staking: "0x21Fe66c04da07f85D855E9920251Df7d584c3D9F" },
     { release: "3.3.0", taskBoard: "0x72C890AA996bF7efcA88e3F5063B626560215160", staking: "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee" },
   ],
@@ -207,9 +211,9 @@ export const MAINNET: Network = {
     staking: MAINNET_WORKER_STAKING,
     bonds: MAINNET_PROPOSAL_BONDS,
     executor: MAINNET_DECISION_EXECUTOR,
-    registry: "0xA7f8A21Cc9574DB049F525a4fd499DA49c0D51ed",
-    log: "0x2EF509bd9cA1e7C5FBe2C2FD7Ff25cE9F6f9cB68",
-    gate: "0x71B2dc3dEC1aEB000936380981DfC51E47AA4fb8",
+    registry: "0xceF60eE00778ba0d7511c13f2c2F26333Eb22acb",
+    log: "0x53e0137e45C8bAc1018802aD36060cDda3B159F0",
+    gate: "0x3e5e23a5fF6548958ab3dDf42c51A59713cE550C",
     stakeToken: BRAIN,
     bountyToken: "0x8eBFEce96c0AeF7Fd23425D846a302a552c8c451",
   },
