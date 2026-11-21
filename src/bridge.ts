@@ -44,8 +44,10 @@ const DEPOSIT_GAS = 300_000n;
 
 const stakingTokenAbi = parseAbi(["function token() view returns (address)"]);
 
-/** About a day of Robinhood Chain blocks, which the gateway's own logs are read over with one request. */
+/** About a day of Robinhood Chain blocks, which the gateway's logs are read over. */
 const DEPOSIT_WINDOW_BLOCKS = 750_000n;
+/** Logs are read in ranges this long, which RPCs and anvil forks that cap a query's range still answer. */
+const LOG_RANGE = 100_000n;
 const MANIFEST_MS = 10_000;
 
 /** A deposit that was sent and not confirmed: it can still land, so what it carries may be on its way to BrainChain. */
@@ -137,12 +139,18 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
     async stakeDeposits() {
       const stake = token("stake");
       const parentGateway = await gateway(stake);
-      const [childGateway, head] = await Promise.all([read.readContract({ address: parentGateway, abi: gatewayAbi, functionName: "counterpartGateway" }), read.getBlockNumber()]);
+      const [childGateway, head, childHead] = await Promise.all([
+        read.readContract({ address: parentGateway, abi: gatewayAbi, functionName: "counterpartGateway" }),
+        read.getBlockNumber(),
+        child.getBlockNumber(),
+      ]);
       const self = account.address;
       const [initiated, finalized] = await Promise.all([
-        read.getLogs({ address: parentGateway, event: gatewayAbi[2], args: { _from: self, _to: self }, fromBlock: head > DEPOSIT_WINDOW_BLOCKS ? head - DEPOSIT_WINDOW_BLOCKS : 0n, toBlock: head }),
-        // BrainChain makes a block only for a transaction, so its whole history is one small request.
-        child.getLogs({ address: childGateway, event: gatewayAbi[3], args: { l1Token: stake, _from: self, _to: self }, fromBlock: 0n }),
+        inRanges(head > DEPOSIT_WINDOW_BLOCKS ? head - DEPOSIT_WINDOW_BLOCKS : 0n, head, (fromBlock, toBlock) =>
+          read.getLogs({ address: parentGateway, event: gatewayAbi[2], args: { _from: self, _to: self }, fromBlock, toBlock }),
+        ),
+        // BrainChain makes a block only for a transaction, so its whole history is a few small requests.
+        inRanges(0n, childHead, (fromBlock, toBlock) => child.getLogs({ address: childGateway, event: gatewayAbi[3], args: { l1Token: stake, _from: self, _to: self }, fromBlock, toBlock })),
       ]);
       const times = async (client: typeof read | typeof child, blocks: bigint[]) => {
         const unique = [...new Set(blocks)];
@@ -204,16 +212,24 @@ export function createBridgeChain(network: Network, account: PrivateKeyAccount, 
   };
 }
 
+/** The logs from `from` to `to`, read a range at a time and in order, so a capped RPC answers each and a public one is not rate limited. */
+async function inRanges<T>(from: bigint, to: bigint, read: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>): Promise<T[]> {
+  const logs: T[] = [];
+  for (let start = from; start <= to; start += LOG_RANGE) logs.push(...(await read(start, start + LOG_RANGE - 1n < to ? start + LOG_RANGE - 1n : to)));
+  return logs;
+}
+
 /**
  * What stops this release from moving the stake token, or undefined. Its pins
  * must be the contracts BrainChain's service names active, so a release left
  * behind by a new set stops before it buys or bridges a token nothing stakes,
  * as one naming the BRAIN from before the move of 17 November 2026 would.
- * When the service cannot be read, `warn` says so and the token is held to
- * the chain alone: the parent chain's token must bridge to the one the
- * staking contract takes.
+ * When the service cannot be read, the move is refused, unless `fallBack` is
+ * given: then it hears why, and the token is held to the chain alone, where
+ * the parent chain's token must bridge to the one the staking contract takes.
+ * Only a move of tokens the wallet already holds should fall back.
  */
-export async function stakeProblem(network: Network, chain: Pick<BridgeChain, "stakeTokens" | "activeSet">, warn: (line: string) => void = () => {}): Promise<string | undefined> {
+export async function stakeProblem(network: Network, chain: Pick<BridgeChain, "stakeTokens" | "activeSet">, fallBack?: (line: string) => void): Promise<string | undefined> {
   const parent = network.bridge?.tokens?.stake;
   if (!parent) return `${network.name}'s stake token is not bridged from a parent chain`;
   const [active, read] = await Promise.allSettled([chain.activeSet(), chain.stakeTokens()]);
@@ -221,7 +237,9 @@ export async function stakeProblem(network: Network, chain: Pick<BridgeChain, "s
     const stale = releaseProblem(network, active.value);
     if (stale) return stale;
   } else {
-    warn(`Could not read BrainChain's active contracts (${reason(active.reason).replace(/\.$/, "")}); checking the stake token on chain instead.`);
+    const why = reason(active.reason).replace(/\.$/, "");
+    if (!fallBack) return `Could not read BrainChain's active contracts at ${network.service}/network.json (${why}), so this release could not be confirmed current. Try again in a few minutes`;
+    fallBack(`Could not read BrainChain's active contracts (${why}); checking the stake token on chain instead.`);
   }
   if (read.status === "rejected") return `Could not read which token the staking contract takes (${reason(read.reason).replace(/\.$/, "")}), so the stake token was not checked`;
   const tokens = read.value;
@@ -248,7 +266,10 @@ function releaseProblem(network: Network, active: ActiveSet): string | undefined
   const named = active.contracts.WorkerStaking ?? "";
   const earlier = network.retired?.find((set) => same(set.staking, named));
   if (earlier) {
-    return `BrainChain still names set ${earlier.release} active, and this release of brainchain-worker stakes on the set after it, which is not active yet. Run it again once BrainChain has switched`;
+    return (
+      `BrainChain still names set ${earlier.release} active, and this release of brainchain-worker stakes on set ${network.release}, which is not active yet. ` +
+      `${network.service}/network.json names the active set; run it again once that lists set ${network.release}'s WorkerStaking, ${staking}`
+    );
   }
   const [name, pinned] = differ[0]!;
   return (

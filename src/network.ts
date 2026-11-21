@@ -5,6 +5,8 @@ import { cli } from "./invoked.js";
 export interface Network {
   /** As BRAINCHAIN_NETWORK names it, and the worker's files on this network. */
   id: "testnet" | "mainnet";
+  /** The contract set this release stakes on. */
+  release: string;
   name: string;
   chainId: number;
   rpc: string;
@@ -105,6 +107,7 @@ export interface Network {
 /** BrainChain testnet, release 3.5.0. */
 export const TESTNET: Network = {
   id: "testnet",
+  release: "3.5.0",
   name: "BrainChain testnet",
   chainId: 274630,
   rpc: "https://rpc.testnet.usebrainchain.com",
@@ -169,6 +172,7 @@ const PARENT_BRAIN: Address = "0x42b96dbc55e79E930d866c1eE486A342366546BC";
 /** BrainChain mainnet, release 3.6.0. */
 export const MAINNET: Network = {
   id: "mainnet",
+  release: "3.6.0",
   name: "BrainChain",
   chainId: 274663,
   rpc: "https://rpc.usebrainchain.com",

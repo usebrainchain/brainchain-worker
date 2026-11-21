@@ -293,13 +293,25 @@ describe("the release BrainChain names active", () => {
     const previous = MAINNET.retired![0]!;
     chain.activeSet = vi.fn(async () => ({ contracts: { ...PINNED.contracts, TaskBoard: previous.taskBoard, WorkerStaking: previous.staking } }));
     expect(await stakeProblem(MAINNET, chain)).toBe(
-      "BrainChain still names set 3.5.0 active, and this release of brainchain-worker stakes on the set after it, which is not active yet. Run it again once BrainChain has switched",
+      "BrainChain still names set 3.5.0 active, and this release of brainchain-worker stakes on set 3.6.0, which is not active yet. " +
+        `https://brain.usebrainchain.com/network.json names the active set; run it again once that lists set 3.6.0's WorkerStaking, ${staking}`,
     );
     await expect(run(chain, "stake", "1000")).rejects.toThrow(/Nothing was sent\.$/);
     expect(sent).toEqual([]);
   });
 
-  it("says so when the service cannot be read, and holds the token to the chain alone", async () => {
+  it("refuses when the service cannot be read, unless the caller falls back to the chain", async () => {
+    const { chain } = fakeChain();
+    chain.activeSet = vi.fn(async () => Promise.reject(new Error("The operation was aborted due to timeout")));
+    expect(await stakeProblem(MAINNET, chain)).toBe(
+      "Could not read BrainChain's active contracts at https://brain.usebrainchain.com/network.json (The operation was aborted due to timeout), so this release could not be confirmed current. Try again in a few minutes",
+    );
+    const heard: string[] = [];
+    expect(await stakeProblem(MAINNET, chain, (line) => void heard.push(line))).toBeUndefined();
+    expect(heard).toEqual(["Could not read BrainChain's active contracts (The operation was aborted due to timeout); checking the stake token on chain instead."]);
+  });
+
+  it("bridges, which moves the wallet's own tokens, after saying the service cannot be read, holding the token to the chain alone", async () => {
     const { chain, sent } = fakeChain();
     chain.activeSet = vi.fn(async () => Promise.reject(new Error("https://brain.usebrainchain.com/network.json answered 503")));
     const lines = await run(chain, "stake", "1000");
@@ -435,12 +447,16 @@ describe("stakeDeposits", () => {
         const { data } = params[0] as { data: Hex };
         return pad(data.startsWith(toFunctionSelector("getGateway(address)")) ? PARENT_GATEWAY : CHILD_GATEWAY);
       }
+      // The deposits sit in the range that holds them; every other range has none.
+      const { fromBlock, toBlock } = params[0] as { fromBlock: string; toBlock: string };
+      if (!(BigInt(fromBlock) <= 1_048_000n && 1_048_000n <= BigInt(toBlock))) return [];
       return [
         log(1_048_000, [initiated, pad(self), pad(self), pad("0x07")], encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [STAKE, 5n]), "1"),
         log(1_048_100, [initiated, pad(self), pad(self), pad("0x08")], encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [MAINNET.bridge!.tokens!.bounty!, 9n]), "2"),
       ];
     });
     const child = server("child", (method, params) => {
+      if (method === "eth_blockNumber") return "0xf49";
       if (method === "eth_getBlockByNumber") return block(params, () => 2_048_100);
       return [{ ...log(40, [finalized, pad(STAKE), pad(self), pad(self)], encodeAbiParameters([{ type: "uint256" }], [5n]), "3"), address: CHILD_GATEWAY }];
     });
@@ -452,10 +468,16 @@ describe("stakeDeposits", () => {
         sent: [{ tx: `0x${"1".repeat(64)}`, amount: 5n, at: 2_048_000 }],
         arrived: [{ tx: `0x${"3".repeat(64)}`, amount: 5n, at: 2_048_100 }],
       });
-      const onParent = filters.find((f) => f.chain === "parent")!.filter;
-      expect([onParent.address.toLowerCase(), onParent.topics, BigInt(onParent.fromBlock)]).toEqual([PARENT_GATEWAY.toLowerCase(), [initiated, pad(self), pad(self), null], 0x100000n - 750_000n]);
-      const onChild = filters.find((f) => f.chain === "child")!.filter;
-      expect([onChild.address.toLowerCase(), onChild.topics, BigInt(onChild.fromBlock)]).toEqual([CHILD_GATEWAY.toLowerCase(), [finalized, pad(STAKE), pad(self), pad(self)], 0n]);
+      const onParent = filters.filter((f) => f.chain === "parent").map((f) => f.filter);
+      expect(onParent.every((f) => f.address.toLowerCase() === PARENT_GATEWAY.toLowerCase() && JSON.stringify(f.topics) === JSON.stringify([initiated, pad(self), pad(self), null]))).toBe(true);
+      // The last day in ranges of 100,000 blocks, end to end, so an RPC that caps a query's range still answers.
+      const ranges = onParent.map((f): [bigint, bigint] => [BigInt(f.fromBlock), BigInt((f as unknown as { toBlock: string }).toBlock)]);
+      expect(ranges[0]![0]).toBe(0x100000n - 750_000n);
+      expect(ranges.at(-1)![1]).toBe(0x100000n);
+      expect(ranges.length).toBe(8);
+      expect(ranges.every(([from, to], i) => to - from < 100_000n && (i === 0 || from === ranges[i - 1]![1] + 1n))).toBe(true);
+      const onChild = filters.filter((f) => f.chain === "child").map((f) => f.filter);
+      expect(onChild.map((f) => [f.address.toLowerCase(), f.topics, BigInt(f.fromBlock), BigInt((f as unknown as { toBlock: string }).toBlock)])).toEqual([[CHILD_GATEWAY.toLowerCase(), [finalized, pad(STAKE), pad(self), pad(self)], 0n, 0xf49n]]);
     } finally {
       parent.close();
       child.close();
