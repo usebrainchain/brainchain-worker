@@ -42,7 +42,7 @@ export const MAX_MINT = 10;
 
 /** How often a delivered task's status is read until it settles. */
 const STATUS_SEC = 300;
-/** Grading, a dispute, its ruling, the appeal window and the ruling on appeal take up to 48 hours on set 3.5.0, so a task unsettled three days after delivery is left. */
+/** Grading, a dispute, its ruling, the appeal window and the ruling on appeal take up to 48 hours, so a task unsettled three days after delivery is left. */
 const WATCH_SEC = 3 * 86_400;
 /** A day after payment the task joins the public pool, so the worker's own attempts stop an hour short of it. */
 const OWN_SEC = 23 * 3_600;
