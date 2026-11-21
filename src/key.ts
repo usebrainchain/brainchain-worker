@@ -25,11 +25,30 @@ function keyFileProblem(text: string): string | undefined {
   return "holds characters that are not hex digits";
 }
 
+/** Whether other users can read a key file; it throws as statSync does for a file that is not there. */
+export function othersCanRead(file: string): boolean {
+  const stat = statSync(file);
+  // Windows reports no owner-only mode for any file: access there follows the folder's permissions, so there is nothing to chmod.
+  return process.platform !== "win32" && stat.isFile() && (stat.mode & 0o077) !== 0;
+}
+
 /** Warns when a key file is open to other users; it throws as statSync does for a file that is not there. */
 export function warnIfOthersCanRead(file: string, warn: (message: string) => void): void {
-  const stat = statSync(file);
-  // Windows reports no owner-only mode for any file: access there follows the folder's permissions, so there is nothing to warn about or chmod.
-  if (process.platform !== "win32" && stat.isFile() && (stat.mode & 0o077) !== 0) warn(`warning: other users can read ${file}; run chmod 600 on it`);
+  if (othersCanRead(file)) warn(`warning: other users can read ${file}; run chmod 600 on it`);
+}
+
+/** Refuses a key file other users can read, for a command that spends from the key; a file that cannot be read is keyText's to report. */
+export function refuseReadableKeyFile(command: string, env: NodeJS.ProcessEnv = process.env): void {
+  const path = env.BRAINCHAIN_WORKER_KEY_FILE?.trim();
+  if (!path) return;
+  const file = expandHome(path);
+  let open: boolean;
+  try {
+    open = othersCanRead(file);
+  } catch {
+    return;
+  }
+  if (open) throw new Error(`Other users can read ${file}, and ${command} spends from that key. Run chmod 600 on it first.`);
 }
 
 function fromFile(path: string, warn: (message: string) => void): string {

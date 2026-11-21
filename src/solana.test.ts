@@ -30,7 +30,7 @@ import {
 } from "./solana.js";
 
 const WORKER: Address = "0x611357db1876d7E7809a5b751c9A15c0E3BAc965";
-const STAKE: Address = "0xC80333bf7f4078e14Ce5b6e223aF607aDcA44418";
+const STAKE: Address = "0x42b96dbc55e79E930d866c1eE486A342366546BC";
 const SIGNER = Keypair.fromSeed(new Uint8Array(32).fill(7));
 const OWNER = SIGNER.publicKey.toBase58();
 
@@ -245,6 +245,15 @@ function rig(options: { eth?: bigint; stake?: bigint; landsEth?: bigint; landsSt
 }
 
 describe("fund", () => {
+  it("quotes no stake token that the staking contract does not take, and still funds gas without --stake", async () => {
+    const r = rig();
+    const problem = async () => "This release of brainchain-worker names an old token";
+    await expect(r.run({ stakeProblem: problem })).rejects.toThrow("This release of brainchain-worker names an old token. Nothing was sent.");
+    expect(r.previews).toEqual([]);
+    await r.run({ stake: false, stakeProblem: problem });
+    expect(r.previews).toEqual([NATIVE]);
+  });
+
   it("bridges only what this run brought, however much the wallet already held", async () => {
     const r = rig({ eth: parseEther("1"), stake: parseEther("500000") });
     await r.run();

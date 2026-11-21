@@ -7,8 +7,10 @@ import { aboutEth, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, g
 
 const BRAIN = 10n ** 18n;
 const buy =
-  "Buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0xa06e3D898Bce92F67617E0Bfb640F153A5b65AB7) and move it to BrainChain with " +
-  `${cli("bridge --stake <amount>")} (docs: https://docs.usebrainchain.com/bridging); the stake token on BrainChain is 0x3367085Eb6C79BfB0fCa4f1433ec77bFA8CB8a37.`;
+  `${cli("buy-stake")} buys what is missing with ETH or USDG on Robinhood Chain, through 0x, and offers to bridge it; ` +
+  "or buy BRAIN on Robinhood Chain at ripples.run (https://ripples.run/t/0x8D7dAC20bc8e3E6C5ad0ca07A1F00a4Ecd4e35C9) and move it to BrainChain with " +
+  `${cli("bridge --stake <amount>")} (docs: https://docs.usebrainchain.com/bridging); BRAIN is 0x42b96dbc55e79E930d866c1eE486A342366546BC on Robinhood Chain ` +
+  "and 0x1d909E933A7743b29e13387fB34cB29608c3833F on BrainChain.";
 
 function standing(overrides: { staked?: bigint; unstaking?: bigint; unlocksAt?: bigint } = {}): Snapshot {
   const w = { registered: true, staked: 0n, unstaking: 0n, unlocksAt: 0n, price: 200_000n, ...overrides };

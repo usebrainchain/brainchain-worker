@@ -8,21 +8,24 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { brainchainTransport, createChain, faucetReopens, reason, requireChainId, unhealthy, type Chain } from "./chain.js";
 import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
-import { assetOf, bridge, createBridgeChain, type Asset } from "./bridge.js";
+import { assetOf, bridge, createBridgeChain, stakeInFlight, stakeProblem, type Asset, type StakeMoves } from "./bridge.js";
+import { buyStake, createBuyChain, type Pay } from "./buy.js";
 import { checkToSolana, createExitChain, exit as exitToParent } from "./exit.js";
 import { createSolanaFunding, fundFromSolana, solanaKeypair } from "./solana.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, rpcTransport, type Network } from "./network.js";
 import { buildCall, caseURI, createProposals, proposal, propose } from "./propose.js";
+import { relayPrice } from "./relay.js";
 import { deliveries, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
-import { openStore, privateDir, readWatched, stateDir, writeWatched } from "./state.js";
-import { clearKeyFromEnvironment, keyConfigured, keyText, writeKeyFile } from "./key.js";
+import { openStore, privateDir, readStakeMoves, readWatched, saveStakeMove, stateDir, writeWatched } from "./state.js";
+import { clearKeyFromEnvironment, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { CLI, cli } from "./invoked.js";
 import { createWork, execProblems, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
+import { createQuoter } from "./zerox.js";
 
 /** How many of the latest decisions a first watch --once checks. */
 const FIRST_RUN_DECISIONS = 10n;
@@ -134,6 +137,22 @@ const COMMAND_USAGE: Record<string, string> = {
                                             with BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE, one or the
                                             other; the wallet needs about 0.002 SOL for fees. --dry quotes the
                                             move, then says what the wallet lacks, and sends nothing. Mainnet.`,
+  "buy-stake": `  brainchain-worker buy-stake [--with eth|usdg] [--dry] [--yes]
+                                            Buy at least the BRAIN join still needs, with ETH (the default) or
+                                            USDG on Robinhood Chain, through 0x, then offer to bridge what join
+                                            needs to BrainChain; any extra stays in the wallet. It sells a fixed
+                                            amount, 0x's price for that BRAIN plus 1.5%, so the spend is known
+                                            before signing. 0x's price and quote cost 0.01 USDC each, paid from the
+                                            worker's key on Base, and --dry pays for both as well: it shows the
+                                            quote, sends nothing else, and exits 1 when the wallet lacks what the
+                                            buy needs. The wallet also pays gas on Robinhood Chain and keeps
+                                            0.0003 ETH there for the bridge's deposit. Every quote is checked and
+                                            simulated before anything is signed; a sale over 7% above the BRAIN's
+                                            worth at Relay's price is refused. It shows the exact spend, which is
+                                            also the worst case, in tokens, USD and percent over that worth, and
+                                            the BRAIN expected, and asks before buying and before bridging; --yes
+                                            does both without asking. Once the BRAIN arrives on BrainChain, run
+                                            join. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]
                                             Bond the stake token and propose a change to BrainChain for Jev to
@@ -190,6 +209,7 @@ const EXAMPLES: Record<string, string> = {
   bridge: "BRAINCHAIN_NETWORK=mainnet brainchain-worker bridge --bounty 5 --dry",
   exit: "brainchain-worker exit --amount 5 --dry",
   fund: "BRAINCHAIN_NETWORK=mainnet brainchain-worker fund --from-solana --usdc 120 --stake --dry",
+  "buy-stake": "BRAINCHAIN_NETWORK=mainnet brainchain-worker buy-stake --with usdg --dry",
   propose: `BRAINCHAIN_NETWORK=mainnet brainchain-worker propose --target board --call setPaused --args '[true]' --title "Pause new posts" --rationale "Why the change is better" --dry`,
   proposal: "brainchain-worker proposal 2",
   watch: "brainchain-worker watch --once",
@@ -249,6 +269,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   bridge: { eth: false, stake: false, bounty: false, dry: true },
   exit: { amount: false, "to-solana": false, dry: true },
   fund: { "from-solana": true, usdc: false, stake: true, "gas-usdc": false, dry: true },
+  "buy-stake": { with: false, dry: true, yes: true },
   watch: { veto: true, once: true },
   credit: { "agent-id": false, premium: false },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true, yes: true },
@@ -703,6 +724,21 @@ function terminal(): { ask?: (question: string) => Promise<string> } {
   };
 }
 
+/** Saves a swap or stake deposit as it is sent, so buy-stake waits for it before it buys again. */
+function remember(network: Network, address: Address, move: StakeMoves): void {
+  try {
+    saveStakeMove(address, network, move);
+  } catch (error) {
+    // The transaction is already sent, so a folder that cannot be written to must not stop it being waited for.
+    const tx = (move.swap ?? move.deposit)!.tx;
+    console.log(`warning: could not save ${tx} in ${stateDir()} (${reason(error).replace(/\.$/, "")}); buy-stake still checks the chain for it before it buys again`);
+  }
+}
+
+function stakeSaver(network: Network, address: Address) {
+  return ({ tx, amount }: { tx: Hex; amount: bigint }) => remember(network, address, { deposit: { tx, amount, at: Math.floor(Date.now() / 1000) } });
+}
+
 async function bondCommand(network: Network, positional: string[], yes: boolean): Promise<void> {
   const args = bondArgs(positional);
   const config = network.proofs.bonds;
@@ -793,7 +829,9 @@ export async function main(argv: string[]): Promise<void> {
     if (!new RegExp(`^\\d{1,12}(\\.\\d{1,${decimals}})?$`).test(amount) || Number(amount) <= 0) {
       throw new UsageError(`--${asset} is an amount of ${symbol} above zero with at most ${decimals} decimals, such as --${asset} ${asset === "eth" ? "0.001" : "1"}`);
     }
-    return bridge(network, createBridgeChain(network, signer().account), { asset, amount, dry: switches.has("dry"), log: console.log });
+    const { account } = signer();
+    const sent = stakeSaver(network, account.address);
+    return bridge(network, createBridgeChain(network, account), { asset, amount, dry: switches.has("dry"), log: console.log, sent });
   }
   if (command === "exit") {
     const amount = values.get("amount");
@@ -822,12 +860,42 @@ export async function main(argv: string[]): Promise<void> {
       ...(gasUsdc ? { gasUsdc } : {}),
       stake: switches.has("stake"),
       ...(network.bridge.tokens?.stake ? { stakeToken: network.bridge.tokens.stake } : {}),
+      stakeProblem: () => stakeProblem(network, bridgeChain),
       dry: switches.has("dry"),
       log: console.log,
       parentEth: () => bridgeChain.parentEth(),
       parentStake: () => bridgeChain.tokenBalance("stake"),
-      bridgeOn: (asset, amount) => bridge(network, bridgeChain, { asset, amount: formatUnits(amount, assetOf(network, asset).decimals), dry: false, log: console.log }),
+      bridgeOn: (asset, amount) =>
+        bridge(network, bridgeChain, { asset, amount: formatUnits(amount, assetOf(network, asset).decimals), dry: false, log: console.log, sent: stakeSaver(network, worker.account.address) }),
     });
+  }
+  if (command === "buy-stake") {
+    const given = values.get("with") ?? "eth";
+    const pay = given.toLowerCase();
+    if (pay !== "eth" && pay !== "usdg") throw new UsageError(`--with is eth or usdg, what buy-stake sells for the BRAIN, not "${given}"`);
+    if (!network.zerox || !network.bridge) throw new UsageError(`buy-stake works on mainnet only, where BRAIN trades on Robinhood Chain; on ${network.name}, join claims the ${network.stakeSymbol} from the faucet`);
+    refuseReadableKeyFile("buy-stake");
+    const { account } = signer();
+    const chain = createChain(network, account);
+    const bridgeChain = createBridgeChain(network, account);
+    const parentChainId = network.bridge.chainId;
+    return buyStake(
+      network,
+      {
+        chain: createBuyChain(network, account),
+        async needs() {
+          const [s, bond, held] = await Promise.all([snapshot(chain), chain.bond(), chain.stakeBalance()]);
+          return { need: s.toStake + (s.applying ? bond : 0n), held, applying: s.applying };
+        },
+        stakeProblem: () => stakeProblem(network, bridgeChain),
+        inFlight: () => stakeInFlight(network, bridgeChain, readStakeMoves(account.address, network)),
+        price: (token) => relayPrice(parentChainId, token),
+        quote: createQuoter(network.zerox, account),
+        swapSent: (tx) => remember(network, account.address, { swap: { tx, at: Math.floor(Date.now() / 1000) } }),
+        bridge: (amount) => bridge(network, bridgeChain, { asset: "stake", amount: formatUnits(amount, 18), dry: false, log: console.log, sent: stakeSaver(network, account.address) }),
+      },
+      { pay: pay as Pay, dry: switches.has("dry"), yes: switches.has("yes"), ...terminal(), log: console.log },
+    );
   }
   if (command === "credit") {
     if (!network.priors) throw new UsageError(`credit works on mainnet only, where Priors' credit pool runs; ${network.name} has none`);

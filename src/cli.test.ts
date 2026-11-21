@@ -11,7 +11,7 @@ import type { Chain } from "./chain.js";
 import { asksHelp, bondArgs, fetchRecord, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace, watchResume } from "./cli.js";
 import { CLI, cli, commandName } from "./invoked.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
-import { gasHelp } from "./standing.js";
+import { gasHelp, whereToBuy } from "./standing.js";
 import { readWatched, writeWatched } from "./state.js";
 
 const ACCOUNT: Address = "0x00000000000000000000000000000000000000C1";
@@ -62,7 +62,7 @@ describe("bondArgs", () => {
 });
 
 describe("help", () => {
-  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bond", "bridge", "propose", "proposal", "watch", "credit", "dispute", "appeal", "leave", "withdraw"];
+  const COMMANDS = ["new-key", "join", "run", "status", "price", "mint", "claim", "bond", "bridge", "buy-stake", "propose", "proposal", "watch", "credit", "dispute", "appeal", "leave", "withdraw"];
 
   async function printed(argv: string[]): Promise<string> {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -260,7 +260,7 @@ describe("join", () => {
 
   const gas = (holds: string, need: string, network: Network = MAINNET) =>
     `${ACCOUNT} holds ${holds} ETH on ${network.name}; join needs about ${need} ETH for gas. ${gasHelp(network, ACCOUNT, parseEther(holds), 0)}.`;
-  const short = `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${MAINNET.buyStake}`;
+  const short = `The wallet holds 0 BRAIN of the 1,250,000 BRAIN join needs. ${whereToBuy(MAINNET)}`;
 
   it("tells a new mainnet worker with no ETH and no BRAIN both needs at once", async () => {
     expect(await joinError(fakeChain(0n, 0n), MAINNET)).toBe(`${gas("0", "0.00008")}\n${short}`);
@@ -471,6 +471,30 @@ describe("join for a worker past its application", () => {
 describe("fund's flags", () => {
   it("refuses --gas-usdc above --usdc without --stake, rather than ignore part of it", async () => {
     await expect(main(["fund", "--from-solana", "--usdc", "1", "--gas-usdc", "3"])).rejects.toThrow(new UsageError("--gas-usdc 3 is more than --usdc 1, the most this command may spend"));
+  });
+});
+
+describe("buy-stake's flags", () => {
+  it("sells eth or usdg and nothing else, and runs on mainnet only, before it reads a key", async () => {
+    vi.stubEnv("BRAINCHAIN_NETWORK", "mainnet");
+    try {
+      await expect(main(["buy-stake", "--with", "wbtc"])).rejects.toThrow(new UsageError('--with is eth or usdg, what buy-stake sells for the BRAIN, not "wbtc"'));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    await expect(main(["buy-stake", "--dry"])).rejects.toThrow(new UsageError("buy-stake works on mainnet only, where BRAIN trades on Robinhood Chain; on BrainChain testnet, join claims the tBRAIN from the faucet"));
+    expect(() => parse("buy-stake", ["--with"])).toThrow("--with needs a value");
+    // Any case of eth or usdg gets past the check to the network's, which testnet fails.
+    for (const pay of ["ETH", "Usdg"]) await expect(main(["buy-stake", "--with", pay, "--dry"])).rejects.toThrow(/^buy-stake works on mainnet only/);
+    expect(() => parse("buy-stake", ["--dry=1"])).toThrow("--dry takes no value");
+  });
+
+  it("says in its help what a run costs, what is checked, and what comes next", () => {
+    const help = usage("buy-stake").replace(/\s+/g, " ");
+    expect(help).toContain("0x's price and quote cost 0.01 USDC each, paid from the worker's key on Base, and --dry pays for both as well");
+    expect(help).toContain("The wallet also pays gas on Robinhood Chain and keeps 0.0003 ETH there for the bridge's deposit.");
+    expect(help).toContain("Every quote is checked and simulated before anything is signed; a sale over 7% above the BRAIN's worth at Relay's price is refused.");
+    expect(help).toContain("Once the BRAIN arrives on BrainChain, run join.");
   });
 });
 
