@@ -48,6 +48,16 @@ describe("createQuoter", () => {
     expect(payment.payload.authorization).toMatchObject({ from: account.address, to: PAY_TO, value: "10000" });
   });
 
+  it("buys a price from the gateway's price endpoint, paid the same way", async () => {
+    const { fetcher, seen } = gateway();
+    const price = await createQuoter(MAINNET.zerox!, account, fetcher)({ chainId: "4663", buyAmount: "1" }, "price");
+    expect(price.url).toBe("https://agent.api.0x.org/v1/x402/swap-allowance-holder-price/?chainId=4663&buyAmount=1");
+    expect(seen.map((s) => s.url)).toEqual([price.url, price.url]);
+    expect(seen[1]!.headers.get("payment-signature")).toBeTruthy();
+    const refused = await createQuoter(MAINNET.zerox!, account, gateway("20000").fetcher)({ chainId: "4663" }, "price").catch((e: unknown) => e);
+    expect((refused as Error).message).toMatch(/^0x's gateway asks 20000 of .* for a price, where buy-stake pays 0\.01 USDC on Base\. Nothing was paid\.$/);
+  });
+
   it("pays nothing when the gateway asks more than 0.01 USDC, and says what it asked", async () => {
     const { fetcher, seen } = gateway("20000");
     const error = await createQuoter(MAINNET.zerox!, account, fetcher)({ chainId: "4663" }).catch((e: unknown) => e);

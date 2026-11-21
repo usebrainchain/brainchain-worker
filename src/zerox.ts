@@ -1,6 +1,6 @@
-// buy-stake's quotes come from 0x's keyless gateway, which sells each request for 0.01 USDC on Base over x402 and needs
-// no API key. The worker pays from its own key. A refused request is still charged, so the payment is held to that
-// one price, asset and chain before it is signed, and nothing else is ever paid for.
+// buy-stake's price and quote come from 0x's keyless gateway, which sells each request for 0.01 USDC on Base over x402
+// and needs no API key. The worker pays from its own key. A refused request is still charged, so the payment is held
+// to that one price, asset and chain before it is signed, and nothing else is ever paid for.
 
 import { decodePaymentResponseHeader, wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
@@ -18,20 +18,20 @@ export interface PaidQuote {
   payment?: string;
 }
 
-export type Quoter = (query: Record<string, string>) => Promise<PaidQuote>;
+export type Quoter = (query: Record<string, string>, kind?: "price" | "quote") => Promise<PaidQuote>;
 
 /** Far above a quote, which is about 13 KB with its calldata. */
 const BODY_LIMIT = 1 << 20;
 const REQUEST_MS = 30_000;
 
-/** A quote that was not paid for: the gateway asked for something else, or the payment could not be made. */
+/** An answer that was not paid for: the gateway asked for something else, or the payment could not be made. */
 export class NotPaid extends Error {}
 
 export function createQuoter(zerox: NonNullable<Network["zerox"]>, account: LocalAccount, fetchImpl: typeof fetch = fetch): Quoter {
   const { payment } = zerox;
   const network = `eip155:${payment.chainId}` as const;
   const usdc = (amount: bigint | string) => `${formatUnits(BigInt(amount), 6)} USDC`;
-  return async (query) => {
+  return async (query, kind = "quote") => {
     let asked: string | undefined;
     let signed = false;
     const client = x402Client.fromConfig({
@@ -56,7 +56,7 @@ export function createQuoter(zerox: NonNullable<Network["zerox"]>, account: Loca
     client.onAfterPaymentCreation(async () => {
       signed = true;
     });
-    const url = `${zerox.quote}?${new URLSearchParams(query)}`;
+    const url = `${zerox[kind]}?${new URLSearchParams(query)}`;
     // The x402 client sends clones of the request, so each one carries its own deadline.
     const timed: typeof fetch = (input, init) => fetchImpl(input, { ...init, signal: AbortSignal.timeout(REQUEST_MS) });
     let response: Response;
@@ -64,8 +64,8 @@ export function createQuoter(zerox: NonNullable<Network["zerox"]>, account: Loca
       response = await wrapFetchWithPayment(timed, client)(url, { headers: { "Accept-Signature": ACCEPT_SIGNATURE } });
     } catch (error) {
       if (signed) throw new Error(`0x's gateway did not answer after the payment was signed (${reason(error).replace(/\.$/, "")}), so its ${usdc(payment.price)} may be spent. Nothing else was sent.`);
-      if (asked) throw new NotPaid(`0x's gateway asks ${asked} for a quote, where buy-stake pays ${usdc(payment.price)} on ${payment.name}. Nothing was paid.`);
-      throw new NotPaid(`Could not buy a quote from 0x's gateway: ${reason(error).replace(/\.$/, "")}. Nothing was paid.`);
+      if (asked) throw new NotPaid(`0x's gateway asks ${asked} for a ${kind}, where buy-stake pays ${usdc(payment.price)} on ${payment.name}. Nothing was paid.`);
+      throw new NotPaid(`Could not buy a ${kind} from 0x's gateway: ${reason(error).replace(/\.$/, "")}. Nothing was paid.`);
     }
     if (response.status === 402) throw new NotPaid(`0x's gateway refused the payment (402). Nothing was paid; check the wallet's USDC on ${payment.name}.`);
     const body = await capped(response).catch((error: unknown) => {

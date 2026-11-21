@@ -45,6 +45,7 @@ describe("resolveNetwork", () => {
       ["3.3.0", "0x72C890AA996bF7efcA88e3F5063B626560215160", "0x0fb02559e704549794EdF3FBBBe91DB88bB849ee"],
     ]);
     expect(network.zerox).toEqual({
+      price: "https://agent.api.0x.org/v1/x402/swap-allowance-holder-price/",
       quote: "https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/",
       payment: { chainId: 8453, name: "Base", rpc: "https://mainnet.base.org", usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", price: 10_000n },
     });

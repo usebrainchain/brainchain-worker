@@ -95,6 +95,8 @@ export interface Network {
    * gateway, which the worker pays per quote in USDC on Base from its own key.
    */
   zerox?: {
+    /** The exact-out price that estimates the sale, then the exact-in quote that is sent. */
+    price: string;
     quote: string;
     payment: { chainId: number; name: string; rpc: string; usdc: Address; price: bigint };
   };
@@ -208,6 +210,7 @@ export const MAINNET: Network = {
     tokens: { stake: PARENT_BRAIN, bounty: "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168" },
   },
   zerox: {
+    price: "https://agent.api.0x.org/v1/x402/swap-allowance-holder-price/",
     quote: "https://agent.api.0x.org/v1/x402/swap-allowance-holder-quote/",
     payment: { chainId: 8453, name: "Base", rpc: "https://mainnet.base.org", usdc: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", price: 10_000n },
   },
