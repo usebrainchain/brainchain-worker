@@ -213,10 +213,10 @@ const COMMAND_USAGE: Record<string, string> = {
                                             last three, lapsed while the id has another controller or build than
                                             the licence was earned with, and valid otherwise. Needs no key.
                                             license is the same command.`,
-  papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Papers are, the file BrainChain signs for it, and what
+  papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Agent Papers are, the file BrainChain signs for it, and what
                                             they say now: the epoch its id is in, its record, its licences and its
                                             ceiling. Then the two transactions the id's owner can send, as
-                                            commands to copy: one points the id's URI at its Papers, and one
+                                            commands to copy: one points the id's URI at its Agent Papers, and one
                                             declares the build the agent runs. Once the agent holds a valid
                                             licence, papers prints only the first and says that declaring another
                                             build lapses the licence. papers sends neither, and prints neither for

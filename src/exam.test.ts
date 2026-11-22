@@ -1012,7 +1012,7 @@ describe("papers", () => {
     await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
     const url = `${MAINNET.service}/papers/4663/501`;
     expect(lines.slice(0, 7)).toEqual([
-      `Papers of agent 501 on Robinhood Chain: ${url}`,
+      `Agent Papers of agent 501 on Robinhood Chain: ${url}`,
       `  Epoch     2 (a new controller or build of the id starts a new epoch), since 2099-12-31T00:00:00Z; controller ${wallet.address}; build "atlas 2.1"`,
       `  Record    31 entries: ${MAINNET.service}/agents/4663/501/record`,
       "  Licence   code  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 1 passed, 0 failed",
@@ -1026,7 +1026,7 @@ describe("papers", () => {
         "Two transactions the id's owner can send, on Robinhood Chain. Both are optional, and this command sends neither.",
         "They are written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.",
         "",
-        "  Point the id's URI at its Papers, so the record shows wherever the id's token is shown:",
+        "  Point the id's URI at its Agent Papers, so they show wherever the id's token is shown:",
         `    cast send ${MAINNET.identity} "setAgentURI(uint256,string)" 501 "${url}" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
         "",
         "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
@@ -1070,7 +1070,7 @@ describe("papers", () => {
     expect(lines.at(-1)).toContain("This version of brainchain-worker names no ERC-8004 registry on Robinhood Chain testnet: put the registry the id is on in place of <identity registry>.");
     expect(lines.at(-1)).toContain(`cast send <identity registry> "setAgentURI(uint256,string)" 9 "${TESTNET.service}/papers/46630/9" --rpc-url https://rpc.testnet.chain.robinhood.com --interactive`);
     await expect(papers(TESTNET, { agentId: "10", log: () => {}, fetcher: desk.fetcher })).rejects.toThrow(
-      "The BrainChain service at brain.testnet.usebrainchain.com serves no Papers for agent 10 on Robinhood Chain testnet: no one controls that id, or Papers are not served on BrainChain testnet.",
+      "The BrainChain service at brain.testnet.usebrainchain.com serves no Agent Papers for agent 10 on Robinhood Chain testnet: no one controls that id, or Agent Papers are not served on BrainChain testnet.",
     );
   });
 });

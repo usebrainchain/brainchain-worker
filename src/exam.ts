@@ -708,14 +708,14 @@ export async function papers(network: Network, options: { agentId: string; log: 
   const parent = identityChain(network);
   const path = `/papers/${parent.chainId}/${agentId}`;
   const url = `${network.service}${path}`;
-  const file = await read(network, path, options.fetcher ?? fetch, `The BrainChain service at ${hostOf(network)} serves no Papers for agent ${agentId} on ${parent.name}: no one controls that id, or Papers are not served on ${network.name}.`);
+  const file = await read(network, path, options.fetcher ?? fetch, `The BrainChain service at ${hostOf(network)} serves no Agent Papers for agent ${agentId} on ${parent.name}: no one controls that id, or Agent Papers are not served on ${network.name}.`);
   const signed = isObject(file.brainchain) && isObject(file.brainchain.papers) ? file.brainchain.papers : {};
   const epoch = isObject(signed.epoch) ? signed.epoch : {};
   const record = isObject(signed.record) ? signed.record : undefined;
   const held = Array.isArray(signed.licences) ? signed.licences.filter(isObject) : [];
   const ceiling = isObject(signed.ceiling) ? signed.ceiling : undefined;
   const units = (value: unknown) => (typeof value === "string" && /^\d{1,30}$/.test(value) ? money(BigInt(value)) : "?");
-  log(`Papers of agent ${agentId} on ${parent.name}: ${url}`);
+  log(`Agent Papers of agent ${agentId} on ${parent.name}: ${url}`);
   log(`  Epoch     ${String(epoch.number ?? "?")} (a new controller or build of the id starts a new epoch)${typeof epoch.since === "number" ? `, since ${date(epoch.since)}` : ""}; controller ${printable(String(epoch.controller ?? "unknown"))}; build ${typeof epoch.build === "string" && epoch.build ? JSON.stringify(printable(epoch.build)) : "none declared"}`);
   if (record) log(`  Record    ${String(record.entries)} ${record.entries === 1 ? "entry" : "entries"}: ${typeof record.url === "string" ? printable(record.url) : `${network.service}/agents/${parent.chainId}/${agentId}/record`}`);
   else log("  Record    no entry yet");
@@ -749,7 +749,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
       ...(network.identity ? [] : [`This version of brainchain-worker names no ERC-8004 registry on ${parent.name}: put the registry the id is on in place of <identity registry>.`]),
       `${licensed ? "It is" : "They are"} written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.`,
       "",
-      "  Point the id's URI at its Papers, so the record shows wherever the id's token is shown:",
+      "  Point the id's URI at its Agent Papers, so they show wherever the id's token is shown:",
       `    cast send ${registry} "setAgentURI(uint256,string)" ${agentId} "${url}" --rpc-url ${rpc} --interactive`,
       "",
       ...(licensed

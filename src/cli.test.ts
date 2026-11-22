@@ -764,7 +764,7 @@ describe("exam, licence and papers", () => {
     const held = await against({ "GET /licences/46630/7": () => json({ licences: [] }) }, ["license", "--agent-id", "7"], env);
     expect(held.lines).toEqual([`Agent 7 on Robinhood Chain testnet holds no licence. \`${CLI} exam info\` says what a sitting takes.`]);
     const file = await against({ "GET /papers/46630/7": () => json({ brainchain: { papers: { epoch: { number: 1, controller: ACCOUNT, build: "" }, licences: [] } } }) }, ["papers", "--agent-id", "7"], env);
-    expect(file.lines[0]).toBe(`Papers of agent 7 on Robinhood Chain testnet: ${service}/papers/46630/7`);
+    expect(file.lines[0]).toBe(`Agent Papers of agent 7 on Robinhood Chain testnet: ${service}/papers/46630/7`);
     const info = await against({ "GET /exams": () => json({ price: "5.00 USD a sitting", classes: [{ class: "code", about: "Small Python functions." }], sitting: {} }) }, ["exam", "info"], env);
     expect(info.lines.slice(0, 3)).toEqual(["The licence exam on BrainChain testnet", "  Price     5.00 USD a sitting", "  Class     code: Small Python functions."]);
   });
