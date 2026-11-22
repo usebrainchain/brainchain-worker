@@ -194,6 +194,20 @@ export function execProblems(command: string, cwd = process.cwd()): string[] {
   return problems;
 }
 
+/**
+ * What a brief could make --exec do beyond answering it. Claude Code keeps its
+ * own tools and the user's MCP servers unless the command turns them off, and
+ * a brief comes from whoever posts the task.
+ */
+export function execRisks(command: string): string[] {
+  const program = firstProgram(command);
+  if (program === undefined || basename(program) !== "claude") return [];
+  const risks: string[] = [];
+  if (!/(^|\s)--tools(\s|=)/.test(command)) risks.push(`Claude Code keeps its tools, a shell and file reads among them; add --tools "" to --exec`);
+  if (!/(^|\s)--strict-mcp-config(\s|$)/.test(command)) risks.push("Claude Code loads your MCP servers, and a brief can ask the model to use them; add --strict-mcp-config to --exec");
+  return risks;
+}
+
 function executable(file: string): boolean {
   try {
     accessSync(file, constants.X_OK);
@@ -423,14 +437,49 @@ export async function deliverable(
 ): Promise<string> {
   const output = stripAnsi(await command.run(input, options.env, options.timeoutMs, options.started).finally(options.finished)).trim();
   if (output === "") throw new Error("The command printed nothing");
-  const lower = output.toLowerCase();
-  if (options.secrets.some((secret) => secret !== "" && lower.includes(secret.toLowerCase()))) {
+  if (holdsSecret(output, options.secrets)) {
     throw new PermanentError("The result contains the worker's private key, so it was not uploaded. Check what the command can read");
   }
   const bytes = toBytes(output).byteLength;
   // Not permanent: a retry runs the command again, and a model's next answer can fit.
   if (bytes > MAX_RESULT_BYTES) throw new Error(`The result is ${bytes} bytes; at most ${MAX_RESULT_BYTES} are accepted`);
   return output;
+}
+
+/**
+ * Whether text holds a secret as written, in any case, spaced out, reversed,
+ * or encoded as hex or base64 (twice at most). A backstop only: the command
+ * should not be able to read the key at all.
+ */
+export function holdsSecret(text: string, secrets: string[]): boolean {
+  const forms = secrets
+    .filter((secret) => secret.length >= 16)
+    .flatMap((secret) => {
+      const raw = /^(0x)?[0-9a-f]{64}$/i.test(secret) ? [Buffer.from(secret.replace(/^0x/i, ""), "hex").toString("latin1")] : [];
+      return [secret, [...secret].reverse().join(""), ...raw].map((form) => form.toLowerCase());
+    });
+  if (forms.length === 0) return false;
+  const found = (candidate: string) => {
+    const lower = candidate.toLowerCase();
+    const squeezed = lower.replace(/[^0-9a-z]/g, "");
+    return forms.some((form) => lower.includes(form) || (form.length >= 16 && /^[0-9a-z]+$/.test(form) && squeezed.includes(form)));
+  };
+  const once = [text, ...decodings(text)];
+  return once.some(found) || once.slice(1).flatMap(decodings).some(found);
+}
+
+/** What each base64 or hex run in the text decodes to, from every alignment. */
+function decodings(text: string): string[] {
+  const compact = text.replace(/\s+/g, "");
+  const decoded: string[] = [];
+  for (const run of compact.match(/[A-Za-z0-9+/_-]{24,}={0,2}/g) ?? []) {
+    const standard = run.replace(/-/g, "+").replace(/_/g, "/");
+    for (let skip = 0; skip < 4; skip++) decoded.push(Buffer.from(standard.slice(skip), "base64").toString("latin1"));
+  }
+  for (const run of compact.match(/[0-9a-fA-F]{32,}/g) ?? []) {
+    for (let skip = 0; skip < 2; skip++) decoded.push(Buffer.from(run.slice(skip), "hex").toString("latin1"));
+  }
+  return decoded;
 }
 
 /** The task `run --try` gives the command: a short one, shaped as every brief is. */

@@ -1,4 +1,5 @@
-import { isIP } from "node:net";
+import { lookup } from "node:dns/promises";
+import { BlockList, isIP } from "node:net";
 
 import {
   BaseError,
@@ -676,10 +677,34 @@ function publicHost(hostname: string): boolean {
   return host.includes(".") && !/(^|\.)localhost$|\.local$|\.internal$/.test(host);
 }
 
-async function download(uri: string, fetcher: typeof fetch): Promise<Uint8Array> {
+/** Loopback, private, link-local, shared, benchmark, multicast and reserved ranges: a public name can still point at them. */
+const PRIVATE = new BlockList();
+for (const [net, prefix] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3]] as const) {
+  PRIVATE.addSubnet(net, prefix, "ipv4");
+}
+for (const [net, prefix] of [["::", 127], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8]] as const) PRIVATE.addSubnet(net, prefix, "ipv6");
+
+function privateAddress(address: string): boolean {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address)?.[1];
+  if (mapped !== undefined) return PRIVATE.check(mapped, "ipv4");
+  return PRIVATE.check(address, isIP(address) === 6 ? "ipv6" : "ipv4");
+}
+
+export type Resolve = (host: string) => Promise<string[]>;
+
+const resolveHost: Resolve = async (host) => (await lookup(host, { all: true, verbatim: true })).map((answer) => answer.address);
+
+async function download(uri: string, fetcher: typeof fetch, resolve: Resolve): Promise<Uint8Array> {
   if (!URL.canParse(uri)) throw new PermanentError("The brief's URL is not valid");
   const url = new URL(uri);
   if (!publicHost(url.hostname)) throw new PermanentError(`The brief is on ${url.hostname}, which is not a public host`);
+  const addresses = await resolve(url.hostname).catch((error: unknown) => {
+    throw new Error(`The brief's host ${url.hostname} did not resolve: ${reason(error)}`);
+  });
+  // fetch looks the name up again; an answer that changes in between still has to match the brief's hash on chain.
+  if (addresses.length === 0 || addresses.some(privateAddress)) {
+    throw new PermanentError(`The brief is on ${url.hostname}, which points at a private address`);
+  }
   const stop = new AbortController();
   const response = await fetcher(url, { redirect: "error", signal: AbortSignal.any([stop.signal, AbortSignal.timeout(15_000)]) });
   if (!response.ok) throw new Error(`The brief answered ${response.status}`);
@@ -697,14 +722,14 @@ async function download(uri: string, fetcher: typeof fetch): Promise<Uint8Array>
 }
 
 /** Reads a brief and checks it against the hash on chain. Briefs are base64 data URIs or https URLs. */
-export async function fetchBrief(uri: string, expected: Hex, fetcher: typeof fetch = fetch): Promise<string> {
+export async function fetchBrief(uri: string, expected: Hex, fetcher: typeof fetch = fetch, resolve: Resolve = resolveHost): Promise<string> {
   let bytes: Uint8Array;
   if (uri.startsWith("data:")) {
     const comma = uri.indexOf(",");
     if (comma < 0 || !uri.slice(0, comma).endsWith(";base64")) throw new PermanentError("The brief's data URI is not base64");
     bytes = Uint8Array.from(Buffer.from(uri.slice(comma + 1), "base64"));
   } else if (uri.startsWith("https://")) {
-    bytes = await download(uri, fetcher);
+    bytes = await download(uri, fetcher, resolve);
   } else {
     throw new PermanentError("The brief is neither a data URI nor an https URL");
   }

@@ -24,7 +24,7 @@ import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { CLI, cli } from "./invoked.js";
-import { createWork, execProblems, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
+import { createWork, execProblems, execRisks, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
 import { createQuoter } from "./zerox.js";
 
 /** How many of the latest decisions a first watch --once checks. */
@@ -524,7 +524,7 @@ async function status(chain: Chain, network: Network): Promise<void> {
 
 function runFlags(values: Map<string, string>): { exec: string; format: "prompt" | "json"; minutes: number } {
   const exec = values.get("exec");
-  if (!exec) throw new UsageError(`--exec is required: the command that does the work, such as --exec 'claude -p --tools ""'`);
+  if (!exec) throw new UsageError(`--exec is required: the command that does the work, such as --exec 'claude -p --tools "" --strict-mcp-config'`);
   const format = values.get("format") ?? "prompt";
   if (format !== "prompt" && format !== "json") throw new UsageError("--format is prompt or json");
   const minutes = values.get("timeout") ?? "20";
@@ -540,6 +540,7 @@ async function run(network: Network, { key, account }: Signer, { exec, format, m
   privateDir(stateDir(), log);
   clearKeyFromEnvironment(key, log);
   for (const problem of execProblems(exec)) log(`warning: ${problem}, so --exec will fail when the worker is hired`);
+  for (const risk of execRisks(exec)) log(`warning: ${risk}`);
   const store = openStore(account.address, network, log);
   // The lock rules out a live run, so a command still in the state was left by one that died.
   await stopLeftover(store, log);
@@ -658,6 +659,7 @@ async function rehearsal({ exec, format, minutes }: ReturnType<typeof runFlags>)
     secrets = [key, key.slice(2)];
   }
   for (const problem of execProblems(exec)) log(`warning: ${problem}, so --exec will fail when the worker is hired`);
+  for (const risk of execRisks(exec)) log(`warning: ${risk}`);
   const delivered = await rehearse(shellCommand(exec), { format, timeoutMs: minutes * 60_000, secrets, log });
   if (secrets.length === 0) log("No key is set, so the check that a result never holds the worker's key did not run.");
   if (!delivered) process.exitCode = 1;

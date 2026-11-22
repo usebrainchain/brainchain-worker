@@ -36,6 +36,8 @@ function reverted(abi: typeof taskBoardAbi | typeof workerStakingAbi | typeof er
 }
 
 describe("fetchBrief", () => {
+  const publicDns = async () => ["93.184.215.14"];
+
   it("checks a brief against its hash", async () => {
     expect(await fetchBrief(dataURI, briefHash)).toBe(brief);
     await expect(fetchBrief(dataURI, keccak256(toBytes("other")))).rejects.toThrow(PermanentError);
@@ -49,7 +51,26 @@ describe("fetchBrief", () => {
     }
     expect(fetcher).not.toHaveBeenCalled();
     const ok = vi.fn<typeof fetch>(async () => new Response(brief));
-    expect(await fetchBrief("https://briefs.example.com/1.json", briefHash, ok)).toBe(brief);
+    expect(await fetchBrief("https://briefs.example.com/1.json", briefHash, ok, publicDns)).toBe(brief);
+  });
+
+  it("refuses a public name that points at a private address", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    for (const address of ["127.0.0.1", "10.0.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1"]) {
+      const dns = async () => ["93.184.215.14", address];
+      await expect(fetchBrief("https://127.0.0.1.nip.io/brief.json", briefHash, fetcher, dns)).rejects.toThrow("points at a private address");
+    }
+    await expect(fetchBrief("https://briefs.example.com/1.json", briefHash, fetcher, async () => [])).rejects.toThrow(PermanentError);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("retries a name that does not resolve", async () => {
+    const failing = async () => {
+      throw new Error("getaddrinfo ENOTFOUND");
+    };
+    const result = fetchBrief("https://briefs.example.com/1.json", briefHash, vi.fn<typeof fetch>(), failing);
+    await expect(result).rejects.toThrow("did not resolve");
+    await expect(result).rejects.not.toThrow(PermanentError);
   });
 
   it("stops reading a brief past 256 KB", async () => {
@@ -60,7 +81,7 @@ describe("fetchBrief", () => {
         controller.enqueue(new Uint8Array(64 * 1024));
       },
     });
-    await expect(fetchBrief("https://briefs.example.com/big.json", briefHash, async () => new Response(endless))).rejects.toThrow("larger than 256 KB");
+    await expect(fetchBrief("https://briefs.example.com/big.json", briefHash, async () => new Response(endless), publicDns)).rejects.toThrow("larger than 256 KB");
     expect(pulled).toBeLessThan(10);
   });
 });
