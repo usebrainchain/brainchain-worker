@@ -1,6 +1,6 @@
 // The licence exam for an ERC-8004 agent the worker's wallet holds: what it is
 // and costs, a sitting opened for a payment over x402, each item delivered
-// once, and the outcome read back, with the agent's licences and its Papers.
+// once, and the outcome read back, with the agent's licences and its Agent Papers.
 // The service takes every message from the wallet that holds the agent's id, so
 // the worker's key signs them, and the desk is paid in USDG on the chain the id is on.
 import { ExactEvmScheme } from "@x402/evm/exact/client";
@@ -669,7 +669,7 @@ const STATES: Record<string, string> = {
 
 /** A licence as one line: its class, its state and the dates and counts that go with it. */
 function licenceLine(entry: Record<string, unknown>): string {
-  // The licences route nests the signed licence; the Papers carry its fields flat.
+  // The licences route nests the signed licence; the Agent Papers carry its fields flat.
   const signed = isObject(entry.licence) && isObject(entry.licence.licence) ? entry.licence.licence : entry;
   const audits = isObject(entry.audits) ? `; audits: ${String(entry.audits.passed)} passed, ${String(entry.audits.failed)} failed` : "";
   const state = typeof entry.state === "string" ? (STATES[entry.state] ?? printable(entry.state)) : "state not given";
@@ -700,7 +700,7 @@ export async function licences(network: Network, options: { agentId: string; log
 }
 
 /**
- * Prints where an agent's Papers are and what they say now, then the two transactions the id's owner may send
+ * Prints where an agent's Agent Papers are and what they say now, then the two transactions the id's owner may send
  * once, as commands to copy. Nothing is sent from here: the worker has no call to the identity registry.
  */
 export async function papers(network: Network, options: { agentId: string; log: (line: string) => void; fetcher?: typeof fetch }): Promise<void> {
@@ -726,15 +726,15 @@ export async function papers(network: Network, options: { agentId: string; log: 
     const halved = typeof ceiling.halvedUntil === "number" ? `; halved until ${date(ceiling.halvedUntil)}, after a refusal upheld on a dispute` : "";
     log(`  Ceiling   the agent may hold at most ${units(ceiling.units)} USDG of paid work in flight at once, and never less than the ${units(ceiling.floor)} USDG every agent starts with${halved}`);
   }
-  else log("  Ceiling   not stated");
+  else log("  Ceiling   not stated (the most paid work the agent may hold at once)");
   log(`  Card      ${url}/card.svg`);
   if (typeof signed.verify === "string") log(`  Check     ${printable(signed.verify)}`);
 
-  // An id bound to an NFT is owned in the registry by the binding adapter, so a call from the holder's wallet is not the owner's.
+  // An id bound to an NFT is owned in the registry by the contract that binds it, so a call from the holder's wallet is not the owner's.
   const bound = isObject(epoch.bound) ? epoch.bound : undefined;
   if (bound) {
     const token = `token ${printable(String(bound.tokenId))} of ${printable(String(bound.token))}`;
-    return log(`\nThe id is bound to an NFT, ${token}, and that token's holder controls it. Its owner in the registry is the binding adapter, the contract that ties the id to the NFT, not the holder's wallet, so no registry calls are printed here.`);
+    return log(`\nThe id is bound to an NFT, ${token}, and that token's holder controls it. In the registry the id is owned by the contract that ties it to the NFT, not by the holder's wallet, so no registry calls are printed here.`);
   }
   const registry = network.identity ?? "<identity registry>";
   const rpc = network.bridge?.rpc ?? network.proofs.rpc;
@@ -756,7 +756,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
         ? ["  The agent's licence stands for the build the id declares now. Declaring another build lapses the licence."]
         : [
             "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
-            "  A build that starts with house:, a prefix BrainChain keeps for the agents it runs itself, is read without it.",
+            "  Leave out the prefix house:, which BrainChain keeps for the agents it runs itself and drops from a declared build.",
             "  A licence stands for the build declared when its sitting opened, so declare it before sitting: a change of build lapses the licence.",
             `    cast send ${registry} "setMetadata(uint256,string,bytes)" ${agentId} build "$(cast from-utf8 '<build>')" --rpc-url ${rpc} --interactive`,
           ]),

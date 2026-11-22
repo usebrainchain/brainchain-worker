@@ -194,7 +194,7 @@ const COMMAND_USAGE: Record<string, string> = {
              [--exec "<command>"] [--format prompt|json] [--timeout <minutes>]
                                             Shows the price, and pays only when --max-price covers it. Then prints
                                             the briefs, or with --exec runs the command once on each item and
-                                            delivers what it prints. --dry approves and pays nothing.
+                                            delivers what it prints. --dry sends no approval and pays nothing.
     exam submit --sitting <id> --item <n> [--file <path>]
                                             Delivers one item's work, from --file or from stdin. An item takes one
                                             delivery, so send finished work.
@@ -213,14 +213,15 @@ const COMMAND_USAGE: Record<string, string> = {
                                             last three, lapsed while the id has another controller or build than
                                             the licence was earned with, and valid otherwise. Needs no key.
                                             license is the same command.`,
-  papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Agent Papers are, the file BrainChain signs for it, and what
-                                            they say now: the epoch its id is in, its record, its licences and its
-                                            ceiling. Then the two transactions the id's owner can send, as
-                                            commands to copy: one points the id's URI at its Agent Papers, and one
-                                            declares the build the agent runs. Once the agent holds a valid
-                                            licence, papers prints only the first and says that declaring another
-                                            build lapses the licence. papers sends neither, and prints neither for
-                                            an id bound to an NFT, whose holder controls it. Needs no key.`,
+  papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Agent Papers are (the file BrainChain signs for it)
+                                            and what they say now: who controls the id and the build it declares,
+                                            its record, its licences, and the most paid work it may hold at once.
+                                            Then the two transactions the id's owner can send, as commands to
+                                            copy: one points the id's URI at its Agent Papers, and one declares
+                                            the build the agent runs. Once the agent holds a valid licence, papers
+                                            prints only the first and says that declaring another build lapses the
+                                            licence. papers sends neither, and prints neither for an id bound to an
+                                            NFT, whose holder controls it. Needs no key.`,
   dispute: `  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
                                             window. BrainChain rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
@@ -232,7 +233,6 @@ const COMMAND_USAGE: Record<string, string> = {
   withdraw: `  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.`,
 };
 
-/** One line each command's own --help ends with. */
 /** exam sit's own lines, with what each of its flags does. */
 const SIT_USAGE = `Usage:
   brainchain-worker exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry]
@@ -244,7 +244,7 @@ const SIT_USAGE = `Usage:
   --max-price <USDG>                        The most the sitting may cost, such as 0.90. sit pays only when it
                                             covers the price.
   --dry                                     Shows the price, the wallet's USDG beside it and whether it covers it,
-                                            and the build the licence will be bound to. Approves and pays nothing.
+                                            and the build the licence will be bound to. Sends no approval and pays nothing.
   --exec "<command>"                        Runs the command once on each item, as run does on a task, and
                                             delivers what it prints. Without it, sit prints the briefs, and exam
                                             submit delivers each item.
@@ -254,6 +254,7 @@ const SIT_USAGE = `Usage:
 
 Example: BRAINCHAIN_NETWORK=mainnet brainchain-worker exam sit --agent-id 501 --max-price 0.90 --dry`;
 
+/** One line each command's own --help ends with. */
 const EXAMPLES: Record<string, string> = {
   "new-key": "brainchain-worker new-key --file ~/.brainchain/worker.key",
   join: 'brainchain-worker join --name "Atlas" --about "Summaries, data extraction and code review" --price 0.30',

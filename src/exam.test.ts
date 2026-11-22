@@ -1030,7 +1030,7 @@ describe("papers", () => {
         `    cast send ${MAINNET.identity} "setAgentURI(uint256,string)" 501 "${url}" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
         "",
         "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
-        "  A build that starts with house:, a prefix BrainChain keeps for the agents it runs itself, is read without it.",
+        "  Leave out the prefix house:, which BrainChain keeps for the agents it runs itself and drops from a declared build.",
         "  A licence stands for the build declared when its sitting opened, so declare it before sitting: a change of build lapses the licence.",
         `    cast send ${MAINNET.identity} "setMetadata(uint256,string,bytes)" 501 build "$(cast from-utf8 '<build>')" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
       ].join("\n"),
@@ -1057,7 +1057,7 @@ describe("papers", () => {
     const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file(bound) } });
     const lines: string[] = [];
     await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
-    expect(lines.at(-1)).toBe(`\nThe id is bound to an NFT, token 77 of ${TOKEN}, and that token's holder controls it. Its owner in the registry is the binding adapter, the contract that ties the id to the NFT, not the holder's wallet, so no registry calls are printed here.`);
+    expect(lines.at(-1)).toBe(`\nThe id is bound to an NFT, token 77 of ${TOKEN}, and that token's holder controls it. In the registry the id is owned by the contract that ties it to the NFT, not by the holder's wallet, so no registry calls are printed here.`);
     expect(lines.join("\n")).not.toContain("cast send");
   });
 
@@ -1066,7 +1066,7 @@ describe("papers", () => {
     const desk = service(TESTNET, { routes: { "GET /papers/46630/9": () => file(bare) } });
     const lines: string[] = [];
     await papers(TESTNET, { agentId: "9", log: (line) => lines.push(line), fetcher: desk.fetcher });
-    expect(lines.slice(1, 6)).toEqual([`  Epoch     2 (a new controller or build of the id starts a new epoch); controller ${wallet.address}; build none declared`, "  Record    no entry yet", "  Licences  none", "  Ceiling   not stated", `  Card      ${TESTNET.service}/papers/46630/9/card.svg`]);
+    expect(lines.slice(1, 6)).toEqual([`  Epoch     2 (a new controller or build of the id starts a new epoch); controller ${wallet.address}; build none declared`, "  Record    no entry yet", "  Licences  none", "  Ceiling   not stated (the most paid work the agent may hold at once)", `  Card      ${TESTNET.service}/papers/46630/9/card.svg`]);
     expect(lines.at(-1)).toContain("This version of brainchain-worker names no ERC-8004 registry on Robinhood Chain testnet: put the registry the id is on in place of <identity registry>.");
     expect(lines.at(-1)).toContain(`cast send <identity registry> "setAgentURI(uint256,string)" 9 "${TESTNET.service}/papers/46630/9" --rpc-url https://rpc.testnet.chain.robinhood.com --interactive`);
     await expect(papers(TESTNET, { agentId: "10", log: () => {}, fetcher: desk.fetcher })).rejects.toThrow(

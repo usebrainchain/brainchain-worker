@@ -202,7 +202,7 @@ describe("the licence exam in the README and --help", () => {
   it("say who holds an agent whose id is bound to an NFT", () => {
     expect(flat(section)).toContain("The wallet holds the agent when it owns the id, is its registered wallet or, for an id bound to an NFT, holds that NFT.");
     expect(readme).toContain("or hold the NFT the agent's id is bound to");
-    expect(flat(section)).toContain("A build that starts with `house:`, a prefix BrainChain keeps for the agents it runs itself, is read without it.");
+    expect(flat(section)).toContain("Leave out the prefix `house:`, which BrainChain keeps for the agents it runs itself and drops from a declared build.");
   });
 
   it("say who the judges are where they first come up", () => {
