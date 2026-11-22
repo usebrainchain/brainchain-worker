@@ -12,7 +12,7 @@ import { TESTNET } from "./network.js";
 import { gasHelp } from "./standing.js";
 import { processGroup, startTime } from "./proc.js";
 import { fileStore, memoryStore, type Store } from "./state.js";
-import { childEnv, createWork, execProblems, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, rehearse, SAMPLE_BRIEF, scriptOf, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
+import { childEnv, createWork, execProblems, execRisks, holdsSecret, loggedTitle, MAX_RESULT_BYTES, npxUnderSupervisor, printable, rehearse, SAMPLE_BRIEF, scriptOf, shellCommand, stopLeftover, stopper, taskPrompt, type Command, firstProgram, programFound, watchStarter } from "./work.js";
 
 vi.mock("./proc.js", async (original) => {
   const proc = await original<typeof import("./proc.js")>();
@@ -549,6 +549,59 @@ describe("stopper", () => {
     stop.signal("SIGTERM");
     expect(log).toHaveBeenLastCalledWith("SIGTERM again: stopping now");
     expect(exit).toHaveBeenCalledWith(143);
+  });
+});
+
+describe("holdsSecret", () => {
+  const key = "0x5c2e9a71d4b83f06e19a7c55d2084b3fa6e1c9d07b4f2a8836d1e5c09ab37f42";
+  const secrets = [key, key.slice(2)];
+  const b64 = (text: string | Buffer) => Buffer.from(text).toString("base64");
+
+  it("finds the key however a command prints it", () => {
+    const leaks = [
+      key,
+      key.toUpperCase(),
+      key.slice(2),
+      [...key].join(" "),
+      [...key].join("\n"),
+      [...key].reverse().join(""),
+      b64(`${key}\n`),
+      `here it is: ${b64(`${key}\n`)}`,
+      `x${b64(`  ${key}`)}`,
+      b64(Buffer.from(key.slice(2), "hex")),
+      b64(Buffer.from(key.slice(2), "hex")).replace(/\+/g, "-").replace(/\//g, "_"),
+      Buffer.from(`${key}\n`).toString("hex"),
+      b64(b64(key)),
+      b64(`${key}\n`).match(/.{1,20}/g)!.join("\n"),
+    ];
+    for (const leak of leaks) expect(holdsSecret(leak, secrets), leak).toBe(true);
+  });
+
+  it("passes ordinary results", () => {
+    const fine = [
+      "The function returns early when the list is empty.",
+      "commit 1f3c9e2a7b5d4c6e8f0a1b2c3d4e5f6a7b8c9d0e",
+      `0x${"ab".repeat(32)}`,
+      b64("an ordinary paragraph that happens to be encoded"),
+    ];
+    for (const text of fine) expect(holdsSecret(text, secrets), text).toBe(false);
+    expect(holdsSecret(key, [])).toBe(false);
+  });
+});
+
+describe("what a brief could make --exec do", () => {
+  it("names the Claude Code flags that are missing", () => {
+    expect(execRisks("claude -p")).toHaveLength(2);
+    expect(execRisks("/usr/local/bin/claude -p")).toHaveLength(2);
+    expect(execRisks(`claude -p --tools ""`)).toEqual([expect.stringContaining("--strict-mcp-config")]);
+    expect(execRisks("claude -p --strict-mcp-config")).toEqual([expect.stringContaining('--tools ""')]);
+  });
+
+  it("is quiet when both are set, and for other programs", () => {
+    expect(execRisks(`claude -p --tools "" --strict-mcp-config`)).toEqual([]);
+    expect(execRisks(`FOO=1 claude --strict-mcp-config -p --tools ""`)).toEqual([]);
+    expect(execRisks("node examples/openrouter.mjs")).toEqual([]);
+    expect(execRisks("ollama run llama3.3")).toEqual([]);
   });
 });
 
