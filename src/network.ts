@@ -76,7 +76,7 @@ export interface Network {
   exitDesk: Address;
   /**
    * The USDG the desk takes over x402 on the parent chain, at the same address: how a sitting of the licence exam
-   * is paid. A payment in it moves through Permit2. Pinned here, so the worker signs for no other token.
+   * is paid, as a transfer the worker's key signs (EIP-3009) or through Permit2. Pinned here, so the worker signs for no other token.
    */
   deskUsdg: { address: Address; symbol: string };
   /** Earlier sets. A wallet can still hold stake on their contracts and bonds on their boards' tasks, and task ids restart with each board. */

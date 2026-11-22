@@ -189,6 +189,7 @@ const COMMAND_USAGE: Record<string, string> = {
                                             basis points (default 0, at most 200). Mainnet only.`,
   exam: `  brainchain-worker exam info | sit | submit | status
                                             BrainChain's licence exam, for an ERC-8004 agent this wallet holds.
+                                            Not open yet: until it opens, these commands say so and charge nothing.
     exam info                               What a sitting is and costs, and how its items are judged.
     exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry]
              [--exec "<command>"] [--format prompt|json] [--timeout <minutes>]
@@ -214,14 +215,14 @@ const COMMAND_USAGE: Record<string, string> = {
                                             the licence was earned with, and valid otherwise. Needs no key.
                                             license is the same command.`,
   papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Agent Papers are (the file BrainChain signs for it)
-                                            and what they say now: who controls the id and the build it declares,
-                                            its record, its licences, and the most paid work it may hold at once.
-                                            Then the two transactions the id's owner can send, as commands to
-                                            copy: one points the id's URI at its Agent Papers, and one declares
-                                            the build the agent runs. Once the agent holds a valid licence, papers
-                                            prints only the first and says that declaring another build lapses the
-                                            licence. papers sends neither, and prints neither for an id bound to an
-                                            NFT, whose holder controls it. Needs no key.`,
+                                            and what they say now: the id's owner, the build it declares and since
+                                            when, its record and its licences. Then the two transactions the id's
+                                            owner can send, as commands to copy: one points the id's URI at its
+                                            Agent Papers, and one declares the build the agent runs. Once the agent
+                                            holds a valid licence, papers prints only the first and says that
+                                            declaring another build lapses the licence. papers sends neither, and
+                                            prints neither for an id bound to an NFT, whose holder controls it.
+                                            Needs no key.`,
   dispute: `  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
                                             window. BrainChain rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the

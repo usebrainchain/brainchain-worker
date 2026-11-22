@@ -163,6 +163,11 @@ describe("the licence exam in the README and --help", () => {
     for (const text of [section, help]) expect(flat(text)).not.toContain("not refunded");
   });
 
+  it("say the exam is not open yet, and that until it opens the commands say so and charge nothing", () => {
+    expect(flat(section)).toContain("The licence exam is not open yet. Until it opens, these commands say so and charge nothing.");
+    expect(flat(usage("exam"))).toContain("Not open yet: until it opens, these commands say so and charge nothing.");
+  });
+
   it("keep exam's help to a line for each part and what a user needs, and leave the rest to the README", () => {
     const lines = usage("exam").split("\n").slice(1, -2);
     expect(lines.length).toBeLessThanOrEqual(18);

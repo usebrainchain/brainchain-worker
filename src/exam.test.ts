@@ -84,11 +84,20 @@ interface Paid {
  * The service as the exam's routes answer: the exam's facts, the price to a request with no payment, `paid` for
  * one with a payment, and a delivery taken for each item. `refuse` is what it says of a request with no payment
  * when it will not open the sitting, given how many such requests came before. `asked` is what the request is
- * quoted the second time it comes without a payment, when that differs from the first.
+ * quoted the second time it comes without a payment, when that differs from the first. `authorization` offers USDG's
+ * own signed transfer (EIP-3009) after the Permit2 lane, as the live service orders them, to its own payee if given.
  */
 function service(
   network: Network,
-  options: { paid?: (sent: Paid, earlier: number) => Response | Promise<Response>; refuse?: (earlier: number) => Response | undefined; asked?: string; payTo?: string; routes?: Record<string, () => Response>; info?: unknown } = {},
+  options: {
+    paid?: (sent: Paid, earlier: number) => Response | Promise<Response>;
+    refuse?: (earlier: number) => Response | undefined;
+    asked?: string;
+    payTo?: string;
+    authorization?: true | { payTo: string };
+    routes?: Record<string, () => Response>;
+    info?: unknown;
+  } = {},
 ) {
   const seen: Paid[] = [];
   const unpaid: string[] = [];
@@ -102,6 +111,19 @@ function service(
         resource: { url: `${network.service}/x402/exams`, mimeType: "application/json" },
         accepts: [
           { scheme: "exact", network: `eip155:${identityChain(network).chainId}`, amount, asset: network.deskUsdg.address, payTo: options.payTo ?? network.exitDesk, maxTimeoutSeconds: 300, extra: { assetTransferMethod: "permit2" } },
+          ...(options.authorization
+            ? [
+                {
+                  scheme: "exact",
+                  network: `eip155:${identityChain(network).chainId}`,
+                  amount,
+                  asset: network.deskUsdg.address,
+                  payTo: options.authorization === true ? (options.payTo ?? network.exitDesk) : options.authorization.payTo,
+                  maxTimeoutSeconds: 300,
+                  extra: { name: "Global Dollar", version: "1" },
+                },
+              ]
+            : []),
         ],
       }),
     ).toString("base64");
@@ -333,6 +355,57 @@ describe("exam sit", () => {
     const { run, saved } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 9_000_000n });
     await expect(run()).rejects.toThrow(/^The payment could not be prepared: .*\. Nothing was paid\.$/);
     expect(desk.seen).toEqual([]);
+    expect(saved()).toEqual([]);
+  });
+
+  it("pays by a signed transfer when the service offers one, with no approval and no ETH, to the desk and for the price", async () => {
+    const desk = service(MAINNET, { authorization: true });
+    const chain = chainFor({ usdg: 5_000_000n, allowance: 0n, eth: 0n });
+    const { run, lines, saved } = sitting(MAINNET, desk.fetcher, chain, { maxPrice: 5_000_000n });
+    await run();
+    expect(chain.approve).not.toHaveBeenCalled();
+    expect(desk.seen).toHaveLength(1);
+    const payment = JSON.parse(Buffer.from(desk.seen[0]!.header, "base64").toString("utf8")) as {
+      accepted: Record<string, unknown>;
+      payload: { authorization: { from: string; to: string; value: string; validBefore: string }; signature: Hex };
+    };
+    expect(payment.accepted).toMatchObject({ network: "eip155:4663", amount: PRICE, asset: MAINNET.deskUsdg.address, payTo: MAINNET.exitDesk, extra: { name: "Global Dollar", version: "1" } });
+    expect(payment.payload.authorization).toMatchObject({ from: wallet.address, to: MAINNET.exitDesk, value: PRICE });
+    expect(Number(payment.payload.authorization.validBefore) - Date.now() / 1000).toBeLessThanOrEqual(300);
+    expect(saved()).toEqual([expect.objectContaining({ agentId: "501", sitting: SITTING })]);
+    expect(lines.slice(1 + RULES.length, 6 + RULES.length)).toEqual([
+      `  Build     "rehearsal build 1", the build agent 501 declares now. The licence is bound to it, and declaring another build later lapses the licence.`,
+      `  Wallet    ${wallet.address} holds 5.00 USDG on Robinhood Chain, which covers the price.`,
+      "  Payment   the wallet signs a transfer of 5.00 USDG to the desk (EIP-3009), so it needs no approval and no ETH on Robinhood Chain.",
+      "Paying 5.00 USDG for the sitting...",
+      `Sitting ${SITTING} is open until 2100-01-01T02:00:00Z.`,
+    ]);
+    expect(lines.join("\n")).not.toContain("Permit2");
+  });
+
+  it("asks a wallet paying by a signed transfer for no ETH under --dry, and approves nothing", async () => {
+    const chain = chainFor({ usdg: 1_250_000n, allowance: 0n, eth: 0n });
+    const short = sitting(MAINNET, service(MAINNET, { authorization: true }).fetcher, chain, { dry: true });
+    await expect(short.run()).rejects.toThrow(new Error([`${wallet.address} holds 1.25 USDG on Robinhood Chain, 3.75 USDG short of the sitting's price.`, "dry run: nothing approved or paid"].join("\n")));
+    const ready = sitting(MAINNET, service(MAINNET, { authorization: true }).fetcher, chainFor({ usdg: 5_000_000n, allowance: 0n, eth: 0n }), { dry: true, maxPrice: 5_000_000n });
+    await ready.run();
+    expect(ready.lines.at(-1)).toBe("dry run: nothing approved or paid. Without --dry, sit pays 5.00 USDG and saves the sitting.");
+    expect(chain.approve).not.toHaveBeenCalled();
+  });
+
+  it("pays through Permit2 when the signed transfer goes to another address, and signs a transfer for the price it read and no more", async () => {
+    const elsewhere = service(MAINNET, { authorization: { payTo: "0x000000000000000000000000000000000000dEaD" } });
+    const chain = chainFor({ usdg: 5_000_000n, allowance: 0n, eth: 10n ** 15n });
+    await sitting(MAINNET, elsewhere.fetcher, chain, { maxPrice: 5_000_000n }).run();
+    expect(chain.approve).toHaveBeenCalledExactlyOnceWith(5_000_000n);
+    const payment = JSON.parse(Buffer.from(elsewhere.seen[0]!.header, "base64").toString("utf8")) as { accepted: Record<string, unknown>; payload: Record<string, unknown> };
+    expect(payment.accepted).toMatchObject({ payTo: MAINNET.exitDesk, extra: { assetTransferMethod: "permit2" } });
+    expect(payment.payload).toHaveProperty("permit2Authorization");
+
+    const dearer = service(MAINNET, { authorization: true, asked: "5000001" });
+    const { run, saved } = sitting(MAINNET, dearer.fetcher, chainFor(), { maxPrice: 9_000_000n });
+    await expect(run()).rejects.toThrow(/^The payment could not be prepared: .*\. Nothing was paid\.$/);
+    expect(dearer.seen).toEqual([]);
     expect(saved()).toEqual([]);
   });
 
@@ -1011,16 +1084,19 @@ describe("papers", () => {
     const lines: string[] = [];
     await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
     const url = `${MAINNET.service}/papers/4663/501`;
-    expect(lines.slice(0, 7)).toEqual([
+    expect(lines.slice(0, 10)).toEqual([
       `Agent Papers of agent 501 on Robinhood Chain: ${url}`,
-      `  Epoch     2 (a new controller or build of the id starts a new epoch), since 2099-12-31T00:00:00Z; controller ${wallet.address}; build "atlas 2.1"`,
+      `  Owner     ${wallet.address}`,
+      `  Build     "atlas 2.1"`,
+      "  Since     2099-12-31T00:00:00Z, under this owner and build",
       `  Record    31 entries: ${MAINNET.service}/agents/4663/501/record`,
+      "            19 entries before a sale or new build",
       "  Licence   code  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 1 passed, 0 failed",
-      "  Ceiling   the agent may hold at most 2.50 USDG of paid work in flight at once, and never less than the 1.00 USDG every agent starts with; halved until 2100-01-31T00:00:00Z, after a refusal upheld on a dispute",
+      "  In flight up to 2.50 USDG of paid work at once, never less than the 1.00 USDG every agent starts with; halved until 2100-01-31T00:00:00Z, after a refusal upheld on a dispute",
       `  Card      ${url}/card.svg`,
       "  Check     npx brainchain-verify mainnet --record 501",
     ]);
-    expect(lines[7]).toBe(
+    expect(lines[10]).toBe(
       [
         "",
         "Two transactions the id's owner can send, on Robinhood Chain. Both are optional, and this command sends neither.",
@@ -1035,7 +1111,7 @@ describe("papers", () => {
         `    cast send ${MAINNET.identity} "setMetadata(uint256,string,bytes)" 501 build "$(cast from-utf8 '<build>')" --rpc-url https://rpc.mainnet.chain.robinhood.com --interactive`,
       ].join("\n"),
     );
-    expect(lines).toHaveLength(8);
+    expect(lines).toHaveLength(11);
     expect(desk.read).toEqual(["/papers/4663/501"]);
   });
 
@@ -1043,12 +1119,27 @@ describe("papers", () => {
     const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file({ ...signed, record: { ...signed.record, entries: 1 } }) } });
     const lines: string[] = [];
     await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
-    expect(lines[2]).toBe(`  Record    1 entry: ${MAINNET.service}/agents/4663/501/record`);
+    expect(lines[4]).toBe(`  Record    1 entry: ${MAINNET.service}/agents/4663/501/record`);
     const advice = lines.at(-1)!;
     expect(advice).not.toContain("setMetadata");
     expect(advice).toContain("A transaction the id's owner can send, on Robinhood Chain. It is optional, and this command does not send it.");
     expect(advice).toContain('"setAgentURI(uint256,string)"');
     expect(advice.split("\n").at(-1)).toBe("  The agent's licence stands for the build the id declares now. Declaring another build lapses the licence.");
+  });
+
+  it("shows a house worker's build as its model, run by BrainChain, as the card does", async () => {
+    const house = { ...signed, epoch: { ...signed.epoch, build: "house: anthropic/claude-sonnet-5.5" }, record: { ...signed.record, entries: 6, earlierEntries: 1 }, licences: [], ceiling: undefined };
+    const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file(house) } });
+    const lines: string[] = [];
+    await papers(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
+    expect(lines.slice(2, 8)).toEqual([
+      `  Build     "anthropic/claude-sonnet-5.5", run by BrainChain`,
+      "  Since     2099-12-31T00:00:00Z, under this owner and build",
+      `  Record    6 entries: ${MAINNET.service}/agents/4663/501/record`,
+      "            1 entry before a sale or new build",
+      "  Licences  none",
+      `  Card      ${MAINNET.service}/papers/4663/501/card.svg`,
+    ]);
   });
 
   it("says an id bound to an NFT is controlled by the token's holder, and prints no registry calls for it", async () => {
@@ -1066,7 +1157,7 @@ describe("papers", () => {
     const desk = service(TESTNET, { routes: { "GET /papers/46630/9": () => file(bare) } });
     const lines: string[] = [];
     await papers(TESTNET, { agentId: "9", log: (line) => lines.push(line), fetcher: desk.fetcher });
-    expect(lines.slice(1, 6)).toEqual([`  Epoch     2 (a new controller or build of the id starts a new epoch); controller ${wallet.address}; build none declared`, "  Record    no entry yet", "  Licences  none", "  Ceiling   not stated (the most paid work the agent may hold at once)", `  Card      ${TESTNET.service}/papers/46630/9/card.svg`]);
+    expect(lines.slice(1, 6)).toEqual([`  Owner     ${wallet.address}`, "  Build     none declared", "  Record    no entry yet", "  Licences  none", `  Card      ${TESTNET.service}/papers/46630/9/card.svg`]);
     expect(lines.at(-1)).toContain("This version of brainchain-worker names no ERC-8004 registry on Robinhood Chain testnet: put the registry the id is on in place of <identity registry>.");
     expect(lines.at(-1)).toContain(`cast send <identity registry> "setAgentURI(uint256,string)" 9 "${TESTNET.service}/papers/46630/9" --rpc-url https://rpc.testnet.chain.robinhood.com --interactive`);
     await expect(papers(TESTNET, { agentId: "10", log: () => {}, fetcher: desk.fetcher })).rejects.toThrow(

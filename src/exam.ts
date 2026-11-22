@@ -2,7 +2,8 @@
 // and costs, a sitting opened for a payment over x402, each item delivered
 // once, and the outcome read back, with the agent's licences and its Agent Papers.
 // The service takes every message from the wallet that holds the agent's id, so
-// the worker's key signs them, and the desk is paid in USDG on the chain the id is on.
+// the worker's key signs them, and the desk is paid in USDG on the chain the id is on: by a transfer the key
+// signs (EIP-3009) where the service takes one, through Permit2 where it does not.
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { createPublicClient, createWalletClient, keccak256, toBytes, type Address, type Hex, type PrivateKeyAccount } from "viem";
@@ -14,7 +15,7 @@ import { money, when } from "./standing.js";
 import { forgetSitting, isObject, readSittings, saveSitting, saveWork, stateDir, type SavedSitting } from "./state.js";
 import { deliverable, loggedTitle, printable, stripAnsi, taskInput, taskPrompt, type Brief, type Command } from "./work.js";
 
-/** The canonical Permit2 contract, which an x402 payment in USDG moves through. */
+/** The canonical Permit2 contract, which an x402 payment in USDG moves through when it is not a signed transfer. */
 export const PERMIT2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
 /** The longest a payment authorization may stay valid for the worker to sign it. */
 const MAX_TIMEOUT_SECONDS = 600;
@@ -46,7 +47,7 @@ export interface ExamChain {
   build(agentId: bigint): Promise<string | undefined>;
   /** The wallet's USDG and ETH there, and how much of the USDG Permit2 may spend. */
   funds(): Promise<{ usdg: bigint; allowance: bigint; eth: bigint }>;
-  /** Lets Permit2 spend `amount` of the wallet's USDG. */
+  /** Lets Permit2 spend `amount` of the wallet's USDG, for a service that takes no signed transfer. */
   approve(amount: bigint): Promise<Hex>;
 }
 
@@ -164,10 +165,30 @@ export async function examInfo(network: Network, options: { log: (line: string) 
 }
 
 /**
- * What the service asks for a sitting, from the offer it answers a request without a payment with: the amount in
- * the USDG and to the address this version pays, or undefined when the offer names neither.
+ * How a sitting is paid: by a transfer of the USDG that the wallet signs (EIP-3009), which needs no transaction of
+ * its own, or through Permit2, which the wallet must approve first.
  */
-function offeredPrice(network: Network, response: Response): bigint | undefined {
+export type Lane = "authorization" | "permit2";
+
+/** The lane an x402 offer's `extra` names; undefined for one the exact scheme could not sign. */
+export function laneOf(extra: unknown): Lane | undefined {
+  if (!isObject(extra)) return undefined;
+  if (extra.assetTransferMethod === "permit2") return "permit2";
+  // With no other method named, the exact scheme signs an EIP-3009 authorization under the token's EIP-712 name and version.
+  const named = typeof extra.name === "string" && extra.name !== "" && typeof extra.version === "string" && extra.version !== "";
+  return (extra.assetTransferMethod === undefined || extra.assetTransferMethod === "eip3009") && named ? "authorization" : undefined;
+}
+
+/** Whether an x402 offer is in the USDG, on the chain and to the address this version pays. */
+const ours = (network: Network, offer: { network?: unknown; asset?: unknown; payTo?: unknown }) =>
+  offer.network === `eip155:${identityChain(network).chainId}` && sameAddress(offer.asset, network.deskUsdg.address) && sameAddress(offer.payTo, network.exitDesk);
+
+/**
+ * What the service asks for a sitting, from the offer it answers a request without a payment with, and how it will
+ * be paid: by authorization where the service takes one, through Permit2 otherwise. Undefined when the offer names
+ * no lane in the USDG and to the address this version pays.
+ */
+function offered(network: Network, response: Response): { price: bigint; lane: Lane } | undefined {
   let offer: unknown;
   try {
     offer = JSON.parse(Buffer.from(response.headers.get("payment-required") ?? "", "base64").toString("utf8"));
@@ -175,10 +196,12 @@ function offeredPrice(network: Network, response: Response): bigint | undefined 
     return undefined;
   }
   const accepts = isObject(offer) && Array.isArray(offer.accepts) ? offer.accepts : [];
-  const ours = accepts.find(
-    (a: unknown) => isObject(a) && a.network === `eip155:${identityChain(network).chainId}` && sameAddress(a.asset, network.deskUsdg.address) && sameAddress(a.payTo, network.exitDesk),
-  ) as { amount?: unknown } | undefined;
-  return typeof ours?.amount === "string" && /^\d{1,30}$/.test(ours.amount) ? BigInt(ours.amount) : undefined;
+  const lanes = accepts.flatMap((a: unknown) => {
+    if (!isObject(a) || !ours(network, a) || typeof a.amount !== "string" || !/^\d{1,30}$/.test(a.amount)) return [];
+    const lane = laneOf(a.extra);
+    return lane ? [{ price: BigInt(a.amount), lane }] : [];
+  });
+  return lanes.find((l) => l.lane === "authorization") ?? lanes[0];
 }
 
 interface Opened {
@@ -416,10 +439,11 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     const asked = await ask(network, "/x402/exams", fetcher, { method: "POST", headers: { "content-type": "application/json" }, body });
     if (asked.response.status === 404) throw new Error(closed(network));
     if (asked.response.status !== 402) return refused(asked.response.status, asked.body, "Nothing was approved or paid.");
-    const price = offeredPrice(network, asked.response);
-    if (price === undefined) {
+    const offer = offered(network, asked.response);
+    if (offer === undefined) {
       throw new Error(`The BrainChain service at ${hostOf(network)} offers no sitting for ${symbol} on ${parent.name} paid to ${network.exitDesk}, the only payment this version of brainchain-worker signs. Nothing was approved or paid.`);
     }
+    const { price, lane } = offer;
     log(`A sitting for agent ${agentId} in class ${options.class} costs ${usdg(price)} on ${parent.name}, paid by ${account} over x402.`);
     for (const rule of rules) log(`  ${rule}`);
     if (holds === undefined) log(`  This version of brainchain-worker names no ERC-8004 registry on ${parent.name}, so whether ${account} holds agent ${agentId} is left to the service, which checks before it charges.`);
@@ -440,7 +464,9 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       throw new Error(`Could not read the wallet on ${parent.name}: ${reason(error).replace(/\.$/, "")}.`);
     }
     if (funds.usdg >= price) log(`  Wallet    ${account} holds ${usdg(funds.usdg)} on ${parent.name}, which covers the price.`);
-    const approves = funds.allowance < price;
+    // Signed as a transfer, the payment needs no approval, so the wallet needs no ETH either.
+    if (lane === "authorization") log(`  Payment   the wallet signs a transfer of ${usdg(price)} to the desk (EIP-3009), so it needs no approval and no ETH on ${parent.name}.`);
+    const approves = lane === "permit2" && funds.allowance < price;
     if (approves) log(`  Permit2, which an x402 payment in ${symbol} moves through, may spend ${usdg(funds.allowance)} of the wallet's. An approval for ${usdg(price)} is sent first, which takes a little ETH on ${parent.name}.`);
     // Every shortfall at once, so a dry run says all the wallet still needs.
     const short = [
@@ -462,7 +488,8 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       schemes: [{ network: pays, client: new ExactEvmScheme(chain.wallet) }],
       // The price read a moment ago is the most this payment may be, in the one token this version pays in.
       spendControls: { allowedAssets: [{ network: pays, asset: network.deskUsdg.address, maxAmountPerPayment: price.toString() }] },
-      policies: [(_version, offered) => offered.filter((r) => r.network === pays && sameAddress(r.asset, network.deskUsdg.address) && sameAddress(r.payTo, network.exitDesk) && r.maxTimeoutSeconds <= MAX_TIMEOUT_SECONDS)],
+      // The lane checked above and no other: a Permit2 payment the wallet has not approved, or ETH it was not told of, would fail.
+      policies: [(_version, offers) => offers.filter((r) => ours(network, r) && laneOf(r.extra) === lane && r.maxTimeoutSeconds <= MAX_TIMEOUT_SECONDS)],
     });
     let request: SavedSitting["request"];
     const paying = wrapFetchWithPayment((input, init) => {
@@ -715,18 +742,27 @@ export async function papers(network: Network, options: { agentId: string; log: 
   const held = Array.isArray(signed.licences) ? signed.licences.filter(isObject) : [];
   const ceiling = isObject(signed.ceiling) ? signed.ceiling : undefined;
   const units = (value: unknown) => (typeof value === "string" && /^\d{1,30}$/.test(value) ? money(BigInt(value)) : "?");
+  // In the card's words. A house worker's build is "house: <model>", so it shows as the model, run by BrainChain.
+  const build = typeof epoch.build === "string" ? printable(epoch.build) : "";
+  const house = /^house:\s*/i.exec(build);
   log(`Agent Papers of agent ${agentId} on ${parent.name}: ${url}`);
-  log(`  Epoch     ${String(epoch.number ?? "?")} (a new controller or build of the id starts a new epoch)${typeof epoch.since === "number" ? `, since ${date(epoch.since)}` : ""}; controller ${printable(String(epoch.controller ?? "unknown"))}; build ${typeof epoch.build === "string" && epoch.build ? JSON.stringify(printable(epoch.build)) : "none declared"}`);
-  if (record) log(`  Record    ${String(record.entries)} ${record.entries === 1 ? "entry" : "entries"}: ${typeof record.url === "string" ? printable(record.url) : `${network.service}/agents/${parent.chainId}/${agentId}/record`}`);
-  else log("  Record    no entry yet");
+  log(`  Owner     ${printable(String(epoch.controller ?? "unknown"))}`);
+  log(`  Build     ${house ? `${JSON.stringify(build.slice(house[0].length))}, run by BrainChain` : build ? JSON.stringify(build) : "none declared"}`);
+  if (typeof epoch.since === "number") log(`  Since     ${date(epoch.since)}, under this owner and build`);
+  if (record) {
+    log(`  Record    ${String(record.entries)} ${record.entries === 1 ? "entry" : "entries"}: ${typeof record.url === "string" ? printable(record.url) : `${network.service}/agents/${parent.chainId}/${agentId}/record`}`);
+    // Entries from before a sale or a new build stay on the record, apart from those under this owner and build.
+    const earlier = record.earlierEntries;
+    if (typeof earlier === "number" && Number.isSafeInteger(earlier) && earlier > 0) log(`            ${earlier} ${earlier === 1 ? "entry" : "entries"} before a sale or new build`);
+  } else log("  Record    no entry yet");
   if (held.length === 0) log("  Licences  none");
   for (const entry of held) log(`  Licence   ${licenceLine(entry)}`);
-  // What the agent's record earns it: how much paid work it may hold at once, which a refusal upheld on a dispute halves for a while.
+  // What the agent's record earns it: how much paid work it may hold at once, which a refusal upheld on a dispute halves
+  // for a while. Agent Papers that carry none say nothing of it.
   if (ceiling) {
     const halved = typeof ceiling.halvedUntil === "number" ? `; halved until ${date(ceiling.halvedUntil)}, after a refusal upheld on a dispute` : "";
-    log(`  Ceiling   the agent may hold at most ${units(ceiling.units)} USDG of paid work in flight at once, and never less than the ${units(ceiling.floor)} USDG every agent starts with${halved}`);
+    log(`  In flight up to ${units(ceiling.units)} USDG of paid work at once, never less than the ${units(ceiling.floor)} USDG every agent starts with${halved}`);
   }
-  else log("  Ceiling   not stated (the most paid work the agent may hold at once)");
   log(`  Card      ${url}/card.svg`);
   if (typeof signed.verify === "string") log(`  Check     ${printable(signed.verify)}`);
 

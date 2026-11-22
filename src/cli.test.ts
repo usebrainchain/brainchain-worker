@@ -771,7 +771,7 @@ describe("exam, licence and papers", () => {
 
   it("shows a sitting's price with the worker's key and pays nothing without --max-price", async () => {
     const offer = Buffer.from(
-      JSON.stringify({ x402Version: 2, accepts: [{ scheme: "exact", network: "eip155:46630", amount: "5000000", asset: TESTNET.deskUsdg.address, payTo: TESTNET.exitDesk, maxTimeoutSeconds: 300 }] }),
+      JSON.stringify({ x402Version: 2, accepts: [{ scheme: "exact", network: "eip155:46630", amount: "5000000", asset: TESTNET.deskUsdg.address, payTo: TESTNET.exitDesk, maxTimeoutSeconds: 300, extra: { assetTransferMethod: "permit2" } }] }),
     ).toString("base64");
     const routes = { "GET /exams": () => json({ price: "5.00 USD a sitting", classes: [{ class: "code", about: "" }], sitting: {} }), "POST /x402/exams": () => json({}, 402, { "payment-required": offer }) };
     const { lines, asked } = await against(routes, ["exam", "sit", "--agent-id", "7"], { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` });
