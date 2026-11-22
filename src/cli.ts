@@ -23,7 +23,7 @@ import { openStore, privateDir, readStakeMoves, readWatched, saveStakeMove, stat
 import { clearKeyFromEnvironment, expandHome, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
-import { createExamChain, examInfo, examSit, examStatus, examSubmit, licences, papers, type SitOptions } from "./exam.js";
+import { createExamChain, examFacts, examInfo, examSit, examStatus, examSubmit, licences, papers, type SitOptions } from "./exam.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { CLI, cli } from "./invoked.js";
 import { createWork, execProblems, execRisks, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
@@ -881,14 +881,18 @@ async function examCommand(network: Network, action: string | undefined, values:
   if (action === "info") return examInfo(network, { log });
   if (action === "status") {
     const sitting = sittingOf(values);
-    // Reading a sitting needs no key; only finding the one saved last needs to know whose it is.
-    return examStatus(network, { ...(sitting ? { sitting } : { account: signer().account.address }), log });
+    // Reading a sitting needs no key; only finding the one saved last needs to know whose it is, after the exam is open.
+    if (sitting) return examStatus(network, { sitting, log });
+    await examFacts(network);
+    return examStatus(network, { account: signer().account.address, log });
   }
   if (action === "submit") {
     const sitting = sittingOf(values);
     if (sitting === undefined) throw new UsageError("exam submit needs --sitting: the sitting's id, as exam sit printed it");
     const item = values.get("item");
     if (item === undefined || !/^\d$/.test(item)) throw new UsageError("exam submit needs --item: the item's number in the sitting, from 0");
+    // A closed exam stops here, before the work is read or the key asked for.
+    await examFacts(network);
     const text = await workText(values.get("file"));
     const { key, account } = signer();
     return examSubmit(network, account, { sitting, item: Number(item), text, secrets: [key, key.slice(2)], log });
@@ -900,6 +904,8 @@ async function examCommand(network: Network, action: string | undefined, values:
   if (max !== undefined && (!/^\d{1,6}(\.\d{1,6})?$/.test(max) || Number(max) <= 0)) throw new UsageError("--max-price is the most the sitting may cost: USDG above zero with at most 6 decimals, such as --max-price 5");
   if (!values.has("exec") && (values.has("format") || values.has("timeout"))) throw new UsageError("--format and --timeout say how --exec is run, so they need it");
   const flags = values.has("exec") ? runFlags(values) : undefined;
+  // The exam's terms need no key: a closed exam stops here, before the key is asked for or anything signed.
+  const facts = await examFacts(network);
   const { key, account } = signer();
   // Before anything is paid: the sitting is saved here, and a folder this user cannot write to would lose it.
   privateDir(stateDir(), log);
@@ -924,6 +930,7 @@ async function examCommand(network: Network, action: string | undefined, values:
     secrets: [key, key.slice(2)],
     dry: switches.has("dry"),
     log,
+    facts,
   });
 }
 

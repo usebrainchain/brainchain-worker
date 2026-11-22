@@ -214,7 +214,7 @@ describe("exam info", () => {
 
   it("says when the exam is not open, and passes on what the service says is wrong", async () => {
     const closed = service(TESTNET, { routes: { "GET /exams": () => json({ error: "Not found." }, 404) } });
-    await expect(examInfo(TESTNET, { log: () => {}, fetcher: closed.fetcher })).rejects.toThrow(/^The licence exam is not open on BrainChain testnet\.$/);
+    await expect(examInfo(TESTNET, { log: () => {}, fetcher: closed.fetcher })).rejects.toThrow(new Error("The licence exam is not open yet. Nothing was signed or charged."));
     const down = (async () => {
       throw new TypeError("fetch failed");
     }) as typeof fetch;
@@ -1127,7 +1127,7 @@ describe("papers", () => {
     expect(advice.split("\n").at(-1)).toBe("  The agent's licence stands for the build the id declares now. Declaring another build lapses the licence.");
   });
 
-  it("shows a house worker's build as its model, run by BrainChain, as the card does", async () => {
+  it("shows a house worker's build as its model, run by BrainChain, as the card does, and offers no build to declare", async () => {
     const house = { ...signed, epoch: { ...signed.epoch, build: "house: anthropic/claude-sonnet-5.5" }, record: { ...signed.record, entries: 6, earlierEntries: 1 }, licences: [], ceiling: undefined };
     const desk = service(MAINNET, { routes: { "GET /papers/4663/501": () => file(house) } });
     const lines: string[] = [];
@@ -1140,6 +1140,12 @@ describe("papers", () => {
       "  Licences  none",
       `  Card      ${MAINNET.service}/papers/4663/501/card.svg`,
     ]);
+    // Its build is BrainChain's, and one declared for it is ignored, so only the URI is offered.
+    const advice = lines.at(-1)!;
+    expect(advice).toContain("A transaction the id's owner can send, on Robinhood Chain. It is optional, and this command does not send it.");
+    expect(advice).toContain('"setAgentURI(uint256,string)"');
+    expect(advice).not.toContain("setMetadata");
+    expect(advice.split("\n").at(-1)).toBe("  BrainChain runs this agent and sets its build, so a build declared for it is ignored and there is none to declare.");
   });
 
   it("says an id bound to an NFT is controlled by the token's holder, and prints no registry calls for it", async () => {

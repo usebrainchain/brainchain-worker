@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Chain } from "./chain.js";
 import { asksHelp, bondArgs, fetchRecord, hireWatch, join, main, parse, timedLog, usage, UsageError, watching, watchPlace, watchResume } from "./cli.js";
+import { NOT_OPEN } from "./exam.js";
 import { CLI, cli, commandName } from "./invoked.js";
 import { MAINNET, TESTNET, type Network } from "./network.js";
 import { gasHelp, whereToBuy } from "./standing.js";
@@ -150,9 +151,17 @@ describe("help", () => {
       ];
       for (const [argv, said] of refusals) await expect(main(argv), argv.join(" ")).rejects.toThrow(said);
       await expect(main(["run", "--exec", "cat"])).rejects.toThrow("Set BRAINCHAIN_WORKER_KEY");
+      // The exam's terms come first and need no key: a closed exam says so before the key is asked for, an open one asks for it.
+      const terms = (status: number) => vi.stubGlobal("fetch", async () => new Response(status === 404 ? '{"error":"Not found."}' : '{"price":"5.00 USD a sitting","classes":[],"sitting":{}}', { status }));
+      terms(404);
+      for (const argv of [["exam", "sit", "--agent-id", "5"], ["exam", "sit", "--agent-id", "5", "--dry"], ["exam", "status"], ["exam", "submit", "--sitting", `0x${"5a".repeat(32)}`, "--item", "0"]]) {
+        await expect(main(argv), argv.join(" ")).rejects.toThrow(new Error(NOT_OPEN));
+      }
+      terms(200);
       for (const argv of [["exam", "sit", "--agent-id", "5"], ["exam", "status"]]) await expect(main(argv), argv.join(" ")).rejects.toThrow("Set BRAINCHAIN_WORKER_KEY");
     } finally {
       vi.unstubAllEnvs();
+      vi.unstubAllGlobals();
     }
   });
 
@@ -821,12 +830,14 @@ describe("exam, licence and papers", () => {
     const work = path.join(folder, "item0.md");
     writeFileSync(work, "```python\ndef f(x):\n    return x\n```\n");
     const env = { BRAINCHAIN_WORKER_KEY: `0x${"4f".repeat(32)}` };
-    const { lines, asked } = await against({ [`POST /exams/${SITTING}/items/0`]: () => json({ state: "submitted" }, 202) }, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", work], env);
+    const open = { "GET /exams": () => json({ price: "5.00 USD a sitting", classes: [], sitting: {} }) };
+    const { lines, asked } = await against({ ...open, [`POST /exams/${SITTING}/items/0`]: () => json({ state: "submitted" }, 202) }, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", work], env);
     expect(lines).toEqual([`Item 0 delivered (37 bytes). BrainChain judges it next: \`${CLI} exam status --sitting ${SITTING}\` shows the outcome.`]);
-    expect((JSON.parse(asked[0]!.body) as { text: string }).text).toBe("```python\ndef f(x):\n    return x\n```\n");
+    expect(asked.map(({ method, path }) => `${method} ${path}`)).toEqual(["GET /exams", `POST /exams/${SITTING}/items/0`]);
+    expect((JSON.parse(asked[1]!.body) as { text: string }).text).toBe("```python\ndef f(x):\n    return x\n```\n");
     writeFileSync(work, Buffer.from([0xff, 0xfe, 0x00]));
-    await expect(against({}, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", work], env)).rejects.toThrow("The work is not valid UTF-8. Nothing was sent.");
-    await expect(against({}, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", path.join(folder, "none.md")], env)).rejects.toThrow(/none\.md, which could not be read \(ENOENT\)$/);
+    await expect(against(open, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", work], env)).rejects.toThrow("The work is not valid UTF-8. Nothing was sent.");
+    await expect(against(open, ["exam", "submit", "--sitting", SITTING, "--item", "0", "--file", path.join(folder, "none.md")], env)).rejects.toThrow(/none\.md, which could not be read \(ENOENT\)$/);
   });
 });
 

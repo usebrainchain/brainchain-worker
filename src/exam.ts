@@ -110,6 +110,8 @@ async function read(network: Network, path: string, fetcher: typeof fetch, missi
 }
 
 const closed = (network: Network) => `The licence exam is not open on ${network.name}.`;
+/** What the exam's commands say while it is closed: they stop there, before a key is read or anything signed. */
+export const NOT_OPEN = "The licence exam is not open yet. Nothing was signed or charged.";
 
 /**
  * What a void sitting means for whoever paid for it: the service's reason, or its refunds rule when it gives none,
@@ -119,7 +121,7 @@ const voidNote = (view: Record<string, unknown>) =>
   `${typeof view.reason === "string" && view.reason.trim() ? printable(view.reason).replace(/\.?$/, ".") : "BrainChain could not open this paid sitting, or could not judge enough of it to decide, so the sitting is void: it does not count against the agent, and the payment goes back to the paying wallet."} ` +
   "If the payment has not come back, write to hello@usebrainchain.com with the sitting's id.";
 
-interface ExamInfo {
+export interface ExamInfo {
   price: string;
   classes: { class: string; about: string }[];
   rules: string[];
@@ -127,9 +129,12 @@ interface ExamInfo {
   grading?: { levels: string[]; passIndex: number };
 }
 
-/** What GET /exams says, as lines to print; a field the service leaves out is left out. */
-async function examFacts(network: Network, fetcher: typeof fetch): Promise<ExamInfo> {
-  const info = await read(network, "/exams", fetcher, closed(network));
+/**
+ * What GET /exams says, as lines to print; a field the service leaves out is left out. It needs no key, so the
+ * commands that do read it first: a closed exam stops them before they ask for one.
+ */
+export async function examFacts(network: Network, fetcher: typeof fetch = fetch): Promise<ExamInfo> {
+  const info = await read(network, "/exams", fetcher, NOT_OPEN);
   const sitting = isObject(info.sitting) ? info.sitting : {};
   const count = (name: string) => (typeof sitting[name] === "number" ? (sitting[name] as number) : undefined);
   const [items, hard, passMark, minutes, licenceDays, wait, bar, renew] = ["items", "hardItems", "passMark", "minutes", "licenceDays", "waitAfterFailingDays", "barBps", "renewFromDaysBefore"].map(count);
@@ -270,6 +275,8 @@ export interface SitOptions {
   stopping?: () => boolean;
   /** Told when an item's command starts and when its delivery is done, so a stop waits for that and no longer. */
   busy?: (working: boolean) => void;
+  /** The exam's terms, when they were read before this, so they are not read again. */
+  facts?: ExamInfo;
 }
 
 /**
@@ -290,7 +297,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
   const mine = { agentId, class: options.class };
   const again = cli(`exam sit --agent-id ${agentId}${options.class === "code" ? "" : ` --class ${options.class}`}`);
   const resend = `Run ${again} again: it sends the same request with the same payment, and nothing more is paid.`;
-  let facts: ExamInfo | undefined;
+  let facts = options.facts;
   const exam = async () => (facts ??= await examFacts(network, fetcher));
 
   // With a command, each item goes to it with the levels the service grades items against, as a task goes with its own.
@@ -437,7 +444,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     // The request goes first with no payment. The service refuses a sitting it cannot open there, before the wallet
     // approves or pays anything. Its price in answer always means it would open the sitting.
     const asked = await ask(network, "/x402/exams", fetcher, { method: "POST", headers: { "content-type": "application/json" }, body });
-    if (asked.response.status === 404) throw new Error(closed(network));
+    if (asked.response.status === 404) throw new Error(NOT_OPEN);
     if (asked.response.status !== 402) return refused(asked.response.status, asked.body, "Nothing was approved or paid.");
     const offer = offered(network, asked.response);
     if (offer === undefined) {
@@ -774,21 +781,25 @@ export async function papers(network: Network, options: { agentId: string; log: 
   }
   const registry = network.identity ?? "<identity registry>";
   const rpc = network.bridge?.rpc ?? network.proofs.rpc;
-  // A valid licence is bound to the build declared now, so a new build would lapse it.
+  // A valid licence is bound to the build declared now, so a new build would lapse it. A house worker's build is
+  // BrainChain's, and a build declared for it is ignored, so neither is offered a build to declare.
   const licensed = held.some((entry) => entry.state === "valid");
+  const one = licensed || house !== null;
   log(
     [
       "",
-      licensed
+      one
         ? `A transaction the id's owner can send, on ${parent.name}. It is optional, and this command does not send it.`
         : `Two transactions the id's owner can send, on ${parent.name}. Both are optional, and this command sends neither.`,
       ...(network.identity ? [] : [`This version of brainchain-worker names no ERC-8004 registry on ${parent.name}: put the registry the id is on in place of <identity registry>.`]),
-      `${licensed ? "It is" : "They are"} written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.`,
+      `${one ? "It is" : "They are"} written for Foundry's cast in a POSIX shell such as bash or zsh, and cast asks for the key, so it never appears on the command line.`,
       "",
       "  Point the id's URI at its Agent Papers, so they show wherever the id's token is shown:",
       `    cast send ${registry} "setAgentURI(uint256,string)" ${agentId} "${url}" --rpc-url ${rpc} --interactive`,
       "",
-      ...(licensed
+      ...(house
+        ? ["  BrainChain runs this agent and sets its build, so a build declared for it is ignored and there is none to declare."]
+        : licensed
         ? ["  The agent's licence stands for the build the id declares now. Declaring another build lapses the licence."]
         : [
             "  Declare the build the agent runs, under the id's build key: one line of printable ASCII, at most 96 characters.",
