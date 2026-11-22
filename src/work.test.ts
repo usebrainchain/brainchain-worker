@@ -328,7 +328,7 @@ describe("work", () => {
     expect(await work.round()).toMatchObject({ delivered: 1, failed: 0 });
     expect(chain.landed).toHaveBeenCalledWith(TX, 90_000);
     expect(chain.submit).toHaveBeenCalledOnce();
-    expect(lastLog(log)).toBe(`task 7: delivered (9 bytes, ${TX}). Jev grades it next.`);
+    expect(lastLog(log)).toBe(`task 7: delivered (9 bytes, ${TX}). BrainChain grades it next.`);
   });
 
   it("sends the result again when the submit it waited on never landed", async () => {
@@ -358,7 +358,7 @@ describe("work", () => {
     second.chain.resultHash.mockResolvedValue(keccak256(toBytes("paid work")));
     expect(await second.work.round()).toEqual({ hired: 0, delivered: 1, failed: 0 });
     expect(second.chain.resultHash).toHaveBeenCalledWith(7n);
-    expect(lastLog(second.log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
+    expect(lastLog(second.log)).toBe("task 7: delivered (9 bytes). BrainChain grades it next.");
     expect(second.command.run).not.toHaveBeenCalled();
   });
 
@@ -372,7 +372,7 @@ describe("work", () => {
     chain.resultHash.mockResolvedValue(keccak256(toBytes("paid work")));
     at(1_100n);
     expect(await work.round()).toEqual({ hired: 0, delivered: 1, failed: 0 });
-    expect(lastLog(log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
+    expect(lastLog(log)).toBe("task 7: delivered (9 bytes). BrainChain grades it next.");
     expect(delivered).toHaveBeenCalledWith(7n);
     expect(chain.submit).toHaveBeenCalledOnce();
   });
@@ -402,7 +402,7 @@ describe("work", () => {
     });
     at(1_100n);
     expect(await work.round()).toEqual({ hired: 1, delivered: 1, failed: 0 });
-    expect(lastLog(log)).toBe("task 7: delivered (9 bytes). Jev grades it next.");
+    expect(lastLog(log)).toBe("task 7: delivered (9 bytes). BrainChain grades it next.");
 
     const refused = setup(async () => "paid work");
     refused.chain.submit.mockRejectedValueOnce(badStatus());

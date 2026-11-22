@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Status, type Flight } from "./chain.js";
 import { cli } from "./invoked.js";
 import { MAINNET, TESTNET } from "./network.js";
-import { aboutEth, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, shortOfStake, stake, unapplied, wallet, type Snapshot } from "./standing.js";
+import { aboutEth, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, lasted, money, shortOfStake, stake, unapplied, usdg, wallet, type Snapshot } from "./standing.js";
 
 const BRAIN = 10n ** 18n;
 const buy =
@@ -27,6 +27,13 @@ function standing(overrides: { staked?: bigint; unstaking?: bigint; unlocksAt?: 
     toStake: w.staked >= min ? 0n : min - w.staked,
   } as unknown as Snapshot;
 }
+
+describe("money", () => {
+  it("states a dollar amount as the service states a price, with two decimals at least", () => {
+    expect([0n, 900_000n, 5_000_000n, 1_250_000n, 125_000n, 4_999_999n].map(money)).toEqual(["0.00", "0.90", "5.00", "1.25", "0.125", "4.999999"]);
+    expect(usdg(MAINNET, 900_000n)).toBe("0.90 USDG");
+  });
+});
 
 describe("stake", () => {
   it("groups whole tokens in thousands and keeps a fraction as it is", () => {
@@ -161,9 +168,9 @@ describe("hireable", () => {
     vi.setSystemTime(new Date("2026-11-04T10:00:00Z"));
     try {
       const eta = BigInt(Date.parse("2026-11-04T10:58:18Z") / 1000);
-      expect(hireable(allowedSoon(eta, 500n * BRAIN), TESTNET, "status")).toBe("no: Jev allowed this worker; it can be hired after 2026-11-04T10:58:18Z");
+      expect(hireable(allowedSoon(eta, 500n * BRAIN), TESTNET, "status")).toBe("no: BrainChain allowed this worker; it can be hired after 2026-11-04T10:58:18Z");
       expect(hireable(allowedSoon(eta, 0n), TESTNET, "status")).toBe(
-        `no: Jev allowed this worker; it can be hired after 2026-11-04T10:58:18Z. Its stake is below the minimum of 500 tBRAIN, so run ${cli("join")} to stake again first.`,
+        `no: BrainChain allowed this worker; it can be hired after 2026-11-04T10:58:18Z. Its stake is below the minimum of 500 tBRAIN, so run ${cli("join")} to stake again first.`,
       );
     } finally {
       vi.useRealTimers();
@@ -212,7 +219,7 @@ describe("hireable", () => {
     vi.setSystemTime(new Date("2026-11-04T12:00:00Z"));
     try {
       const eta = BigInt(Date.parse("2026-11-04T10:58:18Z") / 1000);
-      expect(hireable(allowedSoon(eta, 500n * BRAIN), TESTNET, "status")).toBe("no: Jev allowed this worker; the change that allows it was due at 2026-11-04T10:58:18Z and has not run yet");
+      expect(hireable(allowedSoon(eta, 500n * BRAIN), TESTNET, "status")).toBe("no: BrainChain allowed this worker; the change that allows it was due at 2026-11-04T10:58:18Z and has not run yet");
     } finally {
       vi.useRealTimers();
     }
@@ -281,14 +288,14 @@ describe("flightLine", () => {
     expect(flightLine(flight({}))).toBe("task 45: accepted, paid after 2026-11-04T16:39:00Z unless the grade is disputed");
   });
 
-  it("says a rejected task can still be disputed, and an open dispute when Jev rules", () => {
+  it("says a rejected task can still be disputed, and an open dispute when BrainChain rules", () => {
     expect(flightLine(flight({ id: 46n, accepted: false }))).toBe(
       `task 46: not accepted, refunded to the poster after 2026-11-04T16:39:00Z unless the grade is disputed with ${cli("dispute 46")}`,
     );
     expect(flightLine(flight({ id: 46n, status: Status.Disputed, accepted: false, disputedByModel: true, disputedAt: GRADED + 600n }))).toBe(
-      "task 46: grade disputed by this worker, Jev rules by 2026-11-04T21:49:00Z",
+      "task 46: grade disputed by this worker, BrainChain rules by 2026-11-04T21:49:00Z",
     );
-    expect(flightLine(flight({ id: 46n, status: Status.Disputed, disputedAt: GRADED + 600n }))).toBe("task 46: grade disputed by the poster, Jev rules by 2026-11-04T21:49:00Z");
+    expect(flightLine(flight({ id: 46n, status: Status.Disputed, disputedAt: GRADED + 600n }))).toBe("task 46: grade disputed by the poster, BrainChain rules by 2026-11-04T21:49:00Z");
   });
 
   it("says what a ruling does and until when it can be appealed", () => {
@@ -298,13 +305,13 @@ describe("flightLine", () => {
       "task 46: the ruling pays this worker after 2026-11-04T16:50:40Z unless the poster appeals",
     );
     expect(flightLine(flight({ id: 46n, status: Status.Appealed, appeal: { ...appeal, appealedAt: GRADED + 800n } }))).toBe(
-      "task 46: ruling appealed, Jev rules again by 2026-11-04T21:52:20Z",
+      "task 46: ruling appealed, BrainChain rules again by 2026-11-04T21:52:20Z",
     );
   });
 
   it("says a hired task's deadline and that a delivered one waits for its grade", () => {
     expect(flightLine(flight({ status: Status.Hired }))).toBe("task 45: hired, due by 2026-11-04T21:38:01Z");
-    expect(flightLine(flight({ status: Status.Submitted }))).toBe("task 45: delivered, waiting for Jev's grade");
+    expect(flightLine(flight({ status: Status.Submitted }))).toBe("task 45: delivered, waiting for BrainChain's grade");
   });
 });
 

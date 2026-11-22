@@ -2,12 +2,15 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 
 import {
+  AbiDecodingDataSizeTooSmallError,
   BaseError,
   ContractFunctionRevertedError,
+  ContractFunctionZeroDataError,
   createPublicClient,
   createWalletClient,
   encodeAbiParameters,
   encodeFunctionData,
+  hexToBytes,
   HttpRequestError,
   InsufficientFundsError,
   keccak256,
@@ -73,7 +76,7 @@ export const Status = { Open: 1, Hired: 2, Submitted: 3, Graded: 4, Disputed: 5,
 /** Mirrors ProposalBonds.State. */
 export const ApplicationState = { Open: 1, Returned: 2, Burned: 3 } as const;
 /** Why a task was refunded, by TaskBoard.RefundReason. */
-export const REFUND_REASONS = ["no worker was hired", "the result was not delivered in time", "Jev did not grade it in time", "Jev did not accept the work", "Jev ruled for the poster"];
+export const REFUND_REASONS = ["no worker was hired", "the result was not delivered in time", "BrainChain did not grade it in time", "BrainChain did not accept the work", "BrainChain ruled for the poster"];
 
 /** How a delivered task settled: paid, with what reached the wallet and when, or refunded, with why and any stake slashed. */
 export type Settlement = { paid: true; amount: bigint; at: bigint } | { paid: false; reason: number; slashed: bigint };
@@ -119,7 +122,7 @@ export interface WorkerChain {
   /** Tasks hired to this worker that wait for its result. */
   hired(): Promise<HiredTask[]>;
   ethBalance(): Promise<bigint>;
-  /** Uploads a result to the service, which publishes it once Jev accepts the work, or grades it for a house task. */
+  /** Uploads a result to the service, which publishes it once BrainChain accepts the work, or grades it for a house task. */
   publish(id: bigint, text: string): Promise<{ uri: string; hash: Hex }>;
   /** Sends the submit, hands its hash to `sent` before waiting for the receipt, and returns the hash once it succeeds. */
   submit(id: bigint, resultHash: Hex, resultURI: string, sent: (tx: Hex) => void): Promise<Hex>;
@@ -383,7 +386,68 @@ export const brainchainTransport = (network: Network) =>
 const identityAbi = parseAbi([
   "function ownerOf(uint256 tokenId) view returns (address)",
   "function getAgentWallet(uint256 agentId) view returns (address)",
+  "function getMetadata(uint256 agentId, string metadataKey) view returns (bytes)",
 ]);
+const adapterAbi = parseAbi(["struct Binding { uint8 standard; address tokenContract; uint256 tokenId; }", "function bindingOf(uint256 agentId) view returns (Binding)"]);
+/** The adapter's code for ERC-721, the one standard whose token has a single holder. */
+const ERC721 = 0;
+
+/** The call reached the contract and got no answer from it: a revert, no data or too little back, or no gas left. */
+const unanswered = (error: unknown): boolean =>
+  error instanceof BaseError &&
+  error.walk((e) => e instanceof ContractFunctionRevertedError || e instanceof ContractFunctionZeroDataError || e instanceof AbiDecodingDataSizeTooSmallError || (e instanceof BaseError && /out ?of ?gas/i.test(e.details))) !== null;
+
+/**
+ * Whether `account` owns the ERC-8004 id `agentId` or is its registered wallet, as the service reads it, or for an id
+ * bound to an NFT holds that NFT. Undefined when the registry could not be read, or where this version names none.
+ */
+export async function holdsAgent(network: Network, account: Address, agentId: bigint): Promise<boolean | undefined> {
+  if (!network.identity || !network.bridge) return undefined;
+  const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
+  const mine = (holder: Address) => holder.toLowerCase() === account.toLowerCase();
+  const read = (functionName: "ownerOf" | "getAgentWallet") => parent.readContract({ address: network.identity!, abi: identityAbi, functionName, args: [agentId] });
+  try {
+    const owner = await read("ownerOf");
+    const adapter = network.identityAdapters?.find((known) => known.toLowerCase() === owner.toLowerCase());
+    if (adapter) {
+      const binding = await parent.readContract({ address: adapter, abi: adapterAbi, functionName: "bindingOf", args: [agentId] });
+      if (binding.standard !== ERC721) return false;
+      const holder = await parent.readContract({ address: binding.tokenContract, abi: identityAbi, functionName: "ownerOf", args: [binding.tokenId] }).catch((error: unknown) => {
+        if (unanswered(error)) return undefined;
+        throw error;
+      });
+      return holder !== undefined && mine(holder);
+    }
+    return mine(owner) || mine(await read("getAgentWallet"));
+  } catch (error) {
+    return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? false : undefined;
+  }
+}
+
+/**
+ * The build the id declares under its build key, read as the service reads it: one line of printable ASCII, at most
+ * 96 characters, with any house: prefix removed, and "" for none. Undefined when the registry could not be read, or
+ * where this version names none.
+ */
+export async function declaredBuild(network: Network, agentId: bigint): Promise<string | undefined> {
+  if (!network.identity || !network.bridge) return undefined;
+  const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
+  try {
+    const raw = await parent.readContract({ address: network.identity, abi: identityAbi, functionName: "getMetadata", args: [agentId, "build"] });
+    let build = new TextDecoder("utf-8", { fatal: false })
+      .decode(hexToBytes(raw))
+      .replace(/[^\x20-\x7e]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 96);
+    // The service keeps house: for the agents it runs itself and strips it from a declared build however often it
+    // repeats, so a build is read here the way the licence will record it.
+    while (build.toLowerCase().startsWith("house:")) build = build.slice("house:".length).trimStart();
+    return build;
+  } catch (error) {
+    return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? "" : undefined;
+  }
+}
 
 export function createChain(network: Network, account: PrivateKeyAccount, store: Store = memoryStore()) {
   const chain = chainOf(network);
@@ -513,7 +577,7 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
     held: () => client.readContract({ address: staking, abi: workerStakingAbi, functionName: "held", args: [account.address] }),
     allowed: () => client.readContract({ ...board, functionName: "workerAllowed", args: [account.address] }),
     bond: () => client.readContract({ address: bonds, abi: bondsAbi, functionName: "bond" }),
-    /** Seconds between Jev allowing a worker and the worker being hireable. */
+    /** Seconds between BrainChain allowing a worker and the worker being hireable. */
     timelock: () => client.readContract({ address: executor, abi: executorAbi, functionName: "timelock" }),
     /** Approves `spender` for `amount` unless it already may take that much; the approval's hash, or undefined when none was needed. */
     async approve(token: Address, spender: Address, amount: bigint): Promise<Hex | undefined> {
@@ -542,22 +606,8 @@ export function createChain(network: Network, account: PrivateKeyAccount, store:
       const stakes = await Promise.all(sets.map((s) => client.readContract({ address: s.staking, abi: workerStakingAbi, functionName: "get", args: [account.address] })));
       return sets.flatMap((s, i) => (stakes[i]!.staked > 0n || stakes[i]!.unstaking > 0n ? [{ ...s, w: stakes[i]! }] : []));
     },
-    /**
-     * Whether this wallet owns the ERC-8004 agent `agentId` on the parent chain or is
-     * its registered wallet; undefined when the registry could not be read.
-     */
-    async holdsAgent(agentId: bigint): Promise<boolean | undefined> {
-      if (!network.identity || !network.bridge) return undefined;
-      const parent = createPublicClient({ chain: parentChainOf(network.bridge), transport: rpcTransport(network.bridge.rpc) });
-      const mine = (holder: Address) => holder.toLowerCase() === account.address.toLowerCase();
-      const read = (functionName: "ownerOf" | "getAgentWallet") =>
-        parent.readContract({ address: network.identity!, abi: identityAbi, functionName, args: [agentId] });
-      try {
-        return mine(await read("ownerOf")) || mine(await read("getAgentWallet"));
-      } catch (error) {
-        return error instanceof BaseError && error.walk((e) => e instanceof ContractFunctionRevertedError) ? false : undefined;
-      }
-    },
+    /** Whether this wallet holds the ERC-8004 agent `agentId` on the parent chain, as {@link holdsAgent} reads it. */
+    holdsAgent: (agentId: bigint) => holdsAgent(network, account.address, agentId),
     apply: (profileURI: string) =>
       send({ address: bonds, abi: bondsAbi, functionName: "propose", args: [taskBoard, applicationData(account.address), profileURI] }),
     /** Whether the guardian's veto shuts allowing a worker, which is what an application asks for. */

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   BaseError,
   ContractFunctionExecutionError,
+  encodeAbiParameters,
   encodeEventTopics,
   encodeFunctionResult,
   InsufficientFundsError,
@@ -16,13 +17,16 @@ import {
   keccak256,
   toBytes,
   toFunctionSelector,
+  toHex,
+  type Address,
+  type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { taskBoardAbi, workerStakingAbi } from "./abi.js";
-import { appealAbi, createChain, erc20Abi, faucetReopens, fetchBrief, NotWaiting, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
+import { appealAbi, createChain, declaredBuild, erc20Abi, faucetReopens, fetchBrief, NotWaiting, PermanentError, reason, requireChainId, resultMessage, Status, submitFailure, unhealthy, workerId } from "./chain.js";
 import { cli } from "./invoked.js";
-import { resolveNetwork, TESTNET } from "./network.js";
+import { MAINNET, resolveNetwork, TESTNET } from "./network.js";
 import { flightLine } from "./standing.js";
 
 const brief = JSON.stringify({ title: "Haiku", brief: "Write a haiku about rollups", levels: ["Great", "Fine", "Poor"], passIndex: 1 });
@@ -288,9 +292,9 @@ describe("record", () => {
       }
       expect(lines).toEqual([
         `task 1: the ruling refunds the poster after 1970-01-01T01:01:40Z unless appealed with ${cli("appeal 1")}`,
-        "task 1: ruling appealed, Jev rules again by 1970-01-01T06:03:20Z",
+        "task 1: ruling appealed, BrainChain rules again by 1970-01-01T06:03:20Z",
         "task 1: hired, due by 2033-05-18T03:33:20Z",
-        "task 1: grade disputed by this worker, Jev rules by 1970-01-01T06:00:03Z",
+        "task 1: grade disputed by this worker, BrainChain rules by 1970-01-01T06:00:03Z",
       ]);
       status = Status.Paid;
       expect(await chain.record()).toMatchObject({ paid: 1, inFlight: [] });
@@ -389,6 +393,111 @@ describe("a send the gas cap made revert", () => {
     } finally {
       rpc.close();
     }
+  });
+});
+
+describe("holdsAgent", () => {
+  const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
+  const OTHER: Address = "0x00000000000000000000000000000000000000c2";
+  const TOKEN: Address = "0x00000000000000000000000000000000000000a7";
+  const ADAPTER = MAINNET.identityAdapters![0]!;
+  const address = (holder: Address) => encodeAbiParameters([{ type: "address" }], [holder]);
+  const binding = (standard: number, tokenId = 77n) => encodeAbiParameters([{ type: "uint8" }, { type: "address" }, { type: "uint256" }], [standard, TOKEN, tokenId]);
+  const selector = {
+    ownerOf: toFunctionSelector("function ownerOf(uint256)"),
+    getAgentWallet: toFunctionSelector("function getAgentWallet(uint256)"),
+    bindingOf: toFunctionSelector("function bindingOf(uint256)"),
+    getMetadata: toFunctionSelector("function getMetadata(uint256,string)"),
+  };
+  /** What each contract answers each call with: an encoded result, or nothing for a revert. */
+  let answers: Record<string, Hex | undefined> = {};
+  let asked: string[] = [];
+  let down = false;
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      const { id, params } = JSON.parse(body) as { id: number; params: [{ to: string; data: string }] };
+      const call = `${params[0].to.toLowerCase()} ${Object.entries(selector).find(([, hex]) => params[0].data.startsWith(hex))?.[0]}`;
+      asked.push(call);
+      const result = answers[call];
+      res.writeHead(down ? 503 : 200, { "content-type": "application/json" });
+      res.end(JSON.stringify(result === undefined ? { jsonrpc: "2.0", id, error: { code: 3, message: "execution reverted", data: "0x" } } : { jsonrpc: "2.0", id, result }));
+    });
+  });
+  let network = MAINNET;
+  const REGISTRY = MAINNET.identity!.toLowerCase();
+  const holds = async (given: Record<string, Hex | undefined>) => {
+    answers = given;
+    asked = [];
+    return createChain(network, account).holdsAgent(501n);
+  };
+
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    network = { ...MAINNET, bridge: { ...MAINNET.bridge!, rpc: `http://127.0.0.1:${(server.address() as AddressInfo).port}` } };
+  });
+  afterAll(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+
+  it("is true for the id's owner and for its registered wallet, and false for anyone else or an id that does not exist", async () => {
+    expect(await holds({ [`${REGISTRY} ownerOf`]: address(account.address) })).toBe(true);
+    expect(await holds({ [`${REGISTRY} ownerOf`]: address(OTHER), [`${REGISTRY} getAgentWallet`]: address(account.address) })).toBe(true);
+    expect(await holds({ [`${REGISTRY} ownerOf`]: address(OTHER), [`${REGISTRY} getAgentWallet`]: address(OTHER) })).toBe(false);
+    expect(await holds({})).toBe(false);
+  });
+
+  it("takes the holder of the NFT an id is bound to, and nobody else, as the holder of the id", async () => {
+    expect(MAINNET.identityAdapters).toEqual(["0x000000009d62675362a58911e3f32FEcf46F5E18"]);
+    const bound = { [`${REGISTRY} ownerOf`]: address(ADAPTER), [`${ADAPTER.toLowerCase()} bindingOf`]: binding(0) };
+    expect(await holds({ ...bound, [`${TOKEN.toLowerCase()} ownerOf`]: address(account.address) })).toBe(true);
+    expect(asked).toEqual([`${REGISTRY} ownerOf`, `${ADAPTER.toLowerCase()} bindingOf`, `${TOKEN.toLowerCase()} ownerOf`]);
+    // A sale of the NFT leaves the id's registered wallet as it was, so that wallet is never asked for.
+    expect(await holds({ ...bound, [`${TOKEN.toLowerCase()} ownerOf`]: address(OTHER), [`${REGISTRY} getAgentWallet`]: address(account.address) })).toBe(false);
+    expect(asked).not.toContain(`${REGISTRY} getAgentWallet`);
+  });
+
+  it("gives a bound id no holder when its token has none: another standard, no binding, or a burned token", async () => {
+    const owned = { [`${REGISTRY} ownerOf`]: address(ADAPTER), [`${TOKEN.toLowerCase()} ownerOf`]: address(account.address) };
+    expect(await holds({ ...owned, [`${ADAPTER.toLowerCase()} bindingOf`]: binding(1) })).toBe(false);
+    expect(await holds(owned)).toBe(false);
+    expect(await holds({ [`${REGISTRY} ownerOf`]: address(ADAPTER), [`${ADAPTER.toLowerCase()} bindingOf`]: binding(0) })).toBe(false);
+    // A token contract that answers nothing gives no holder either, as the service reads it: never an outage to try again.
+    expect(await holds({ [`${REGISTRY} ownerOf`]: address(ADAPTER), [`${ADAPTER.toLowerCase()} bindingOf`]: binding(0), [`${TOKEN.toLowerCase()} ownerOf`]: "0x" })).toBe(false);
+    // Only from the token: a registry that answers nothing is one that could not be read.
+    expect(await holds({ [`${REGISTRY} ownerOf`]: "0x" })).toBeUndefined();
+  });
+
+  it("reads the build the id declares as the service does: one printable line, no house: prefix, and none for nothing set", async () => {
+    const build = async (answer: Hex | undefined) => {
+      answers = answer === undefined ? {} : { [`${REGISTRY} getMetadata`]: answer };
+      return declaredBuild(network, 501n);
+    };
+    const bytes = (text: string) => encodeAbiParameters([{ type: "bytes" }], [toHex(text)]);
+    expect(await build(bytes("rehearsal build 1"))).toBe("rehearsal build 1");
+    expect(await build(bytes("House: house:  atlas\t2.1\n"))).toBe("atlas 2.1");
+    expect(await build(bytes(""))).toBe("");
+    // A registry without the metadata read declares none.
+    expect(await build(undefined)).toBe("");
+    down = true;
+    try {
+      expect(await build(bytes("atlas"))).toBeUndefined();
+    } finally {
+      down = false;
+    }
+    expect(await declaredBuild(TESTNET, 501n)).toBeUndefined();
+  });
+
+  it("says nothing when the registry cannot be read, or where this version names none", async () => {
+    down = true;
+    try {
+      expect(await holds({ [`${REGISTRY} ownerOf`]: address(account.address) })).toBeUndefined();
+    } finally {
+      down = false;
+    }
+    expect(await createChain(TESTNET, account).holdsAgent(501n)).toBeUndefined();
   });
 });
 

@@ -1,10 +1,10 @@
-import { createPublicClient, createWalletClient, encodeFunctionData, formatUnits, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { createPublicClient, createWalletClient, encodeFunctionData, parseAbi, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { erc20Errors, transferErrors } from "./abi.js";
 import { appealAbi, brainchainTransport, erc20Abi, explainRevert, faucetReopens, reason, RECEIPT_MS, Status } from "./chain.js";
 import { cli } from "./invoked.js";
 import { chainOf, type Network } from "./network.js";
-import { ethNeeded, GAS, shortOfGas } from "./standing.js";
+import { ethNeeded, GAS, money, shortOfGas, usdg } from "./standing.js";
 
 /** TaskBoard statuses from set 3.5.0 on: a ruling that waits out its appeal window, and one under appeal. */
 export const { Ruled, Appealed } = Status;
@@ -141,14 +141,14 @@ export async function dispute(network: Network, chain: DisputeChain, id: bigint,
   if (now > closes) throw new Error(`The dispute window for task ${id} closed at ${at(closes)}.`);
   const tx = await chain.dispute(id);
   log(`Disputed the grade on task ${id} (${task.accepted ? "it accepted the work" : "it rejected the work"}): ${tx}`);
-  log(`Jev rules within ${task.ruleWindow / 3_600n} hours. A confident ruling decides; otherwise the grade stands.`);
+  log(`BrainChain rules within ${task.ruleWindow / 3_600n} hours. A confident ruling decides; otherwise the grade stands.`);
 }
 
 /** Appeals the ruling on a task, as the side it went against, with the bond the board fixed when the task was posted. */
 export async function appeal(network: Network, chain: DisputeChain, id: bigint, log: (line: string) => void): Promise<void> {
   const [task, now] = await Promise.all([chain.task(id), chain.now()]);
   if (task.status === 0) throw new Error(`There is no task ${id} on ${network.name}.`);
-  if (task.status === Status.Disputed) throw new Error(`Task ${id} is still waiting for Jev's ruling. Appeal once it is ruled.`);
+  if (task.status === Status.Disputed) throw new Error(`Task ${id} is still waiting for BrainChain's ruling. Appeal once it is ruled.`);
   if (task.status === Appealed) throw new Error(`Task ${id} is already under appeal; a ruling can be appealed once.`);
   if (task.status !== Ruled) throw new Error(`Task ${id} has no ruling open to appeal.`);
   const terms = await chain.appealOf(id);
@@ -166,8 +166,8 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
     chain.allowance(),
     chain.sent(),
   ]);
-  const amount = `${formatUnits(bond, 6)} ${network.bountySymbol}`;
-  const holds = `The appeal bond is ${amount}, and this wallet holds ${formatUnits(balance, 6)}.`;
+  const amount = usdg(network, bond);
+  const holds = `The appeal bond is ${amount}, and this wallet holds ${money(balance)}.`;
   // Test USDG comes from its faucet, as tBRAIN does for join; only mainnet's USDG is bridged in.
   const claims = balance < bond && network.bountyFaucet === true;
   if (balance < bond && !claims) throw new Error(`${holds} Bridge more with ${cli("bridge --bounty <amount>")}.`);
@@ -179,7 +179,7 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
   if (claims) {
     const faucet = await chain.bountyFaucet();
     if (now < faucet.opensAt) throw closed(faucet.opensAt);
-    if (balance + faucet.amount < bond) throw new Error(`${holds} The faucet's ${formatUnits(faucet.amount, 6)} ${network.bountySymbol} a day would not make up the rest.`);
+    if (balance + faucet.amount < bond) throw new Error(`${holds} The faucet's ${usdg(network, faucet.amount)} a day would not make up the rest.`);
   }
   // Checked for every transaction before any is sent: an approval alone spends gas and leaves the bond approved.
   const need = ethNeeded([...(claims ? [GAS.faucet] : []), ...(allowance < bond ? [APPROVE_GAS] : []), APPEAL_GAS], gasPrice);
@@ -201,5 +201,5 @@ export async function appeal(network: Network, chain: DisputeChain, id: bigint, 
     );
   });
   log(`Appealed the ruling on task ${id} with a ${amount} bond: ${tx}`);
-  log(`Jev rules again within ${task.ruleWindow / 3_600n} hours. The bond comes back unless Jev confidently rules the same way.`);
+  log(`BrainChain rules again within ${task.ruleWindow / 3_600n} hours, and the bond comes back unless it confidently rules the same way.`);
 }

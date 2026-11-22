@@ -48,7 +48,7 @@ const TARGETS = Object.keys(GOVERNED) as Target[];
 
 /** What the brain reads from a proposal's URI, cut to the lengths it keeps, in UTF-16 units as a JavaScript string counts them. */
 export const LIMITS = { title: 120, rationale: 1_500, current: 300, proposed: 300 } as const;
-/** The most the brain reads of a whole case as JSON; past it, the case reads as blank and Jev decides on the call alone. */
+/** The most the brain reads of a whole case as JSON; past it, the case reads as blank and Jev is asked about the call alone. */
 export const CASE_BYTES = 4_096;
 
 const proposalsAbi = parseAbi([
@@ -195,7 +195,7 @@ export function caseURI(call: Call, input: Case): string {
   const title = input.title.trim();
   const rationale = input.rationale.trim();
   if (!title) throw new ProposalError(`--title is required, up to ${LIMITS.title} characters`);
-  if (!rationale) throw new ProposalError(`--rationale is required: why the change is better, up to ${LIMITS.rationale} characters. Jev reads it to decide.`);
+  if (!rationale) throw new ProposalError(`--rationale is required: why the change is better, up to ${LIMITS.rationale} characters. Jev reads it before BrainChain decides.`);
   const body = { title, rationale, current: input.current?.trim() ?? "", proposed: input.proposed?.trim() || call.text };
   for (const key of Object.keys(LIMITS) as (keyof typeof LIMITS)[]) {
     if (body[key].length > LIMITS[key]) throw new ProposalError(`--${key} is at most ${LIMITS[key]} characters`);
@@ -211,7 +211,7 @@ export interface Proposal {
   bond: bigint;
   createdAt: bigint;
   state: number;
-  /** When Jev's window closes, fixed when the call was proposed. */
+  /** When BrainChain's window to decide closes, fixed when the call was proposed. */
   deadline: bigint;
 }
 
@@ -366,7 +366,7 @@ export async function propose(
   log(`Proposal on ${network.name}
   Call      ${call.text} on the ${call.target} (${call.address})
   Data      ${call.data}
-  Bond      ${stake(network, bond)}, returned if Jev adopts the change with at least ${percent(threshold)} confidence, burned otherwise
+  Bond      ${stake(network, bond)}, returned if BrainChain adopts the change with at least ${percent(threshold)} confidence, burned otherwise
   Decision  within ${days(within)}; an adopted change runs ${hours(timelock)} later`);
   // A dry run stops where the real one would, so it passes only when the real one can send.
   const short = [
@@ -385,7 +385,7 @@ export async function propose(
   }
   log(`Bonding ${stake(network, bond)} and proposing...`);
   const { id, tx } = await chain.propose(call, uri, bond);
-  log(`Proposal ${id} is waiting for Jev (${tx}). Follow it with ${cli(`proposal ${id}`)}.`);
+  log(`Proposal ${id} is waiting for BrainChain's decision (${tx}). Follow it with ${cli(`proposal ${id}`)}.`);
 }
 
 export async function proposal(network: Network, chain: ProposalChain, id: bigint, log: (line: string) => void): Promise<void> {
@@ -394,8 +394,8 @@ export async function proposal(network: Network, chain: ProposalChain, id: bigin
   const head = `Proposal ${id} by ${p.proposer}, bond ${stake(network, p.bond)}`;
   if (p.state === State.Open) {
     const now = await chain.now();
-    const after = now > p.deadline ? `its window closed at ${when(p.deadline)}, so anyone can return the bond by calling expire on ${network.contracts.bonds}` : `Jev decides by ${when(p.deadline)}`;
-    log(`${head}\n  Waiting for Jev: ${after}.`);
+    const after = now > p.deadline ? `its window closed at ${when(p.deadline)}, so anyone can return the bond by calling expire on ${network.contracts.bonds}` : `it is due by ${when(p.deadline)}`;
+    log(`${head}\n  Waiting for BrainChain's decision: ${after}.`);
     return;
   }
   const outcome = await chain.outcome(id);
@@ -408,7 +408,7 @@ export async function proposal(network: Network, chain: ProposalChain, id: bigin
     return;
   }
   if (!outcome.adopted) {
-    log(`${head}\n  Jev kept the current setting (decision ${outcome.decisionId}); the bond was burned.`);
+    log(`${head}\n  BrainChain kept the current setting (decision ${outcome.decisionId}); the bond was burned.`);
     return;
   }
   const change = await chain.queued(outcome.decisionId);
@@ -419,5 +419,5 @@ export async function proposal(network: Network, chain: ProposalChain, id: bigin
       : change.vetoed
         ? `change ${change.changeId} was vetoed by the guardian`
         : `change ${change.changeId} runs from ${when(change.eta)}`;
-  log(`${head}\n  Jev adopted it (decision ${outcome.decisionId}) and the bond was returned; ${state}.`);
+  log(`${head}\n  BrainChain adopted it (decision ${outcome.decisionId}) and the bond was returned; ${state}.`);
 }

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline/promises";
 import { verifyDecision } from "brainchain-verify";
@@ -19,9 +20,10 @@ import { buildCall, caseURI, createProposals, proposal, propose } from "./propos
 import { relayPrice } from "./relay.js";
 import { deliveries, deliveriesAfterJoin, deliveriesLeft, ethNeeded, flightLine, gasHelp, gasLine, hireable, joinLimits, shortOfGas, shortOfStake, snapshot, stake, unapplied, usdg, wallet, when } from "./standing.js";
 import { openStore, privateDir, readStakeMoves, readWatched, saveStakeMove, stateDir, writeWatched } from "./state.js";
-import { clearKeyFromEnvironment, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
+import { clearKeyFromEnvironment, expandHome, keyConfigured, keyText, refuseReadableKeyFile, writeKeyFile } from "./key.js";
 import { createCreditChain, credit } from "./credit.js";
 import { appeal, createDisputeChain, dispute } from "./dispute.js";
+import { createExamChain, examFacts, examInfo, examSit, examStatus, examSubmit, licences, papers, type SitOptions } from "./exam.js";
 import { createReporter, createWatch, createWatchChain, outcome, requireWatcher, type Verify } from "./watch.js";
 import { CLI, cli } from "./invoked.js";
 import { createWork, execProblems, execRisks, npxUnderSupervisor, rehearse, shellCommand, stopLeftover, stopper, unseen, watchStarter } from "./work.js";
@@ -77,8 +79,8 @@ const COMMAND_USAGE: Record<string, string> = {
                                             Robinhood Chain, so its BrainChain record is written to that
                                             identity.`,
   run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--mint] [--try]
-                                            Do every task Jev hires the worker for: the command reads the
-                                            task on stdin and prints the deliverable on stdout, within
+                                            Do every task BrainChain hires the worker for: the command reads
+                                            the task on stdin and prints the deliverable on stdout, within
                                             --timeout minutes (20 by default, at most 1440). It logs how
                                             each task settles. --mint also mints the Proof of each task it is
                                             paid for. --try rehearses before the first hire: it runs the
@@ -100,8 +102,8 @@ const COMMAND_USAGE: Record<string, string> = {
   claim: `  brainchain-worker claim [--dry]           Claim the ETH due on the worker's Proofs, on Robinhood Chain.
                                             --dry lists what is due and sends nothing.`,
   bond: `  brainchain-worker bond <task> <USDG> [--yes] | bond status <task> | bond claim <task>
-                                            Bond USDG on Shipped behind a task Jev hired this worker for, at
-                                            least its bounty and 2 USDG. If the task is paid and its Proof
+                                            Bond USDG on Shipped behind a task BrainChain hired this worker for,
+                                            at least its bounty and 2 USDG. If the task is paid and its Proof
                                             recorded by the bond's deadline, the task's plus 72 hours, the bond
                                             comes back less Shipped's 1% fee; if not, it goes to the agent that
                                             paid BrainChain's desk for the task, or to the poster for a task
@@ -155,12 +157,12 @@ const COMMAND_USAGE: Record<string, string> = {
                                             join. Mainnet.`,
   propose: `  brainchain-worker propose --target board|executor|registry --call <function> --args '<JSON array>'
                             --title <text> --rationale <text> [--current <text>] [--proposed <text>] [--dry] [--yes]
-                                            Bond the stake token and propose a change to BrainChain for Jev to
-                                            decide. --data <hex> gives the call as raw calldata instead of
-                                            --call and --args. The bond is burned unless the change is adopted,
-                                            so propose shows the bond and asks before sending; --yes sends
-                                            without asking. --dry checks the call, the bond and the gas, and
-                                            sends nothing.`,
+                                            Bond the stake token and propose a change to BrainChain, which
+                                            decides on it. --data <hex> gives the call as raw calldata instead
+                                            of --call and --args. The bond is burned unless the change is
+                                            adopted, so propose shows the bond and asks before sending; --yes
+                                            sends without asking. --dry checks the call, the bond and the gas,
+                                            and sends nothing.`,
   proposal: `  brainchain-worker proposal <id>           Where a proposal stands: waiting, adopted and when it runs, or kept.`,
   watch: `  brainchain-worker watch [--veto] [--once]
                                             Watch the chain: judge every queued change against the constitution
@@ -185,16 +187,74 @@ const COMMAND_USAGE: Record<string, string> = {
                                             key and sends it. The line opens once the worker is proven on the
                                             board. --premium is the most the sponsor may charge per 30 days, in
                                             basis points (default 0, at most 200). Mainnet only.`,
+  exam: `  brainchain-worker exam info | sit | submit | status
+                                            BrainChain's licence exam, for an ERC-8004 agent this wallet holds.
+                                            Not open yet: until it opens, these commands say so and charge nothing.
+    exam info                               What a sitting is and costs, and how its items are judged.
+    exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry]
+             [--exec "<command>"] [--format prompt|json] [--timeout <minutes>]
+                                            Shows the price, and pays only when --max-price covers it. Then prints
+                                            the briefs, or with --exec runs the command once on each item and
+                                            delivers what it prints. --dry sends no approval and pays nothing.
+    exam submit --sitting <id> --item <n> [--file <path>]
+                                            Delivers one item's work, from --file or from stdin. An item takes one
+                                            delivery, so send finished work.
+    exam status [--sitting <id>]            Each item's outcome; without --sitting, the sitting saved last.
+
+                                            The judges are the models on BrainChain's panel, Jev among them. The fee
+                                            pays for the sitting, pass or fail. If BrainChain cannot open a paid
+                                            sitting, or cannot judge enough of it to decide, the sitting is void: it
+                                            does not count against the agent, and the payment goes back to the
+                                            paying wallet. See "Licence exam" in the README.`,
+  licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
+                                            of each, with the owner and the build BrainChain reads for the id
+                                            now, which the states are checked against. When the registry
+                                            cannot be read it says so, and the states are up to ten minutes old.
+                                            A licence past its expiry reads expired, whatever else was true of
+                                            it. Before that it reads suspended after two failed audits in the
+                                            last three, lapsed while the id has another owner or build than the
+                                            licence was earned with, and valid otherwise. Needs no key.
+                                            license is the same command.`,
+  papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Agent Papers are (the file BrainChain signs for it)
+                                            and what they say now: the id's owner, the build it declares and since
+                                            when, its record and its licences. Then the two transactions the id's
+                                            owner can send, as commands to copy: one points the id's URI at its
+                                            Agent Papers, and one declares the build the agent runs. Once the agent
+                                            holds a valid licence, papers prints only the first and says that
+                                            declaring another build lapses the licence. papers sends neither, and
+                                            prints neither for an id bound to an NFT, whose holder controls it.
+                                            Needs no key.`,
   dispute: `  brainchain-worker dispute <task>          Dispute the grade on a task the worker delivered, within the dispute
-                                            window. Jev rules on it; a confident ruling decides.`,
+                                            window. BrainChain rules on it; a confident ruling decides.`,
   appeal: `  brainchain-worker appeal <task>           Appeal the ruling on a task, when it went against the worker, within the
                                             appeal window, with the bond the task's terms fix (a quarter of the
                                             bounty); on testnet it is claimed from the test USDG faucet when the
-                                            wallet holds less. Jev rules again; the bond comes back unless Jev
-                                            confidently rules the same way.`,
+                                            wallet holds less. BrainChain rules again; the bond comes back
+                                            unless it confidently rules the same way.`,
   leave: `  brainchain-worker leave                   Start unstaking (3-day cooldown).`,
   withdraw: `  brainchain-worker withdraw                Withdraw stake once the cooldown has passed.`,
 };
+
+/** exam sit's own lines, with what each of its flags does. */
+const SIT_USAGE = `Usage:
+  brainchain-worker exam sit --agent-id <id> [--class <class>] [--max-price <USDG>] [--dry]
+                             [--exec "<command>"] [--format prompt|json] [--timeout <minutes>]
+                                            Open a sitting of BrainChain's licence exam for an ERC-8004 agent this
+                                            wallet holds. sit first shows the price and pays nothing.
+  --agent-id <id>                           The agent's ERC-8004 id: a whole number, with no leading zeros.
+  --class <class>                           The class to sit, code by default. exam info lists the classes.
+  --max-price <USDG>                        The most the sitting may cost, such as 0.90. sit pays only when it
+                                            covers the price.
+  --dry                                     Shows the price, the wallet's USDG beside it and whether it covers it,
+                                            and the build the licence will be bound to. Sends no approval and pays nothing.
+  --exec "<command>"                        Runs the command once on each item, as run does on a task, and
+                                            delivers what it prints. Without it, sit prints the briefs, and exam
+                                            submit delivers each item.
+  --format prompt|json                      How --exec gets each item on stdin: as a prompt, or as JSON. prompt by
+                                            default.
+  --timeout <minutes>                       The most minutes --exec may spend on one item, 20 by default.
+
+Example: BRAINCHAIN_NETWORK=mainnet brainchain-worker exam sit --agent-id 501 --max-price 0.90 --dry`;
 
 /** One line each command's own --help ends with. */
 const EXAMPLES: Record<string, string> = {
@@ -214,6 +274,9 @@ const EXAMPLES: Record<string, string> = {
   proposal: "brainchain-worker proposal 2",
   watch: "brainchain-worker watch --once",
   credit: "BRAINCHAIN_NETWORK=mainnet brainchain-worker credit --agent-id 501",
+  exam: "BRAINCHAIN_NETWORK=mainnet brainchain-worker exam sit --agent-id 501 --dry",
+  licence: "BRAINCHAIN_NETWORK=mainnet brainchain-worker licence --agent-id 501",
+  papers: "BRAINCHAIN_NETWORK=mainnet brainchain-worker papers --agent-id 501",
   dispute: "brainchain-worker dispute 12",
   appeal: "brainchain-worker appeal 12",
   leave: "brainchain-worker leave",
@@ -222,7 +285,7 @@ const EXAMPLES: Record<string, string> = {
 
 const USAGE = `brainchain-worker ${version}
 
-Earn on BrainChain by doing tasks: stake, apply, and let Jev hire your agent.
+Earn on BrainChain by doing tasks: stake, apply, and let BrainChain hire your agent.
 
 Usage:
 ${Object.values(COMMAND_USAGE).join("\n")}
@@ -246,7 +309,8 @@ The command sees the worker's environment without any BRAINCHAIN_ variable, plus
 run restarts itself in place at start on Node.js 22.15 or later, so its own environment holds no key either.
 It runs as your user, so it can reach what your user can: see "Your command" in the README.
 Unfinished work is kept in ~/.config/brainchain-worker/<address>.<network>.json across restarts,
-and one run at a time works for each address on each network.
+and one run at a time works for each address on each network. A sitting of the licence exam is kept
+beside it, one file for each agent and class: <address>.<network>.exam.<agent>.<class>.json.
 
 Docs: https://docs.usebrainchain.com/run-a-worker`;
 
@@ -272,12 +336,15 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   "buy-stake": { with: false, dry: true, yes: true },
   watch: { veto: true, once: true },
   credit: { "agent-id": false, premium: false },
+  exam: { "agent-id": false, class: false, "max-price": false, exec: false, format: false, timeout: false, dry: true, sitting: false, item: false, file: false },
+  licence: { "agent-id": false },
+  papers: { "agent-id": false },
   propose: { target: false, call: false, args: false, data: false, title: false, rationale: false, current: false, proposed: false, dry: true, yes: true },
   proposal: {},
   dispute: {},
   appeal: {},
 };
-const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1, bond: 2 };
+const POSITIONAL: Record<string, number> = { price: 1, proposal: 1, dispute: 1, appeal: 1, bond: 2, exam: 1 };
 
 /** A command's flags; a name from argv can match what every object inherits, such as constructor. */
 const flagsOf = (command: string) => (Object.hasOwn(FLAGS, command) ? FLAGS[command] : undefined);
@@ -306,7 +373,12 @@ export function parse(command: string, args: string[]): { positional: string[]; 
     if (value === undefined || (inline === undefined && value.startsWith("--"))) throw new UsageError(`--${name} needs a value`);
     values.set(name, value);
   }
-  if (positional.length > (POSITIONAL[command] ?? 0)) throw new UsageError(`Unexpected "${positional.at(-1)}" (see ${CLI} --help)`);
+  if (positional.length > (POSITIONAL[command] ?? 0)) {
+    const extra = positional.at(-1)!;
+    // A bare number where an agent id goes is that id without its flag.
+    const takesId = Object.hasOwn(known, "agent-id") && (command !== "exam" || positional[0] === "sit");
+    throw new UsageError(takesId && /^\d+$/.test(extra) ? `Unexpected "${extra}"; use --agent-id ${extra}` : `Unexpected "${extra}" (see ${CLI} --help)`);
+  }
   return { positional, values, switches };
 }
 
@@ -326,8 +398,15 @@ export function asksHelp(command: string, args: string[]): boolean {
 }
 
 /** One command's usage lines, or the whole text for anything else. A name from argv can match what every object inherits, such as constructor. */
-export function usage(command: string | undefined): string {
-  return command !== undefined && Object.hasOwn(COMMAND_USAGE, command) ? `Usage:\n${COMMAND_USAGE[command]}\n\nExample: ${EXAMPLES[command]}` : USAGE;
+export function usage(command: string | undefined, part?: string): string {
+  const name = canonical(command);
+  if (name === "exam" && part === "sit") return SIT_USAGE;
+  return name !== undefined && Object.hasOwn(COMMAND_USAGE, name) ? `Usage:\n${COMMAND_USAGE[name]}\n\nExample: ${EXAMPLES[name]}` : USAGE;
+}
+
+/** `license` is `licence` in the other spelling. */
+function canonical<T extends string | undefined>(command: T): T | "licence" {
+  return command === "license" ? "licence" : command;
 }
 
 interface Signer {
@@ -398,7 +477,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   // Only an application carries a name and a description, so a worker already allowed or waiting needs neither.
   if (applying) {
     if (!name) throw new UsageError("--name is required, up to 60 characters");
-    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it to decide and refuses an empty application");
+    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters; BrainChain reads it to decide and refuses an empty application");
     if (await chain.applicationVetoed()) throw new Error("The guardian vetoed setWorkerAllowed on the task board, so the executor does not queue an application until the admin reopens that function. Nothing was sent.");
     const taken = await chain.openApplication();
     if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with ${cli(`proposal ${taken}`)}.`);
@@ -409,7 +488,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
         : "This worker is past its application, so --name and --about are not used.",
     );
   }
-  // The agent id travels in the application, and Jev keeps the profile it decided on.
+  // The agent id travels in the application, and BrainChain keeps the profile it decided on.
   if (agentId !== undefined) {
     if (allowed || (change && pending) || open) {
       throw new UsageError(`--agent-id goes in the application, and this worker is already allowed or has one waiting. Run ${cli("join")} without it.`);
@@ -475,7 +554,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     return;
   }
   if (change && pending) {
-    console.log(`Jev already allowed this worker. It can be hired after ${when(change.eta)}; keep ${RUN} going until then.`);
+    console.log(`BrainChain already allowed this worker. It can be hired after ${when(change.eta)}; keep ${RUN} going until then.`);
     return;
   }
   if (open) {
@@ -483,12 +562,12 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     if (!name && !about) console.log(`Application ${open.id} is already waiting for BrainChain's decision. ${cli("status")} says how long it has waited.`);
     return;
   }
-  console.log(`Applying with a ${stake(network, bond)} bond, returned if Jev allows the worker...`);
+  console.log(`Applying with a ${stake(network, bond)} bond, returned if BrainChain allows the worker...`);
   txLine("approved", await chain.approve(network.contracts.stakeToken, network.contracts.bonds, bond));
   const profile = Buffer.from(JSON.stringify({ name, about, ...(agentId !== undefined ? { agentId: Number(agentId) } : {}) })).toString("base64");
   txLine("applied", await chain.apply(`data:application/json;base64,${profile}`));
   console.log(
-    `\nApplied. Jev usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
+    `\nApplied. BrainChain usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
       `Start ${RUN} now so it takes its first task as soon as it is hired, and follow\n` +
       `the application with ${cli("status")}. New workers are offered house tasks first, which BrainChain pays for.`,
   );
@@ -667,9 +746,9 @@ async function rehearsal({ exec, format, minutes }: ReturnType<typeof runFlags>)
 
 /**
  * Reads again, every few minutes until the worker can be hired, whether it can,
- * and returns the new answer when it changed. A run started while Jev decides
- * on the application then says when Jev allows the worker, and when its
- * timelock has passed.
+ * and returns the new answer when it changed. A run started while BrainChain
+ * decides on the application then says when BrainChain allows the worker, and
+ * when its timelock has passed.
  */
 export function hireWatch(first: string, check: () => Promise<string | undefined>, everyMs = HIREABLE_CHECK_MS, now = Date.now) {
   let last = first;
@@ -749,6 +828,113 @@ async function bondCommand(network: Network, positional: string[], yes: boolean)
   return bond(network, config, chain, args.task, { amount: args.amount, yes, ...terminal(), log: console.log });
 }
 
+/** The flags each part of `exam` takes: one parser reads them all, so a flag that belongs to another part is refused here. */
+const EXAM_FLAGS: Record<string, string[]> = {
+  info: [],
+  sit: ["agent-id", "class", "max-price", "exec", "format", "timeout", "dry"],
+  submit: ["sitting", "item", "file"],
+  status: ["sitting"],
+};
+
+/** An agent's ERC-8004 id from --agent-id, as the service takes it. */
+function agentIdOf(values: Map<string, string>, command: string): string {
+  const agentId = values.get("agent-id");
+  if (agentId === undefined) throw new UsageError(`${command} needs --agent-id: the agent's ERC-8004 id, a whole number`);
+  // The service reads one spelling of an id, so 026170 is refused there as it is here.
+  if (/^0\d+$/.test(agentId)) throw new UsageError(`--agent-id takes no leading zeros: use ${agentId.replace(/^0+(?=\d)/, "")}`);
+  if (!/^(0|[1-9]\d{0,14})$/.test(agentId)) throw new UsageError(`--agent-id is a whole number, the agent's ERC-8004 id, not "${agentId}"`);
+  return agentId;
+}
+
+function sittingOf(values: Map<string, string>): Hex | undefined {
+  const sitting = values.get("sitting");
+  if (sitting !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(sitting)) throw new UsageError("--sitting is the sitting's id as exam sit printed it: 0x and 64 hex characters");
+  return sitting?.toLowerCase() as Hex | undefined;
+}
+
+async function workText(file: string | undefined): Promise<string> {
+  let bytes: Buffer;
+  if (file !== undefined) {
+    try {
+      bytes = readFileSync(expandHome(file));
+    } catch (error) {
+      throw new Error(`--file names ${expandHome(file)}, which could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
+    }
+  } else {
+    if (process.stdin.isTTY) throw new UsageError(`exam submit reads the work from --file <path>, or from stdin when it is piped in`);
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    bytes = Buffer.concat(chunks);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("The work is not valid UTF-8. Nothing was sent.");
+  }
+}
+
+async function examCommand(network: Network, action: string | undefined, values: Map<string, string>, switches: Set<string>): Promise<void> {
+  const takes = action !== undefined && Object.hasOwn(EXAM_FLAGS, action) ? EXAM_FLAGS[action] : undefined;
+  if (takes === undefined) throw new UsageError(`Usage: ${CLI} exam info, exam sit --agent-id <id>, exam submit --sitting <id> --item <n> [--file <path>], or exam status (see ${CLI} exam --help)`);
+  const extra = [...values.keys(), ...switches].find((flag) => !takes.includes(flag));
+  if (extra !== undefined) throw new UsageError(`exam ${action} has no --${extra} flag (see ${CLI} exam --help)`);
+  const log = (line: string) => console.log(line);
+  if (action === "info") return examInfo(network, { log });
+  if (action === "status") {
+    const sitting = sittingOf(values);
+    // Reading a sitting needs no key; only finding the one saved last needs to know whose it is, after the exam is open.
+    if (sitting) return examStatus(network, { sitting, log });
+    await examFacts(network);
+    return examStatus(network, { account: signer().account.address, log });
+  }
+  if (action === "submit") {
+    const sitting = sittingOf(values);
+    if (sitting === undefined) throw new UsageError("exam submit needs --sitting: the sitting's id, as exam sit printed it");
+    const item = values.get("item");
+    if (item === undefined || !/^\d$/.test(item)) throw new UsageError("exam submit needs --item: the item's number in the sitting, from 0");
+    // A closed exam stops here, before the work is read or the key asked for.
+    await examFacts(network);
+    const text = await workText(values.get("file"));
+    const { key, account } = signer();
+    return examSubmit(network, account, { sitting, item: Number(item), text, secrets: [key, key.slice(2)], log });
+  }
+  const agentId = agentIdOf(values, "exam sit");
+  const sat = values.get("class") ?? "code";
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(sat)) throw new UsageError(`--class is one of the classes ${cli("exam info")} lists, such as code`);
+  const max = values.get("max-price");
+  if (max !== undefined && (!/^\d{1,6}(\.\d{1,6})?$/.test(max) || Number(max) <= 0)) throw new UsageError("--max-price is the most the sitting may cost: USDG above zero with at most 6 decimals, such as --max-price 5");
+  if (!values.has("exec") && (values.has("format") || values.has("timeout"))) throw new UsageError("--format and --timeout say how --exec is run, so they need it");
+  const flags = values.has("exec") ? runFlags(values) : undefined;
+  // The exam's terms need no key: a closed exam stops here, before the key is asked for or anything signed.
+  const facts = await examFacts(network);
+  const { key, account } = signer();
+  // Before anything is paid: the sitting is saved here, and a folder this user cannot write to would lose it.
+  privateDir(stateDir(), log);
+  let exec: Pick<SitOptions, "command" | "stopping" | "busy"> = {};
+  if (flags) {
+    clearKeyFromEnvironment(key, log);
+    for (const problem of execProblems(flags.exec)) log(`warning: ${problem}, so --exec will fail on the first item`);
+    // As run does: the command runs in a process group of its own, which Ctrl-C does not reach, so a stop here ends it.
+    const command = shellCommand(flags.exec);
+    let busy = false;
+    const stop = stopper({ busy: () => busy, kill: command.kill, log, exit: (code) => process.exit(code || process.exitCode) });
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop.signal);
+    exec = { command, stopping: stop.stopping, busy: (working) => void (busy = working) };
+  }
+  return examSit(network, createExamChain(network, account), {
+    agentId,
+    class: sat,
+    ...(max === undefined ? {} : { maxPrice: parseUnits(max, 6) }),
+    ...exec,
+    format: flags?.format ?? "prompt",
+    timeoutMs: (flags?.minutes ?? 20) * 60_000,
+    secrets: [key, key.slice(2)],
+    dry: switches.has("dry"),
+    log,
+    facts,
+  });
+}
+
 /** Where watch keeps its place: a key's place counts toward its watchtower mark, so each key has its own, apart from runs without one. */
 export const watchPlace = (log: Address, key: Address | undefined) => (key === undefined ? log : `${log}.${key}`);
 
@@ -779,13 +965,15 @@ export function watching(network: Network, address: Address | undefined, veto: b
 }
 
 export async function main(argv: string[]): Promise<void> {
-  const [command, ...rest] = argv;
+  const [given, ...rest] = argv;
+  const command = canonical(given);
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    console.log(usage(rest[0]));
+    console.log(usage(rest[0], rest[1]));
     return;
   }
-  if (asksHelp(command, rest)) {
-    console.log(usage(command));
+  // `exam help` reads as exam's own help, as `help exam` does.
+  if (asksHelp(command, rest) || (command === "exam" && rest[0] === "help")) {
+    console.log(usage(command, rest[0]));
     return;
   }
   if (command === "--version" || command === "-v") {
@@ -908,6 +1096,9 @@ export async function main(argv: string[]): Promise<void> {
     if (!/^\d{1,3}$/.test(premium) || Number(premium) > 200) throw new UsageError("--premium is in basis points per 30 days, from 0 to 200 (Priors' cap)");
     return credit(network, createCreditChain(network, signer().account), { agentId: BigInt(agentId), premiumBps: BigInt(premium), log: console.log });
   }
+  if (command === "exam") return examCommand(network, positional[0], values, switches);
+  if (command === "licence") return licences(network, { agentId: agentIdOf(values, command), log: console.log });
+  if (command === "papers") return papers(network, { agentId: agentIdOf(values, command), log: console.log });
   if (command === "watch") {
     const veto = switches.has("veto");
     const once = switches.has("once");

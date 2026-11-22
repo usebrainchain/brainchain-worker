@@ -5,10 +5,11 @@
 
 import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
-import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, formatUnits, isAddress, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
+import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, isAddress, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
 import { RECEIPT_MS, reason } from "./chain.js";
 import { chainOf, rpcTransport, type Network } from "./network.js";
+import { money } from "./standing.js";
 import { printable } from "./work.js";
 
 export interface ExitTerms {
@@ -102,7 +103,7 @@ export function termsProblem(network: Network, terms: Pick<ExitTerms, "desk" | "
     return `The BrainChain service at ${host} names the token ${terms.token} for an exit, and ${network.name}'s ${network.bountySymbol} is ${network.contracts.bountyToken}. Nothing was sent.`;
   }
   if (terms.desk.toLowerCase() !== network.exitDesk.toLowerCase()) {
-    return `The BrainChain service at ${host} names the desk ${terms.desk}, and this release of brainchain-worker pays only ${network.exitDesk}. Nothing was sent.`;
+    return `The BrainChain service at ${host} names the desk ${terms.desk}, and this version of brainchain-worker pays only ${network.exitDesk}. Nothing was sent.`;
   }
   return undefined;
 }
@@ -180,7 +181,7 @@ export async function exit(
   const min = BigInt(terms.minUnits);
   const max = BigInt(terms.maxUnits);
   const symbol = network.bountySymbol;
-  const show = (v: bigint) => `${formatUnits(v, 6)} ${symbol}`;
+  const show = (v: bigint) => `${money(v)} ${symbol}`;
   if (amount === 0n) throw new Error(`The wallet holds no ${symbol} on ${network.name}`);
   if (amount > balance) throw new Error(`The wallet holds ${show(balance)} on ${network.name}, less than ${show(amount)}`);
   if (amount < min) throw new Error(`An exit is at least ${show(min)}`);

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, copyFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, copyFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -149,13 +149,91 @@ function writeAtomic(file: string, text: string): void {
   renameSync(temp, file);
 }
 
+/** A sitting of the licence exam this wallet opened for one of its agents. */
+export interface SavedSitting {
+  agentId: string;
+  class: string;
+  /** Wall-clock seconds when the sitting was paid for. */
+  at: number;
+  /**
+   * The request and the payment header as they were sent, kept until the service hands over the briefs: sent again,
+   * the service answers them from the sitting they bought, and the desk never charges them twice.
+   */
+  request?: { body: string; header: [string, string] };
+  /** Known once the service has answered. */
+  sitting?: Hex;
+  deadline?: number;
+}
+
+function isSitting(value: unknown): value is SavedSitting {
+  if (!isObject(value) || typeof value.agentId !== "string" || typeof value.class !== "string" || !isCount(value.at)) return false;
+  const { request, sitting, deadline } = value;
+  if (request !== undefined && !(isObject(request) && typeof request.body === "string" && Array.isArray(request.header) && request.header.length === 2 && request.header.every((part) => typeof part === "string"))) return false;
+  if (sitting !== undefined && !isHash(sitting)) return false;
+  return deadline === undefined || isCount(deadline);
+}
+
+const sittingsPrefix = (address: string, network: Network) => `${address}.${network.id}.exam.`;
+/** Each agent and class has a file of its own, so runs for different agents never write over each other's payment. */
+const sittingFile = (address: string, network: Network, { agentId, class: sat }: Pick<SavedSitting, "agentId" | "class">, dir: string) =>
+  join(dir, `${sittingsPrefix(address, network)}${agentId}.${sat}.json`);
+
+/**
+ * The sittings a wallet has opened on one network, one for each agent and class. A file that is not a sitting is
+ * moved aside, never written over: it may hold a payment.
+ */
+export function readSittings(address: string, network: Network, dir = stateDir(), warn: (message: string) => void = console.warn): SavedSitting[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const prefix = sittingsPrefix(address, network);
+  return names.flatMap((name) => {
+    if (!name.startsWith(prefix) || !name.endsWith(".json")) return [];
+    const file = join(dir, name);
+    const text = readIfThere(file);
+    if (text === undefined) return [];
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      value = undefined;
+    }
+    if (isSitting(value) && sittingFile(address, network, value, dir) === file) return [value];
+    // To the millisecond, so a file damaged again soon after never takes the place of the first.
+    const aside = `${file}.corrupt-${new Date().toISOString().replace(/[-:]/g, "")}`;
+    renameSync(file, aside);
+    warn(`${file} could not be read as a saved sitting, so it was moved to ${aside}`);
+    return [];
+  });
+}
+
+/** Keeps a sitting in place of the one saved for its agent and class: on disk before a paid request leaves, so the next run finds a payment that was never answered. */
+export function saveSitting(address: string, network: Network, sitting: SavedSitting, dir = stateDir()): void {
+  writeAtomic(sittingFile(address, network, sitting, dir), JSON.stringify(sitting));
+}
+
+/** Keeps work for an item that is too long to deliver, beside the sittings, and returns where, for `exam submit --file`. */
+export function saveWork(address: string, network: Network, sitting: Hex, index: number, text: string, dir = stateDir()): string {
+  const file = join(dir, `${sittingsPrefix(address, network)}${sitting.toLowerCase()}.item${index}.txt`);
+  writeAtomic(file, text);
+  return file;
+}
+
+export function forgetSitting(address: string, network: Network, sitting: Pick<SavedSitting, "agentId" | "class">, dir = stateDir()): void {
+  rmSync(sittingFile(address, network, sitting, dir), { force: true });
+}
+
 const empty = (board: string): State => ({ board: board.toLowerCase(), tasks: {}, done: [] });
 
 export function memoryStore(board = ""): Store {
   return { state: empty(board), save: () => undefined };
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const isHash = (value: unknown) => typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value);
 const isIds = (value: unknown) => Array.isArray(value) && value.every((id) => typeof id === "string" && /^\d+$/.test(id));

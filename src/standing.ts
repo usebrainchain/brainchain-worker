@@ -11,7 +11,12 @@ export function grouped(amount: bigint, decimals: number): string {
 }
 
 export const stake = (network: Network, amount: bigint) => `${grouped(amount, 18)} ${network.stakeSymbol}`;
-export const usdg = (network: Network, amount: bigint) => `${formatUnits(amount, 6)} ${network.bountySymbol}`;
+/** A 6-decimal dollar amount as the service states prices, with two decimals at least: 0.90, 5.00, 0.125. */
+export const money = (units: bigint) => {
+  const [whole, cents = ""] = formatUnits(units, 6).split(".");
+  return `${whole}.${cents.padEnd(2, "0")}`;
+};
+export const usdg = (network: Network, amount: bigint) => `${money(amount)} ${network.bountySymbol}`;
 export const when = (seconds: bigint) => new Date(Number(seconds) * 1000).toISOString().replace(".000Z", "Z");
 
 /** The worker's standing with the board and the staking contract, and what join would do about it. */
@@ -123,13 +128,13 @@ export function hireable({ allowed, w, min, applications, change, pending }: Sna
   // An allowed application waiting out its timelock outranks anything filed after it.
   if (change && pending) {
     const due = BigInt(Math.floor(Date.now() / 1000)) >= change.eta;
-    const allowed = `no: Jev allowed this worker; ${due ? `the change that allows it was due at ${when(change.eta)} and has not run yet` : `it can be hired after ${when(change.eta)}`}`;
+    const allowed = `no: BrainChain allowed this worker; ${due ? `the change that allows it was due at ${when(change.eta)} and has not run yet` : `it can be hired after ${when(change.eta)}`}`;
     return w.staked >= min ? allowed : `${allowed}. Its stake is below the minimum of ${stake(network, min)}, so run ${cli("join")} to stake again first.`;
   }
   const last = applications.at(-1);
   if (last === undefined) return `no: run ${cli("join")} to apply`;
   if (last.state === ApplicationState.Open) return waiting(last, network, from);
-  if (last.state === ApplicationState.Burned) return `no: Jev did not allow application ${last.id}, and its bond was burned. Run ${cli("join")} to apply again.`;
+  if (last.state === ApplicationState.Burned) return `no: BrainChain did not allow application ${last.id}, and its bond was burned. Run ${cli("join")} to apply again.`;
   if (change?.vetoed) {
     // A vetoed call can never be queued again, so the veto still stands for applications filed after it.
     const vetoed = applications.find((a) => a.decisionId === change.decisionId);
@@ -231,7 +236,7 @@ export function flightLine(f: Flight): string {
     case Status.Hired:
       return `${task}: hired, due by ${when(f.deadline)}`;
     case Status.Submitted:
-      return `${task}: delivered, waiting for Jev's grade`;
+      return `${task}: delivered, waiting for BrainChain's grade`;
     case Status.Graded: {
       const closes = when(f.gradedAt + f.disputeWindow);
       return f.accepted
@@ -239,7 +244,7 @@ export function flightLine(f: Flight): string {
         : `${task}: not accepted, refunded to the poster after ${closes} unless the grade is disputed with ${cli(`dispute ${f.id}`)}`;
     }
     case Status.Disputed:
-      return `${task}: grade disputed by ${f.disputedByModel ? "this worker" : "the poster"}, Jev rules by ${when(f.disputedAt + f.ruleWindow)}`;
+      return `${task}: grade disputed by ${f.disputedByModel ? "this worker" : "the poster"}, BrainChain rules by ${when(f.disputedAt + f.ruleWindow)}`;
     case Status.Ruled: {
       const a = f.appeal!;
       const closes = when(a.ruledAt + a.window);
@@ -248,6 +253,6 @@ export function flightLine(f: Flight): string {
         : `${task}: the ruling refunds the poster after ${closes} unless appealed with ${cli(`appeal ${f.id}`)}`;
     }
     default:
-      return `${task}: ruling appealed, Jev rules again by ${when(f.appeal!.appealedAt + f.ruleWindow)}`;
+      return `${task}: ruling appealed, BrainChain rules again by ${when(f.appeal!.appealedAt + f.ruleWindow)}`;
   }
 }

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { BOND_LEAD_SEC } from "./bond.js";
 import { MAX_OVER_WORTH } from "./buy.js";
+import { MAX_WORK_BYTES } from "./exam.js";
 import { usage } from "./cli.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -55,6 +56,12 @@ describe("what --help and the README list", () => {
   });
 });
 
+describe("the model behind BrainChain's decisions in the README", () => {
+  it("is named where the decisions are introduced", () => {
+    expect(readme).toContain("BrainChain decides who may work, who is hired, how a result is graded and how a dispute is ruled. Its decision model is Jev, served by TypeSafe.");
+  });
+});
+
 describe("mainnet's figures in the README", () => {
   it("are the stake and the bond the contracts ask for, on every line", () => {
     expect(readme).toContain("`join` stakes 250,000 BRAIN, the minimum, and applies with a 62,500 BRAIN bond, so a new worker needs 312,500 BRAIN");
@@ -82,7 +89,7 @@ describe("bonds in the README and --help", () => {
     expect(readme).toContain("BrainChain reads a worker's settled bonds, delivered and missed, at later hires");
     expect(readme).toContain("After BrainChain hires this worker for the task");
     expect(readme).not.toMatch(/offered first|While the task is open|Not open yet|(?:Jev|BrainChain) reads the bond when it hires/);
-    expect(flat(help)).toContain("behind a task Jev hired this worker for");
+    expect(flat(help)).toContain("behind a task BrainChain hired this worker for");
   });
 
   it("give the deadline the bond is created with", () => {
@@ -141,6 +148,82 @@ describe("buy-stake in the README, --help and the skill", () => {
     expect(section.endsWith('Once it arrives on BrainChain, about a minute later, run `npx brainchain-worker join --name <name> --about "<what it does>"`, or plain `join` to top up a stake.')).toBe(true);
     expect(flat(help)).toContain(`a sale over ${cap} above the BRAIN's worth at Relay's price is refused`);
     expect(flat(skill)).toContain(`would spend more than ${cap} over that worth`);
+  });
+});
+
+describe("the licence exam in the README and --help", () => {
+  const section = readme.split("\n## Licence exam\n")[1]!.split("\n## ")[0]!;
+
+  it("say that sit pays only when --max-price covers the price, and when a sitting's payment goes back, in the service's words", () => {
+    expect(flat(section)).toContain("`exam sit` pays only when `--max-price` covers the price it reads from the service");
+    expect(flat(usage("exam"))).toContain("Shows the price, and pays only when --max-price covers it.");
+    const refunds = "The fee pays for the sitting, pass or fail. If BrainChain cannot open a paid sitting, or cannot judge enough of it to decide, the sitting is void: it does not count against the agent, and the payment goes back to the paying wallet.";
+    for (const text of [section, usage("exam")]) expect(flat(text)).toContain(refunds);
+    expect(flat(section)).toContain("If its payment has not come back, write to hello@usebrainchain.com with the sitting's id.");
+    for (const text of [section, help]) expect(flat(text)).not.toContain("not refunded");
+  });
+
+  it("say the exam is not open yet, and that until it opens the commands say so and charge nothing", () => {
+    expect(flat(section)).toContain("The licence exam is not open yet. Until it opens, these commands say so and charge nothing.");
+    expect(flat(usage("exam"))).toContain("Not open yet: until it opens, these commands say so and charge nothing.");
+  });
+
+  it("keep exam's help to a line for each part and what a user needs, and leave the rest to the README", () => {
+    const lines = usage("exam").split("\n").slice(1, -2).filter((line) => line.trim() !== "");
+    expect(lines.length).toBeLessThanOrEqual(18);
+    for (const part of ["info", "sit", "submit", "status"]) expect(lines.filter((line) => line.startsWith(`    exam ${part}`))).toHaveLength(1);
+    expect(flat(usage("exam"))).toContain("The judges are the models on BrainChain's panel, Jev among them.");
+    expect(flat(usage("exam"))).toContain('See "Licence exam" in the README.');
+  });
+
+  it("say that an item takes one delivery, and that a paid sitting is asked for again with the same payment", () => {
+    for (const text of [section, usage("exam")]) expect(flat(text)).toContain("An item takes one delivery, so send finished work");
+    expect(readme).toContain(`An item takes one delivery, of at most ${MAX_WORK_BYTES.toLocaleString("en-US")} bytes.`);
+    expect(flat(section)).toContain("the next `sit` for the same agent sends the same request with the same payment, which the desk does not charge twice");
+  });
+
+  it("say that the service turns down a sitting before anything is paid, and that a quoted price means it will open", () => {
+    expect(flat(section)).toContain("`sit` first sends the request without a payment, and the service turns down a sitting it cannot open before anything is paid");
+    expect(flat(section)).toContain("`sit` prints the service's reason and stops before it approves or pays anything");
+    expect(flat(section)).toContain("A quoted price means the service will open it.");
+    expect(flat(section)).toContain("past the limit, `sit` says to run it again a minute later");
+  });
+
+  it("say that the judges' bar is printed, and that a judged item shows how sure they were", () => {
+    expect(readme).toContain("how sure the judges must be to accept an item");
+    expect(readme).toContain("the judges' answer and how sure they were of it, so an item refused with every case right explains itself");
+  });
+
+  it("give a licence's states in the order the service reads them, an expiry first", () => {
+    const order = "A licence past its expiry reads expired, whatever else was true of it. Before that it reads suspended after two failed audits in the last three, lapsed while the id has another owner or build than the licence was earned with, and valid otherwise.";
+    expect(flat(usage("licence"))).toContain(order);
+    expect(readme).toContain(order);
+    expect(flat(usage("licence"))).toContain("with the owner and the build BrainChain reads for the id now, which the states are checked against");
+    expect(readme).toContain("with the owner and the declared build BrainChain reads for the id now, which the states are checked against");
+    expect(flat(usage("licence"))).toContain("When the registry cannot be read it says so, and the states are up to ten minutes old.");
+    expect(readme).toContain("When the registry cannot be read it says so, and the states are then up to ten minutes old.");
+  });
+
+  it("say who holds an agent whose id is bound to an NFT", () => {
+    expect(flat(section)).toContain("The wallet holds the agent when it owns the id, is its registered wallet or, for an id bound to an NFT, holds that NFT.");
+    expect(readme).toContain("or hold the NFT the agent's id is bound to");
+    expect(flat(section)).toContain("Leave out the prefix `house:`, which BrainChain keeps for the agents it runs itself and drops from a declared build.");
+  });
+
+  it("say who the judges are where they first come up", () => {
+    const judges = "the judges, the models on BrainChain's panel with Jev among them";
+    expect(flat(section)).toContain(judges);
+    expect(flat(section).indexOf("judges")).toBe(flat(section).indexOf(judges) + "the ".length);
+  });
+
+  it("say when a licensed agent may sit again, in the service's words", () => {
+    expect(flat(section)).toContain("A licensed agent may sit again from 14 days before its licence expires, so it can renew without a gap");
+    expect(readme).toContain("that a licensed agent may sit again from 14 days before its licence expires");
+  });
+
+  it("contains no em dash", () => {
+    for (const text of [section, usage("exam"), usage("licence"), usage("papers")]) expect(text).not.toContain("—");
+    for (const row of readme.split("\n").filter((line) => /^\| `(exam|licence|papers) /.test(line))) expect(row).not.toContain("—");
   });
 });
 

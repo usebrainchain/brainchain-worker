@@ -60,8 +60,8 @@ describe("exit", () => {
 
   it("refuses an exit below the minimum or above the balance, before sending", async () => {
     const { chain, sent } = chainWith(5_000_000n);
-    await expect(exit(TESTNET, chain, { amount: "0.5", dry: false, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow(/at least 1 tUSDG/);
-    await expect(exit(TESTNET, chain, { amount: "6", dry: false, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow(/less than 6 tUSDG/);
+    await expect(exit(TESTNET, chain, { amount: "0.5", dry: false, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow(/at least 1.00 tUSDG/);
+    await expect(exit(TESTNET, chain, { amount: "6", dry: false, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow(/less than 6.00 tUSDG/);
     expect(sent).toHaveLength(0);
   });
 
@@ -76,7 +76,7 @@ describe("exit", () => {
     const { chain, sent } = chainWith(5_000_000n);
     for (const [named, line] of [
       [{ ...terms, token: TESTNET.contracts.stakeToken }, `names the token ${TESTNET.contracts.stakeToken} for an exit, and BrainChain testnet's tUSDG is ${TOKEN}. Nothing was sent.`],
-      [{ ...terms, desk: evil }, `names the desk ${evil}, and this release of brainchain-worker pays only ${DESK}. Nothing was sent.`],
+      [{ ...terms, desk: evil }, `names the desk ${evil}, and this version of brainchain-worker pays only ${DESK}. Nothing was sent.`],
     ] as const) {
       for (const dry of [true, false]) await expect(exit(TESTNET, chain, { dry, log: () => {}, fetchImpl: fetchWith([], named) })).rejects.toThrow(line);
     }
@@ -128,13 +128,13 @@ describe("exit", () => {
     const { chain } = chainWith(2_000_000n);
     const { lines, log } = quiet();
     await exit(MAINNET, chain, { toSolana: SOLANA, dry: true, log, fetchImpl: fetchWith([], mainnetTerms) });
-    expect(lines[0]).toBe(`Exit 2 USDG from BrainChain: 1.99 USDG after a 0.01 USDG fee is paid as USDC on Solana to ${SOLANA}, less Relay's own fee. The desk prices that move once the transfer arrives; one that would cost more than 3% (or 0.50 USD) is paid in USDG on the parent chain (chain 4663) instead.`);
+    expect(lines[0]).toBe(`Exit 2.00 USDG from BrainChain: 1.99 USDG after a 0.01 USDG fee is paid as USDC on Solana to ${SOLANA}, less Relay's own fee. The desk prices that move once the transfer arrives; one that would cost more than 3% (or 0.50 USD) is paid in USDG on the parent chain (chain 4663) instead.`);
   });
 
   it("names the way forward above the maximum, with or without --amount, since nothing was sent", async () => {
     const { chain, sent } = chainWith(500_000_000n);
     for (const amount of [undefined, "150"]) {
-      await expect(exit(TESTNET, chain, { ...(amount ? { amount } : {}), dry: false, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow("An exit is at most 100 tUSDG, and nothing was sent. Give --amount up to that, and send the rest in another exit.");
+      await expect(exit(TESTNET, chain, { ...(amount ? { amount } : {}), dry: false, log: () => {}, fetchImpl: fetchWith([]) })).rejects.toThrow("An exit is at most 100.00 tUSDG, and nothing was sent. Give --amount up to that, and send the rest in another exit.");
     }
     expect(sent).toHaveLength(0);
   });
