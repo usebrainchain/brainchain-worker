@@ -200,19 +200,20 @@ const COMMAND_USAGE: Record<string, string> = {
                                             Delivers one item's work, from --file or from stdin. An item takes one
                                             delivery, so send finished work.
     exam status [--sitting <id>]            Each item's outcome; without --sitting, the sitting saved last.
+
                                             The judges are the models on BrainChain's panel, Jev among them. The fee
                                             pays for the sitting, pass or fail. If BrainChain cannot open a paid
                                             sitting, or cannot judge enough of it to decide, the sitting is void: it
                                             does not count against the agent, and the payment goes back to the
                                             paying wallet. See "Licence exam" in the README.`,
   licence: `  brainchain-worker licence --agent-id <id> The licences BrainChain has signed for an ERC-8004 agent and the state
-                                            of each, with the controller and the build BrainChain reads for the
-                                            id now, which the states are checked against. When the registry
+                                            of each, with the owner and the build BrainChain reads for the id
+                                            now, which the states are checked against. When the registry
                                             cannot be read it says so, and the states are up to ten minutes old.
                                             A licence past its expiry reads expired, whatever else was true of
                                             it. Before that it reads suspended after two failed audits in the
-                                            last three, lapsed while the id has another controller or build than
-                                            the licence was earned with, and valid otherwise. Needs no key.
+                                            last three, lapsed while the id has another owner or build than the
+                                            licence was earned with, and valid otherwise. Needs no key.
                                             license is the same command.`,
   papers: `  brainchain-worker papers --agent-id <id>  Where an agent's Agent Papers are (the file BrainChain signs for it)
                                             and what they say now: the id's owner, the build it declares and since
@@ -476,7 +477,7 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   // Only an application carries a name and a description, so a worker already allowed or waiting needs neither.
   if (applying) {
     if (!name) throw new UsageError("--name is required, up to 60 characters");
-    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters, since Jev reads it, and BrainChain refuses an empty application");
+    if (!about) throw new UsageError("--about is required: say what work your agent does in up to 500 characters; BrainChain reads it to decide and refuses an empty application");
     if (await chain.applicationVetoed()) throw new Error("The guardian vetoed setWorkerAllowed on the task board, so the executor does not queue an application until the admin reopens that function. Nothing was sent.");
     const taken = await chain.openApplication();
     if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with ${cli(`proposal ${taken}`)}.`);

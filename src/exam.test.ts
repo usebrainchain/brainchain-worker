@@ -262,7 +262,7 @@ describe("exam sit", () => {
   it("checks the wallet holds the agent before it reads a price, and leaves that to the service where no registry is named", async () => {
     const desk = service(MAINNET);
     const stranger = sitting(MAINNET, desk.fetcher, chainFor(undefined, false), { maxPrice: 5_000_000n });
-    await expect(stranger.run()).rejects.toThrow(`${wallet.address} does not hold ERC-8004 agent 501 on Robinhood Chain: it is neither its controller nor its registered wallet. The service would refuse the sitting. Nothing was signed or paid.`);
+    await expect(stranger.run()).rejects.toThrow(`${wallet.address} does not hold ERC-8004 agent 501 on Robinhood Chain: it is not the id's owner, its registered wallet, or the holder of the NFT the id is bound to. The service would refuse the sitting. Nothing was signed or paid.`);
     const unread = sitting(MAINNET, desk.fetcher, chainFor(undefined, "unread"), { maxPrice: 5_000_000n });
     await expect(unread.run()).rejects.toThrow("The ERC-8004 identity registry on Robinhood Chain could not be read, so --agent-id was not checked. Nothing was signed or paid. Try again.");
     expect(desk.read).toEqual([]);
@@ -289,7 +289,7 @@ describe("exam sit", () => {
     const ready = sitting(MAINNET, desk.fetcher, unapproved, { dry: true, maxPrice: 6_000_000n });
     await ready.run();
     expect(ready.lines.slice(-2)).toEqual([
-      "  Permit2, which an x402 payment in USDG moves through, may spend 1.00 USDG of the wallet's. An approval for 5.00 USDG is sent first, which takes a little ETH on Robinhood Chain.",
+      "  Permit2 may spend 1.00 USDG of this wallet's; sit approves 5.00 USDG first, which needs a little ETH on Robinhood Chain.",
       "dry run: nothing approved or paid. Without --dry, sit approves Permit2, pays 5.00 USDG and saves the sitting.",
     ]);
     const unconfirmed = sitting(MAINNET, desk.fetcher, chainFor(), { dry: true });
@@ -337,7 +337,7 @@ describe("exam sit", () => {
     expect(lines.slice(1 + RULES.length, 8 + RULES.length)).toEqual([
       `  Build     "rehearsal build 1", the build agent 501 declares now. The licence is bound to it, and declaring another build later lapses the licence.`,
       `  Wallet    ${wallet.address} holds 5.00 USDG on Robinhood Chain, which covers the price.`,
-      "  Permit2, which an x402 payment in USDG moves through, may spend 0.00 USDG of the wallet's. An approval for 5.00 USDG is sent first, which takes a little ETH on Robinhood Chain.",
+      "  Permit2 may spend 0.00 USDG of this wallet's; sit approves 5.00 USDG first, which needs a little ETH on Robinhood Chain.",
       "Approving 5.00 USDG for Permit2 on Robinhood Chain...",
       `  approved: 0x${"a1".repeat(32)}`,
       "Paying 5.00 USDG for the sitting...",
@@ -453,7 +453,7 @@ describe("exam sit", () => {
     open = true;
     const second = sitting(MAINNET, desk.fetcher, chain, { dir: first.dir });
     await second.run();
-    expect(second.lines[0]).toBe(`Agent 501 has sitting ${other} open until 2100-01-01T02:00:00Z, so this goes on with it and pays nothing.`);
+    expect(second.lines[0]).toBe(`Agent 501 has sitting ${other} open until 2100-01-01T02:00:00Z, so sit is continuing it; nothing is paid.`);
     expect(desk.unpaid).toHaveLength(1);
 
     // Or told with the payment, when another payment for the agent arrived after the offer: this one is not kept.
@@ -475,7 +475,7 @@ describe("exam sit", () => {
     const desk = service(MAINNET, { refuse: refusal, routes: { [`GET /exams/${SITTING}/briefs`]: () => json({ ...view(), briefs }) } });
     const { run, lines, saved } = sitting(MAINNET, desk.fetcher, chainFor(), { maxPrice: 5_000_000n });
     await run();
-    expect(lines[0]).toBe(`Agent 501 has sitting ${SITTING} open until 2100-01-01T02:00:00Z, so this goes on with it and pays nothing.`);
+    expect(lines[0]).toBe(`Agent 501 has sitting ${SITTING} open until 2100-01-01T02:00:00Z, so sit is continuing it; nothing is paid.`);
     expect(saved()).toEqual([expect.objectContaining({ sitting: SITTING, deadline: DEADLINE })]);
     expect(desk.seen).toEqual([]);
     // Another wallet's sitting for the same agent cannot be read, so the service's words stand as they are.
@@ -627,7 +627,7 @@ describe("exam sit", () => {
     // A payment made in this run that the desk takes no more is said so, and the run stops there.
     const fresh = service(MAINNET, { paid: () => json({ error: "This payment was already used. Sign a new one." }, 409) });
     await expect(sitting(MAINNET, fresh.fetcher, chainFor(), { maxPrice: 5_000_000n }).run()).rejects.toThrow(
-      `BrainChain holds no sitting for that payment, and the desk takes it no more (This payment was already used. Sign a new one). The saved payment was discarded: run \`${CLI} exam sit --agent-id 501\` again to sit.`,
+      `BrainChain holds no sitting for that payment, and the desk will not accept it again (This payment was already used. Sign a new one). The saved payment was discarded: run \`${CLI} exam sit --agent-id 501\` again to sit.`,
     );
   });
 
@@ -847,7 +847,7 @@ describe("exam sit", () => {
     const chain = chainFor();
     const { run, lines } = sitting(MAINNET, desk.fetcher, chain, { dir, command });
     await run();
-    expect(lines[0]).toBe(`Agent 501 has sitting ${SITTING} open until 2100-01-01T02:00:00Z, so this goes on with it and pays nothing.`);
+    expect(lines[0]).toBe(`Agent 501 has sitting ${SITTING} open until 2100-01-01T02:00:00Z, so sit is continuing it; nothing is paid.`);
     expect(ran).toEqual(["3", "4"]);
     expect(desk.delivered.map(({ item }) => item)).toEqual([3, 4]);
     expect(desk.seen).toEqual([]);
@@ -943,7 +943,7 @@ describe("exam status", () => {
     expect(await refusedAs({ judges: "refuse", confidenceBps: 9000 }, { barBps: 5000 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges refused, 90% sure, decision 886): Item 2");
     // A host that kept how sure the judges were before it kept their answer reads as it did.
     expect(await refusedAs({ confidenceBps: 4900 })).toBe("  Item 2    rejected (18 of 18 hidden cases right, judges 49% sure, decision 886): Item 2");
-    expect(passed.at(-1)).toBe("Passed, with 4 of 5 accepted. The licence is valid until 2100-03-02T02:00:00Z, for as long as the agent's id keeps its controller and its build.");
+    expect(passed.at(-1)).toBe("Passed, with 4 of 5 accepted. The licence is valid until 2100-03-02T02:00:00Z, for as long as the agent's id keeps its owner and its build.");
     const failed = await status(MAINNET, view({ state: "failed", closedAt: DEADLINE, items: judged(3) }));
     expect(failed.at(-1)).toBe(`Failed, with 3 of 5 accepted; a pass takes 4. \`${CLI} exam info\` says how long the agent waits before the next sitting.`);
   });
@@ -1024,10 +1024,10 @@ describe("licence", () => {
     await licences(MAINNET, { agentId: "501", log: (line) => lines.push(line), fetcher: desk.fetcher });
     expect(lines).toEqual([
       "Licences of agent 501 on Robinhood Chain",
-      `  Checked against the registry as BrainChain read it within the last minute: controller ${wallet.address}, build "atlas 2.1"`,
+      `  Checked against the registry as BrainChain read it within the last minute: owner ${wallet.address}, build "atlas 2.1"`,
       "  code  valid; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 2 passed, 0 failed",
       "  prose  suspended: two failed audits in the last three; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 4 of 5 accepted; audits: 1 passed, 2 failed",
-      "  data  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 0 passed, 0 failed",
+      "  data  lapsed: the id now has another owner or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 0 passed, 0 failed",
     ]);
   });
 
@@ -1041,11 +1041,11 @@ describe("licence", () => {
     };
     const epoch = { id: `0x${"cd".repeat(32)}`, controller: wallet.address, build: "" };
     expect(await second({ registry: "unreadable", epoch: null })).toBe("  The registry could not be read just now, so these states are from BrainChain's last own reading, up to ten minutes old.");
-    expect(await second({ registry: "read", epoch })).toBe(`  Checked against the registry as BrainChain read it within the last minute: controller ${wallet.address}, build none declared`);
-    expect(await second({ registry: "read", epoch: null })).toBe("  Checked against the registry as BrainChain read it within the last minute: no single account controls the id");
+    expect(await second({ registry: "read", epoch })).toBe(`  Checked against the registry as BrainChain read it within the last minute: owner ${wallet.address}, build none declared`);
+    expect(await second({ registry: "read", epoch: null })).toBe("  Checked against the registry as BrainChain read it within the last minute: no single account owns the id");
     // A service that does not say whether it read the registry is quoted for what it does say, or not at all.
-    expect(await second({ epoch })).toBe(`  Checked against the id as BrainChain reads it now: controller ${wallet.address}, build none declared`);
-    expect(await second({ epoch: null })).toBe("  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
+    expect(await second({ epoch })).toBe(`  Checked against the id as BrainChain reads it now: owner ${wallet.address}, build none declared`);
+    expect(await second({ epoch: null })).toBe("  BrainChain reads no owner and build for the id just now: it has no single owner, or the registry could not be read.");
     expect(await second({})).toMatch(/^ {2}code {2}lapsed: /);
   });
 
@@ -1091,8 +1091,8 @@ describe("papers", () => {
       "  Since     2099-12-31T00:00:00Z, under this owner and build",
       `  Record    31 entries: ${MAINNET.service}/agents/4663/501/record`,
       "            19 entries before a sale or new build",
-      "  Licence   code  lapsed: the id now has another controller or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 1 passed, 0 failed",
-      "  In flight up to 2.50 USDG of paid work at once, never less than the 1.00 USDG every agent starts with; halved until 2100-01-31T00:00:00Z, after a refusal upheld on a dispute",
+      "  Licence   code  lapsed: the id now has another owner or build than the licence was earned with; issued 2100-01-01T00:00:00Z, expires 2100-03-02T00:00:00Z, earned with 5 of 5 accepted; audits: 1 passed, 0 failed",
+      "  Limit     up to 2.50 USDG of paid work at once; halved until 2100-01-31T00:00:00Z, after a refusal upheld on a dispute",
       `  Card      ${url}/card.svg`,
       "  Check     npx brainchain-verify mainnet --record 501",
     ]);

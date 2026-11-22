@@ -41,7 +41,7 @@ export const identityChain = (network: Network) => network.bridge ?? network.pro
 export interface ExamChain {
   /** The worker's key: it signs the exam's messages and the payment. */
   wallet: Pick<PrivateKeyAccount, "address" | "signMessage" | "signTypedData">;
-  /** Whether the wallet owns the agent's id or is its registered wallet; undefined when no registry could be read. */
+  /** Whether the wallet is the id's owner, its registered wallet, or the holder of the NFT the id is bound to; undefined when no registry could be read. */
   holdsAgent(agentId: bigint): Promise<boolean | undefined>;
   /** The build the id declares now, "" for none; undefined when no registry could be read. */
   build(agentId: bigint): Promise<string | undefined>;
@@ -319,7 +319,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     if (current.deadline <= Date.now() / 1000) {
       throw new Error(`Agent ${agentId}'s sitting ${current.sitting} ran out of time at ${date(current.deadline)}, so nothing more can be delivered for it, and BrainChain closes it shortly. ${cli(`exam status --sitting ${current.sitting}`)} shows each item's outcome.`);
     }
-    log(`Agent ${agentId} has sitting ${current.sitting} open until ${date(current.deadline)}, so this goes on with it and pays nothing.`);
+    log(`Agent ${agentId} has sitting ${current.sitting} open until ${date(current.deadline)}, so sit is continuing it; nothing is paid.`);
     return current;
   };
 
@@ -393,7 +393,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
         // A refusal that names a sitting is about the one the agent already has.
         if (named && /Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
         if (kept) return void log(`The desk never took the payment kept from ${date(at)}${aside}, so nothing was charged for it, and the saved payment was discarded. Asking for a new sitting...`);
-        if (dead) throw new Error(`BrainChain holds no sitting for that payment, and the desk takes it no more${aside}. The saved payment was discarded: run ${again} again to sit.`);
+        if (dead) throw new Error(`BrainChain holds no sitting for that payment, and the desk will not accept it again${aside}. The saved payment was discarded: run ${again} again to sit.`);
         if (/Nothing was charged/.test(said)) return refused(answer.status, reply, "Nothing was charged.");
         throw new Error(`${said || `The service answered ${answer.status}.`} Nothing was charged.`);
       }
@@ -418,7 +418,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
       if (resent) return resent;
       saved = undefined;
     }
-    // A sitting still inside its time is gone on with, and one not open yet is waited for: the service opens no second one for the agent meanwhile.
+    // Resume a sitting still within its time, and wait for one not open yet: the service opens no second one for the agent meanwhile.
     if (saved?.sitting && (saved.deadline === undefined || saved.deadline > Date.now() / 1000)) {
       const { opened, state } = await briefsOf(network, chain.wallet, saved.sitting, fetcher);
       if (opened) return goOn(opened);
@@ -429,7 +429,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
 
     const holds = await chain.holdsAgent(BigInt(agentId));
     if (holds === false) {
-      throw new Error(`${account} does not hold ERC-8004 agent ${agentId} on ${parent.name}: it is neither its controller nor its registered wallet. The service would refuse the sitting. Nothing was signed or paid.`);
+      throw new Error(`${account} does not hold ERC-8004 agent ${agentId} on ${parent.name}: it is not the id's owner, its registered wallet, or the holder of the NFT the id is bound to. The service would refuse the sitting. Nothing was signed or paid.`);
     }
     if (holds === undefined && network.identity) throw new Error(`The ERC-8004 identity registry on ${parent.name} could not be read, so --agent-id was not checked. Nothing was signed or paid. Try again.`);
     const { classes, rules } = await exam();
@@ -474,7 +474,7 @@ export async function examSit(network: Network, chain: ExamChain, options: SitOp
     // Signed as a transfer, the payment needs no approval, so the wallet needs no ETH either.
     if (lane === "authorization") log(`  Payment   the wallet signs a transfer of ${usdg(price)} to the desk (EIP-3009), so it needs no approval and no ETH on ${parent.name}.`);
     const approves = lane === "permit2" && funds.allowance < price;
-    if (approves) log(`  Permit2, which an x402 payment in ${symbol} moves through, may spend ${usdg(funds.allowance)} of the wallet's. An approval for ${usdg(price)} is sent first, which takes a little ETH on ${parent.name}.`);
+    if (approves) log(`  Permit2 may spend ${usdg(funds.allowance)} of this wallet's; sit approves ${usdg(price)} first, which needs a little ETH on ${parent.name}.`);
     // Every shortfall at once, so a dry run says all the wallet still needs.
     const short = [
       ...(funds.usdg < price ? [`${account} holds ${usdg(funds.usdg)} on ${parent.name}, ${usdg(price - funds.usdg)} short of the sitting's price.`] : []),
@@ -682,7 +682,7 @@ export async function examStatus(network: Network, options: { sitting?: Hex; acc
   const accepted = `${items.filter((item) => item.accepted === true).length} of ${items.length} accepted`;
   if (view.state === "passed") {
     const licence = isObject(view.licence) && isObject(view.licence.licence) ? view.licence.licence : {};
-    return log(`Passed, with ${accepted}. The licence is valid until ${date(licence.expiresAt)}, for as long as the agent's id keeps its controller and its build.`);
+    return log(`Passed, with ${accepted}. The licence is valid until ${date(licence.expiresAt)}, for as long as the agent's id keeps its owner and its build.`);
   }
   if (view.state === "void") return log(voidNote(view));
   if (view.state === "failed") return log(`Failed, with ${accepted}${typeof view.passMark === "number" ? `; a pass takes ${view.passMark}` : ""}. ${cli("exam info")} says how long the agent waits before the next sitting.`);
@@ -698,7 +698,7 @@ const STATES: Record<string, string> = {
   valid: "valid",
   expired: "expired",
   suspended: "suspended: two failed audits in the last three",
-  lapsed: "lapsed: the id now has another controller or build than the licence was earned with",
+  lapsed: "lapsed: the id now has another owner or build than the licence was earned with",
 };
 
 /** A licence as one line: its class, its state and the dates and counts that go with it. */
@@ -726,9 +726,9 @@ export async function licences(network: Network, options: { agentId: string; log
     log("  The registry could not be read just now, so these states are from BrainChain's last own reading, up to ten minutes old.");
   } else if (isObject(view.epoch)) {
     const build = typeof view.epoch.build === "string" && view.epoch.build ? JSON.stringify(printable(view.epoch.build)) : "none declared";
-    log(`  Checked against ${reading}: controller ${printable(String(view.epoch.controller))}, build ${build}`);
+    log(`  Checked against ${reading}: owner ${printable(String(view.epoch.controller))}, build ${build}`);
   } else if (view.epoch === null) {
-    log(view.registry === "read" ? `  Checked against ${reading}: no single account controls the id` : "  BrainChain reads no controller and build for the id just now: it has no single controller, or the registry could not be read.");
+    log(view.registry === "read" ? `  Checked against ${reading}: no single account owns the id` : "  BrainChain reads no owner and build for the id just now: it has no single owner, or the registry could not be read.");
   }
   for (const entry of held) log(`  ${licenceLine(entry)}`);
 }
@@ -768,7 +768,7 @@ export async function papers(network: Network, options: { agentId: string; log: 
   // for a while. Agent Papers that carry none say nothing of it.
   if (ceiling) {
     const halved = typeof ceiling.halvedUntil === "number" ? `; halved until ${date(ceiling.halvedUntil)}, after a refusal upheld on a dispute` : "";
-    log(`  In flight up to ${units(ceiling.units)} USDG of paid work at once, never less than the ${units(ceiling.floor)} USDG every agent starts with${halved}`);
+    log(`  Limit     up to ${units(ceiling.units)} USDG of paid work at once${halved}`);
   }
   log(`  Card      ${url}/card.svg`);
   if (typeof signed.verify === "string") log(`  Check     ${printable(signed.verify)}`);

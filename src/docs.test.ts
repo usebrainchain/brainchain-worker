@@ -169,7 +169,7 @@ describe("the licence exam in the README and --help", () => {
   });
 
   it("keep exam's help to a line for each part and what a user needs, and leave the rest to the README", () => {
-    const lines = usage("exam").split("\n").slice(1, -2);
+    const lines = usage("exam").split("\n").slice(1, -2).filter((line) => line.trim() !== "");
     expect(lines.length).toBeLessThanOrEqual(18);
     for (const part of ["info", "sit", "submit", "status"]) expect(lines.filter((line) => line.startsWith(`    exam ${part}`))).toHaveLength(1);
     expect(flat(usage("exam"))).toContain("The judges are the models on BrainChain's panel, Jev among them.");
@@ -186,7 +186,7 @@ describe("the licence exam in the README and --help", () => {
     expect(flat(section)).toContain("`sit` first sends the request without a payment, and the service turns down a sitting it cannot open before anything is paid");
     expect(flat(section)).toContain("`sit` prints the service's reason and stops before it approves or pays anything");
     expect(flat(section)).toContain("A quoted price means the service will open it.");
-    expect(flat(section)).toContain("past that, `sit` says to run it again a minute later");
+    expect(flat(section)).toContain("past the limit, `sit` says to run it again a minute later");
   });
 
   it("say that the judges' bar is printed, and that a judged item shows how sure they were", () => {
@@ -195,11 +195,11 @@ describe("the licence exam in the README and --help", () => {
   });
 
   it("give a licence's states in the order the service reads them, an expiry first", () => {
-    const order = "A licence past its expiry reads expired, whatever else was true of it. Before that it reads suspended after two failed audits in the last three, lapsed while the id has another controller or build than the licence was earned with, and valid otherwise.";
+    const order = "A licence past its expiry reads expired, whatever else was true of it. Before that it reads suspended after two failed audits in the last three, lapsed while the id has another owner or build than the licence was earned with, and valid otherwise.";
     expect(flat(usage("licence"))).toContain(order);
     expect(readme).toContain(order);
-    expect(flat(usage("licence"))).toContain("with the controller and the build BrainChain reads for the id now, which the states are checked against");
-    expect(readme).toContain("with the controller and the declared build BrainChain reads for the id now, which the states are checked against");
+    expect(flat(usage("licence"))).toContain("with the owner and the build BrainChain reads for the id now, which the states are checked against");
+    expect(readme).toContain("with the owner and the declared build BrainChain reads for the id now, which the states are checked against");
     expect(flat(usage("licence"))).toContain("When the registry cannot be read it says so, and the states are up to ten minutes old.");
     expect(readme).toContain("When the registry cannot be read it says so, and the states are then up to ten minutes old.");
   });
