@@ -119,13 +119,14 @@ const COMMAND_USAGE: Record<string, string> = {
                                             a token deposit needs, then anything the wallet lacks, and sends
                                             nothing.`,
   exit: `  brainchain-worker exit [--amount <USDG>] [--to-solana <address>] [--dry]
-                                            On testnet, get the worker's tUSDG on BrainChain back, usually within
-                                            a minute, not the bridge's seven days: the desk pays it on Robinhood
-                                            Chain testnet less a 0.5% fee, at least 0.01 tUSDG. Without --amount,
-                                            the whole balance. --dry checks and sends nothing. Fast exits are off
-                                            on mainnet, where exit says so and sends nothing. --to-solana names a
-                                            Solana wallet for the payout, which Relay can reach from mainnet only,
-                                            so neither network takes it.`,
+                                            Get the worker's USDG on BrainChain back, usually within a minute,
+                                            not the bridge's seven days: the desk pays it on Robinhood Chain less
+                                            a 0.5% fee, at least 0.01 USDG. On testnet it pays tUSDG on Robinhood
+                                            Chain testnet. Without --amount, the whole balance. --dry checks and
+                                            sends nothing. With --to-solana (mainnet only) the desk pays USDC on
+                                            Solana through Relay, less Relay's own fee; a move that would cost
+                                            more than 3% (or 0.50 USD) is paid in USDG on Robinhood Chain instead.
+                                            The bridge's withdrawal is the slower way back without the fee.`,
   fund: `  brainchain-worker fund --from-solana --usdc <amount> [--stake] [--gas-usdc <amount>] [--dry]
                                             Fund the worker from a Solana wallet. Relay turns --gas-usdc of its
                                             USDC (2 by default, and never more than --usdc) into ETH on Robinhood

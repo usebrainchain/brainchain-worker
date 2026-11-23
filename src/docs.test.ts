@@ -73,7 +73,7 @@ describe("mainnet's figures in the README", () => {
   it("names the desk's fee with its floor, and a gas figure that is true", () => {
     expect(flat(readme)).toContain("less a 0.5% fee of at least 0.01 USDG");
     expect(readme).not.toContain("under a cent");
-    expect(flat(help)).toContain("less a 0.5% fee, at least 0.01 tUSDG");
+    expect(flat(help)).toContain("less a 0.5% fee, at least 0.01 USDG");
   });
 });
 
@@ -106,17 +106,21 @@ describe("bonds in the README and --help", () => {
 });
 
 describe("exits in the README, --help and the skill", () => {
-  it("promise no working exit on mainnet, and do not call it coming", () => {
+  it("say what a mainnet exit pays, where, and the slower way back, and do not call anything coming", () => {
     for (const text of [readme, help, skill]) {
-      expect(flat(text)).toMatch(/Fast exits are off,? (?:and `exit` says so|on mainnet, where `?exit`? says so)/);
-      expect(text).not.toMatch(/BRAINCHAIN_NETWORK=mainnet npx(?: -y)? brainchain-worker exit/);
+      expect(flat(text)).not.toMatch(/exits are off/i);
+      expect(flat(text)).toMatch(/0\.5% fee,? (?:of )?at least 0\.01 USDG/);
+      expect(flat(text)).toMatch(/USDC on Solana/);
+      expect(flat(text)).toMatch(/mainnet only/i);
+      expect(flat(text)).toMatch(/more than 3%,? \(?or 0\.50 USD/);
+      expect(flat(text)).toMatch(/bridge's (?:seven-day )?withdrawal(?:\]\([^)]+\))? is the slower way back without the fee/);
       expect(text).not.toMatch(/coming soon|for now.*exit|exit.*for now/i);
     }
   });
 
   it("keep the 'stops before anything is signed' sentence to fund", () => {
     expect(flat(readme)).toContain("Each Relay move `fund` makes is priced before anything is signed");
-    expect(flat(readme)).toContain("The desk would price that move after the transfer arrives");
+    expect(flat(readme)).toContain("The desk prices that move after the transfer arrives");
     expect(readme).not.toContain("Every Relay move is priced before anything is signed");
   });
 });
