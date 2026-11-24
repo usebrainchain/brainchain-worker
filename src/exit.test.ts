@@ -11,7 +11,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { createExitChain, exit, exitCalldata, exitFee, exitTerms, isSolanaAddress, type ExitChain, type ExitTerms } from "./exit.js";
 import { MAINNET, TESTNET } from "./network.js";
 import { checkReturn } from "./relay.js";
-import { split } from "./solana.js";
+import { split } from "./fund.js";
 
 const DESK = TESTNET.exitDesk;
 const TOKEN = TESTNET.contracts.bountyToken;

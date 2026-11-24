@@ -11,8 +11,10 @@ import { brainchainTransport, createChain, faucetReopens, reason, requireChainId
 import { bond, bondClaim, bondStatus, createBondChain } from "./bond.js";
 import { assetOf, bridge, createBridgeChain, stakeInFlight, stakeProblem, type Asset, type StakeMoves } from "./bridge.js";
 import { buyStake, createBuyChain, type Pay } from "./buy.js";
-import { checkToSolana, createExitChain, exit as exitToParent } from "./exit.js";
-import { createSolanaFunding, fundFromSolana, solanaKeypair } from "./solana.js";
+import { checkToBase, createBaseFunding, createBaseLeg } from "./base.js";
+import { checkToSolana, createExitChain, exit as exitToParent, moveToBase } from "./exit.js";
+import { fund } from "./fund.js";
+import { createSolanaFunding, solanaKeypair, solanaSource } from "./solana.js";
 import { claim, createIncome } from "./claim.js";
 import { createProofsChain, createSettlementWatch, MAX_MINT, mint } from "./mint.js";
 import { chainOf, resolveNetwork, rpcTransport, type Network } from "./network.js";
@@ -120,7 +122,7 @@ const COMMAND_USAGE: Record<string, string> = {
                                             networks, the tokens on mainnet. --dry prints the plan, with the ETH
                                             a token deposit needs, then anything the wallet lacks, and sends
                                             nothing.`,
-  exit: `  brainchain-worker exit [--amount <USDG>] [--to-solana <address>] [--dry]
+  exit: `  brainchain-worker exit [--amount <USDG>] [--to-solana <address> | --to-base <address> [--from-robinhood]] [--dry]
                                             Get the worker's USDG on BrainChain back, usually within a minute,
                                             not the bridge's seven days: the desk pays it on Robinhood Chain less
                                             a 0.5% fee, at least 0.01 USDG. On testnet it pays tUSDG on Robinhood
@@ -128,19 +130,28 @@ const COMMAND_USAGE: Record<string, string> = {
                                             sends nothing. With --to-solana (mainnet only) the desk pays USDC on
                                             Solana through Relay, less Relay's own fee; a move that would cost
                                             more than 3% (or 0.50 USD) is paid in USDG on Robinhood Chain instead.
+                                            With --to-base (mainnet only) the worker then moves what the desk paid
+                                            it on to Base as USDC through Relay, less Relay's own fee, signing one
+                                            authorization for that USDG, so it needs no ETH on Robinhood Chain. A
+                                            move that would cost more than 3% (or 0.50 USD) is not made: priced
+                                            before the exit, it stops it; priced after, the USDG stays on Robinhood
+                                            Chain, and --from-robinhood moves it on later, skipping the desk.
                                             The bridge's withdrawal is the slower way back without the fee.`,
-  fund: `  brainchain-worker fund --from-solana --usdc <amount> [--stake] [--gas-usdc <amount>] [--dry]
-                                            Fund the worker from a Solana wallet. Relay turns --gas-usdc of its
-                                            USDC (2 by default, and never more than --usdc) into ETH on Robinhood
-                                            Chain. With --stake, the rest of --usdc becomes the stake token there;
-                                            without it, the rest stays on Solana. Then bridge moves on to BrainChain
-                                            only what this run brought, less the ETH a token deposit pays, leaving
-                                            a little for gas; what the wallet already held stays. A quote that would
-                                            cost more than 3% on the ETH or 5% on the stake token (or 0.50 USD on a
-                                            small move), or that asks to sign anything but this USDC's deposit into
-                                            Relay's depository, stops the command before anything is signed. Signed
-                                            with BRAINCHAIN_SOLANA_KEY or BRAINCHAIN_SOLANA_KEY_FILE, one or the
-                                            other; the wallet needs about 0.002 SOL for fees. --dry quotes the
+  fund: `  brainchain-worker fund --from-solana | --from-base --usdc <amount> [--stake] [--gas-usdc <amount>] [--dry]
+                                            Fund the worker from a Solana wallet, or from the USDC its own address
+                                            holds on Base. Relay turns --gas-usdc of that USDC (2 by default, and
+                                            never more than --usdc) into ETH on Robinhood Chain. With --stake, the
+                                            rest of --usdc becomes the stake token there; without it, the rest
+                                            stays where it is. Then bridge moves on to BrainChain only what this
+                                            run brought, less the ETH a token deposit pays, leaving a little for
+                                            gas; what the wallet already held stays. A quote that would cost more
+                                            than 3% on the ETH or 5% on the stake token (or 0.50 USD on a small
+                                            move), or that asks to sign anything but the move of this USDC to
+                                            Relay, stops the command before anything is signed. From Solana it
+                                            signs a deposit into Relay's depository with BRAINCHAIN_SOLANA_KEY or
+                                            BRAINCHAIN_SOLANA_KEY_FILE, and the wallet needs about 0.002 SOL for
+                                            fees. From Base the worker's key signs one USDC authorization that only
+                                            Relay can use, so the address needs no ETH there. --dry quotes the
                                             move, then says what the wallet lacks, and sends nothing. Mainnet.`,
   "buy-stake": `  brainchain-worker buy-stake [--with eth|usdg] [--dry] [--yes]
                                             Buy at least the BRAIN join still needs, with ETH (the default) or
@@ -305,6 +316,8 @@ Environment:
   BRAINCHAIN_SOLANA_KEY_FILE
                           Or a Solana CLI keypair file holding it, one or the other.
   BRAINCHAIN_SOLANA_RPC   Overrides the Solana RPC (https://api.mainnet-beta.solana.com).
+  BRAINCHAIN_BASE_RPC     For fund --from-base: overrides the Base RPC that reads the USDC
+                          (https://mainnet.base.org).
   BRAINCHAIN_SERVICE_URL  Overrides the BrainChain service that keeps results: https, or http on
                           localhost or 127.0.0.1.
 
@@ -334,8 +347,8 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   bond: { yes: true },
   mint: { count: false, dry: true },
   bridge: { eth: false, stake: false, bounty: false, dry: true },
-  exit: { amount: false, "to-solana": false, dry: true },
-  fund: { "from-solana": true, usdc: false, stake: true, "gas-usdc": false, dry: true },
+  exit: { amount: false, "to-solana": false, "to-base": false, "from-robinhood": true, dry: true },
+  fund: { "from-solana": true, "from-base": true, usdc: false, stake: true, "gas-usdc": false, dry: true },
   "buy-stake": { with: false, dry: true, yes: true },
   watch: { veto: true, once: true },
   credit: { "agent-id": false, premium: false },
@@ -1042,23 +1055,40 @@ export async function main(argv: string[]): Promise<void> {
     const amount = values.get("amount");
     if (amount !== undefined && (!/^\d{1,9}(\.\d{1,6})?$/.test(amount) || Number(amount) <= 0)) throw new UsageError("--amount is USDG above zero with at most 6 decimals, such as --amount 5");
     const toSolana = values.get("to-solana");
+    const toBase = values.get("to-base");
+    if (toSolana !== undefined && toBase !== undefined) throw new UsageError("exit takes --to-solana or --to-base, not both");
+    if (switches.has("from-robinhood") && toBase === undefined) throw new UsageError("--from-robinhood goes with --to-base: it moves USDG the wallet holds on Robinhood Chain on to Base");
     if (toSolana !== undefined) checkToSolana(network, toSolana);
-    return exitToParent(network, createExitChain(network, signer().account), { ...(amount ? { amount } : {}), ...(toSolana !== undefined ? { toSolana } : {}), dry: switches.has("dry"), log: console.log });
+    const dry = switches.has("dry");
+    if (toBase !== undefined) {
+      const to = checkToBase(network, toBase);
+      const { account } = signer();
+      const leg = createBaseLeg(network, account, to);
+      if (switches.has("from-robinhood")) return moveToBase(network, leg, { ...(amount ? { amount } : {}), dry, log: console.log });
+      return exitToParent(network, createExitChain(network, account), { ...(amount ? { amount } : {}), toBase: leg, dry, log: console.log });
+    }
+    return exitToParent(network, createExitChain(network, signer().account), { ...(amount ? { amount } : {}), ...(toSolana !== undefined ? { toSolana } : {}), dry, log: console.log });
   }
   if (command === "fund") {
-    if (!switches.has("from-solana")) throw new UsageError("fund takes --from-solana: the only source it knows today");
+    const from = (["from-solana", "from-base"] as const).filter((flag) => switches.has(flag));
+    if (from.length !== 1) throw new UsageError("fund takes one of --from-solana or --from-base: where the USDC is");
+    const source = from[0] === "from-base" ? "Base" : "Solana";
     const usdc = values.get("usdc");
     const gasUsdc = values.get("gas-usdc");
     for (const [flag, v] of [["usdc", usdc], ["gas-usdc", gasUsdc]] as const) {
       if (v !== undefined && (!/^\d{1,9}(\.\d{1,6})?$/.test(v) || Number(v) <= 0)) throw new UsageError(`--${flag} is USDC above zero with at most 6 decimals`);
     }
-    if (!usdc) throw new UsageError("--usdc is required: how much USDC on Solana to use, such as --usdc 5");
+    if (!usdc) throw new UsageError(`--usdc is required: how much USDC on ${source} to use, such as --usdc 5`);
     if (gasUsdc && !switches.has("stake") && parseUnits(gasUsdc, 6) > parseUnits(usdc, 6)) throw new UsageError(`--gas-usdc ${gasUsdc} is more than --usdc ${usdc}, the most this command may spend`);
-    if (network.id !== "mainnet" || !network.bridge) throw new Error("fund --from-solana is mainnet only: Relay connects Solana with Robinhood Chain mainnet, not the testnets");
+    if (network.id !== "mainnet" || !network.bridge) throw new Error(`fund --${from[0]} is mainnet only: Relay connects ${source} with Robinhood Chain mainnet, not the testnets`);
+    if (source === "Base") refuseReadableKeyFile("fund --from-base");
     const worker = signer();
     const bridgeChain = createBridgeChain(network, worker.account);
-    const funding = createSolanaFunding(solanaKeypair(), network.bridge.chainId, process.env.BRAINCHAIN_SOLANA_RPC?.trim() || undefined);
-    return fundFromSolana({
+    const funding =
+      source === "Base"
+        ? createBaseFunding(worker.account, network.bridge.chainId, process.env.BRAINCHAIN_BASE_RPC?.trim() || undefined)
+        : solanaSource(createSolanaFunding(solanaKeypair(), network.bridge.chainId, process.env.BRAINCHAIN_SOLANA_RPC?.trim() || undefined));
+    return fund({
       funding,
       worker: worker.account.address,
       usdc,

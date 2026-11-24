@@ -1,12 +1,14 @@
 // `exit`: the worker's USDG on BrainChain paid back within a minute instead of the bridge's seven days. The desk pays
 // it on Robinhood Chain, or, with `--to-solana`, as USDC on Solana through Relay: the transfer to the desk carries the
-// Solana address after its arguments, so nothing else is signed and nothing is needed on Robinhood Chain. The token and
+// Solana address after its arguments, so nothing else is signed and nothing is needed on Robinhood Chain. With
+// `--to-base`, the worker moves what the desk paid it on Robinhood Chain on to Base itself, through Relay. The token and
 // the desk the service names are checked against this release before anything is signed.
 
 import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import { createPublicClient, createWalletClient, encodeFunctionData, erc20Abi, isAddress, parseUnits, type Address, type Hex, type PrivateKeyAccount } from "viem";
 
+import { resume, type BaseLeg } from "./base.js";
 import { RECEIPT_MS, reason } from "./chain.js";
 import { chainOf, rpcTransport, type Network } from "./network.js";
 import { money } from "./standing.js";
@@ -159,6 +161,8 @@ export async function exit(
   options: {
     amount?: string;
     toSolana?: string;
+    /** Moves what the desk pays on Robinhood Chain on to Base. */
+    toBase?: BaseLeg;
     dry: boolean;
     log: (line: string) => void;
     fetchImpl?: typeof fetch;
@@ -188,10 +192,18 @@ export async function exit(
   if (amount > max) throw new Error(`An exit is at most ${show(max)}, and nothing was sent. Give --amount up to that, and send the rest in another exit.`);
   const fee = exitFee(amount, terms);
   const net = amount - fee;
-  const paid = options.toSolana === undefined
-    ? `${show(net)} arrives on the parent chain (chain ${terms.payoutChainId}) after a ${show(fee)} fee.`
-    : `${show(net)} after a ${show(fee)} fee is paid as USDC on Solana to ${options.toSolana}, less Relay's own fee. The desk prices that move once the transfer arrives; one that would cost more than 3% (or 0.50 USD) is paid in ${symbol} on the parent chain (chain ${terms.payoutChainId}) instead.`;
+  const { toBase } = options;
+  const paid = toBase
+    ? `${show(net)} after a ${show(fee)} fee is paid to this wallet on Robinhood Chain, then moved through Relay as USDC to ${toBase.to} on Base, less Relay's own fee.`
+    : options.toSolana === undefined
+      ? `${show(net)} arrives on the parent chain (chain ${terms.payoutChainId}) after a ${show(fee)} fee.`
+      : `${show(net)} after a ${show(fee)} fee is paid as USDC on Solana to ${options.toSolana}, less Relay's own fee. The desk prices that move once the transfer arrives; one that would cost more than 3% (or 0.50 USD) is paid in ${symbol} on the parent chain (chain ${terms.payoutChainId}) instead.`;
   log(`Exit ${show(amount)} from ${network.name}: ${paid}`);
+  // Priced before anything is sent, so a move Relay would charge too much for stops the exit rather than strand the USDG.
+  if (toBase) {
+    const quote = await toBase.preview(net);
+    log(`Relay quotes ${quote.outFormatted} USDC on Base for it now. It prices the move again once the desk has paid; one that would then cost more than 3% (or 0.50 USD) is not made, and the ${symbol} stays in this wallet on Robinhood Chain.`);
+  }
   if (dry) {
     log("Dry run, nothing sent.");
     return;
@@ -236,4 +248,38 @@ export async function exit(
     return;
   }
   log(`Paid on the parent chain: ${show(BigInt(record.net))} (${plain(record.payoutTx)})${record.reason ? `. ${plain(record.reason)}` : ""}.`);
+  if (toBase) await onToBase(toBase, BigInt(record.net), symbol, log, sleep);
+}
+
+/** Moves what the desk paid on to Base, once the wallet shows it. Anything that stops it leaves the exit paid on Robinhood Chain, and says how to finish. */
+async function onToBase(leg: BaseLeg, net: bigint, symbol: string, log: (line: string) => void, sleep: (ms: number) => Promise<void>): Promise<void> {
+  try {
+    let held = await leg.held();
+    for (let tries = 1; held < net && tries < 10; tries++) {
+      await sleep(3_000);
+      held = await leg.held();
+    }
+    if (held < net) throw new Error(`the wallet shows ${money(held)} ${symbol} on Robinhood Chain, less than the ${money(net)} the desk reports paid`);
+    const quote = await leg.preview(net);
+    log(`Paid on Base: ${quote.outFormatted} USDC to ${leg.to} (${await leg.send(quote)}).`);
+  } catch (error) {
+    log(`Not moved on to Base: ${reason(error).replace(/\.?$/, ".")} If the ${money(net)} ${symbol} is still in this wallet on Robinhood Chain, ${resume(leg.to, net)} moves it.`);
+    process.exitCode = 1;
+  }
+}
+
+/** `exit --to-base --from-robinhood`: moves USDG the worker already holds on Robinhood Chain on to Base, without the desk. */
+export async function moveToBase(network: Network, leg: BaseLeg, options: { amount?: string; dry: boolean; log: (line: string) => void }): Promise<void> {
+  const show = (v: bigint) => `${money(v)} ${network.bountySymbol}`;
+  const held = await leg.held();
+  const amount = options.amount === undefined ? held : parseUnits(options.amount, 6);
+  if (amount === 0n) throw new Error(`The wallet holds no ${network.bountySymbol} on Robinhood Chain`);
+  if (amount > held) throw new Error(`The wallet holds ${show(held)} on Robinhood Chain, less than ${show(amount)}`);
+  const quote = await leg.preview(amount);
+  options.log(`Move ${show(amount)} from Robinhood Chain to ${leg.to} on Base: Relay quotes ${quote.outFormatted} USDC.`);
+  if (options.dry) {
+    options.log("Dry run, nothing sent.");
+    return;
+  }
+  options.log(`Paid on Base: ${quote.outFormatted} USDC to ${leg.to} (${await leg.send(quote)}).`);
 }
