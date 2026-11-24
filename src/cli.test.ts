@@ -306,6 +306,49 @@ describe("join", () => {
     expect(JSON.parse(Buffer.from(uri.replace("data:application/json;base64,", ""), "base64").toString())).toEqual({ name: "Atlas", about: "Summaries", agentId: 501 });
   });
 
+  it("applies with the world it joins from in the profile, beside the agent id", async () => {
+    const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, MAINNET, new Map([...withId("501"), ["world", "clawville"]]));
+    } finally {
+      log.mockRestore();
+    }
+    const uri = (chain.apply.mock.calls[0] as unknown as [string])[0];
+    expect(JSON.parse(Buffer.from(uri.replace("data:application/json;base64,", ""), "base64").toString())).toEqual({ name: "Atlas", about: "Summaries", agentId: 501, world: "clawville" });
+  });
+
+  it("tags a testnet application with its world too", async () => {
+    const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await join(chain as unknown as Chain, TESTNET, new Map([["name", "Atlas"], ["about", "Summaries"], ["world", "tokyo-futuro"]]));
+      expect(log.mock.calls.map((call) => String(call[0])).join("\n")).toContain("The application names the world tokyo-futuro.");
+    } finally {
+      log.mockRestore();
+    }
+    const uri = (chain.apply.mock.calls[0] as unknown as [string])[0];
+    expect(JSON.parse(Buffer.from(uri.replace("data:application/json;base64,", ""), "base64").toString())).toEqual({ name: "Atlas", about: "Summaries", world: "tokyo-futuro" });
+  });
+
+  it("refuses a world that is not an id before any transaction", async () => {
+    for (const world of ["ClawVille", "claw ville", "-clawville", "clawville-", "claw_ville", "", "x".repeat(41)]) {
+      const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+      await expect(join(chain as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "Summaries"], ["world", world]])), world).rejects.toThrow(UsageError);
+      for (const send of [chain.approve, chain.stakeTokens, chain.setPrice, chain.apply]) expect(send).not.toHaveBeenCalled();
+    }
+    for (const world of ["clawville", "tokyo-futuro", "w1", "x".repeat(40)]) {
+      const chain = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      try {
+        await join(chain as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "Summaries"], ["world", world]]));
+      } finally {
+        log.mockRestore();
+      }
+      expect(chain.apply, world).toHaveBeenCalledOnce();
+    }
+  });
+
   it("refuses an agent id before any transaction: past the application, not held by the wallet, on testnet, or not a whole number", async () => {
     const allowed = fakeChain(10n ** 15n, 2_000_000n * BRAIN);
     allowed.allowed.mockResolvedValue(true);
@@ -481,6 +524,16 @@ describe("join for a worker past its application", () => {
   it("says when it does not use a name or description it was given", async () => {
     const lines = await quietly(() => join(allowed() as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "Summaries"]])));
     expect(lines[0]).toBe("This worker is past its application, so --name and --about are not used.");
+  });
+
+  it("says when it does not use a world it was given, and stakes back up all the same", async () => {
+    const chain = allowed();
+    const lines = await quietly(() => join(chain as unknown as Chain, MAINNET, new Map([["world", "clawville"]])));
+    expect(lines[0]).toBe("This worker is past its application, so --world is not used.");
+    expect(chain.stakeTokens).toHaveBeenCalledOnce();
+    expect(chain.apply).not.toHaveBeenCalled();
+    const all = await quietly(() => join(allowed() as unknown as Chain, MAINNET, new Map([["name", "Atlas"], ["about", "Summaries"], ["world", "clawville"]])));
+    expect(all[0]).toBe("This worker is past its application, so --name, --about and --world are not used.");
   });
 
   it("still asks an applicant for both, before anything is sent", async () => {
