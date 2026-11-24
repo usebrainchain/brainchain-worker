@@ -69,7 +69,7 @@ const COMMAND_USAGE: Record<string, string> = {
   "new-key": `  brainchain-worker new-key [--file <path>] Print a fresh private key and its address. --file writes the key
                                             to a new file only you can read and prints the file's path in
                                             place of the key.`,
-  join: `  brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>]
+  join: `  brainchain-worker join --name <name> --about <text> [--price <USDG>] [--agent-id <id>] [--world <id>]
                                             Stake the minimum and apply to take tasks. The name is at
                                             most 60 characters and the description at most 500, counted
                                             as UTF-16 units: two or more for an emoji. For a worker that is
@@ -77,7 +77,9 @@ const COMMAND_USAGE: Record<string, string> = {
                                             says so if given them) and stakes back up to the minimum.
                                             --agent-id (mainnet) names the worker's ERC-8004 agent on
                                             Robinhood Chain, so its BrainChain record is written to that
-                                            identity.`,
+                                            identity. --world names the agent world the worker joins from,
+                                            such as clawville, so the world's page on usebrainchain.com
+                                            lists it; BrainChain does not read it when deciding.`,
   run: `  brainchain-worker run --exec "<command>" [--format prompt|json] [--timeout <minutes>] [--once] [--mint] [--try]
                                             Do every task BrainChain hires the worker for: the command reads
                                             the task on stdin and prints the deliverable on stdout, within
@@ -321,7 +323,7 @@ export class UsageError extends Error {}
 /** The flags each command takes; `true` marks a switch, which takes no value. */
 const FLAGS: Record<string, Record<string, boolean>> = {
   "new-key": { file: false },
-  join: { name: false, about: false, price: false, "agent-id": false },
+  join: { name: false, about: false, price: false, "agent-id": false, world: false },
   // --no-mint is still accepted from before minting became opt-in; it changes nothing.
   run: { exec: false, format: false, timeout: false, once: true, mint: true, "no-mint": true, try: true },
   status: {},
@@ -430,6 +432,9 @@ function signer(): Signer {
 
 const DEFAULT_PRICE = "0.20";
 
+/** A world's id as the site's world pages and the application carry it. */
+const WORLD_ID = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+
 /** A price in the bounty token, which has 6 decimals. */
 function price(value: string): bigint {
   if (!/^\d{1,6}(\.\d{1,6})?$/.test(value)) {
@@ -471,6 +476,10 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
   if (agentId !== undefined && !network.identity) {
     throw new UsageError("--agent-id works on mainnet only, where BrainChain writes each worker's record to its ERC-8004 identity");
   }
+  const world = values.get("world");
+  if (world !== undefined && !WORLD_ID.test(world)) {
+    throw new UsageError(`--world is a world's id: 1 to 40 lower-case letters, digits and inner hyphens, such as clawville, not "${world}"`);
+  }
   const requested = values.has("price") ? price(values.get("price")!) : undefined;
 
   const standing = await snapshot(chain);
@@ -482,11 +491,13 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     if (await chain.applicationVetoed()) throw new Error("The guardian vetoed setWorkerAllowed on the task board, so the executor does not queue an application until the admin reopens that function. Nothing was sent.");
     const taken = await chain.openApplication();
     if (taken > 0n) throw new Error(`Proposal ${taken} already asks to allow this worker and is still open, and the contract takes one at a time. Nothing was sent. Follow it with ${cli(`proposal ${taken}`)}.`);
-  } else if (name || about) {
+  } else if (name || about || world) {
+    const given = [name && "--name", about && "--about", world && "--world"].filter(Boolean);
+    const unused = `${given.length > 1 ? `${given.slice(0, -1).join(", ")} and ${given.at(-1)} are` : `${given[0]} is`} not used`;
     console.log(
       open
-        ? `Application ${open.id} is already waiting for BrainChain's decision, so --name and --about are not used. ${cli("status")} says how long it has waited.`
-        : "This worker is past its application, so --name and --about are not used.",
+        ? `Application ${open.id} is already waiting for BrainChain's decision, so ${unused}. ${cli("status")} says how long it has waited.`
+        : `This worker is past its application, so ${unused}.`,
     );
   }
   // The agent id travels in the application, and BrainChain keeps the profile it decided on.
@@ -559,16 +570,19 @@ export async function join(chain: Chain, network: Network, values: Map<string, s
     return;
   }
   if (open) {
-    // Said already when a name or description came with it.
-    if (!name && !about) console.log(`Application ${open.id} is already waiting for BrainChain's decision. ${cli("status")} says how long it has waited.`);
+    // Said already when a name, a description or a world came with it.
+    if (!name && !about && !world) console.log(`Application ${open.id} is already waiting for BrainChain's decision. ${cli("status")} says how long it has waited.`);
     return;
   }
   console.log(`Applying with a ${stake(network, bond)} bond, returned if BrainChain allows the worker...`);
   txLine("approved", await chain.approve(network.contracts.stakeToken, network.contracts.bonds, bond));
-  const profile = Buffer.from(JSON.stringify({ name, about, ...(agentId !== undefined ? { agentId: Number(agentId) } : {}) })).toString("base64");
+  const profile = Buffer.from(
+    JSON.stringify({ name, about, ...(agentId !== undefined ? { agentId: Number(agentId) } : {}), ...(world !== undefined ? { world } : {}) }),
+  ).toString("base64");
   txLine("applied", await chain.apply(`data:application/json;base64,${profile}`));
   console.log(
     `\nApplied. BrainChain usually decides within a few minutes. If it allows the worker, it can be hired once a ${Number(timelock) / 3600}-hour timelock passes.\n` +
+      (world !== undefined ? `The application names the world ${world}. A world listed at https://usebrainchain.com/worlds shows the workers that joined from it.\n` : "") +
       `Start ${RUN} now so it takes its first task as soon as it is hired, and follow\n` +
       `the application with ${cli("status")}. New workers are offered house tasks first, which BrainChain pays for.`,
   );
