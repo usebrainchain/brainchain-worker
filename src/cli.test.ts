@@ -586,6 +586,22 @@ describe("fund's flags", () => {
   it("refuses --gas-usdc above --usdc without --stake, rather than ignore part of it", async () => {
     await expect(main(["fund", "--from-solana", "--usdc", "1", "--gas-usdc", "3"])).rejects.toThrow(new UsageError("--gas-usdc 3 is more than --usdc 1, the most this command may spend"));
   });
+
+  it("takes one source, Solana or Base, and runs on mainnet only", async () => {
+    for (const argv of [["fund", "--usdc", "5"], ["fund", "--from-solana", "--from-base", "--usdc", "5"]]) {
+      await expect(main(argv)).rejects.toThrow(new UsageError("fund takes one of --from-solana or --from-base: where the USDC is"));
+    }
+    await expect(main(["fund", "--from-base"])).rejects.toThrow(new UsageError("--usdc is required: how much USDC on Base to use, such as --usdc 5"));
+    await expect(main(["fund", "--from-base", "--usdc", "5", "--dry"])).rejects.toThrow("fund --from-base is mainnet only: Relay connects Base with Robinhood Chain mainnet, not the testnets");
+  });
+});
+
+describe("exit's flags", () => {
+  it("pays to Solana or Base, not both, and moves USDG on from Robinhood Chain only to Base", async () => {
+    await expect(main(["exit", "--to-solana", "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", "--to-base", "0x1111111111111111111111111111111111111111"])).rejects.toThrow(new UsageError("exit takes --to-solana or --to-base, not both"));
+    await expect(main(["exit", "--from-robinhood"])).rejects.toThrow(new UsageError("--from-robinhood goes with --to-base: it moves USDG the wallet holds on Robinhood Chain on to Base"));
+    await expect(main(["exit", "--to-base", "0x1111111111111111111111111111111111111111", "--dry"])).rejects.toThrow("--to-base is mainnet only");
+  });
 });
 
 describe("buy-stake's flags", () => {

@@ -8,6 +8,7 @@ import { parseEther, type Address } from "viem";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DepositSent } from "./bridge.js";
+import { fund, PARENT_ETH_KEEP, split, type FundOptions } from "./fund.js";
 import { cli } from "./invoked.js";
 import { NATIVE, relayQuote, SOLANA_CHAIN_ID, SOLANA_USDC, type RelayQuote, type SvmItem } from "./relay.js";
 import {
@@ -17,12 +18,10 @@ import {
   DEPOSITORY_STATE,
   DEPOSITORY_VAULT,
   DEPOSITORY_VAULT_USDC,
-  fundFromSolana,
-  PARENT_ETH_KEEP,
+  solanaSource,
   RELAY_DEPOSITORY,
   sendSvmStep,
   solanaKeypair,
-  split,
   TOKEN_PROGRAM,
   unsettled,
   usdcAccount,
@@ -220,9 +219,9 @@ function rig(options: { eth?: bigint; stake?: bigint; landsEth?: bigint; landsSt
       return `sig-${q.requestId}`;
     }),
   };
-  const run = (extra: Partial<Parameters<typeof fundFromSolana>[0]> = {}) =>
-    fundFromSolana({
-      funding,
+  const run = (extra: Partial<FundOptions> = {}) =>
+    fund({
+      funding: solanaSource(funding),
       worker: WORKER,
       usdc: "20",
       stake: true,

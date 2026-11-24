@@ -128,7 +128,7 @@ describe("exits in the README, --help and the skill", () => {
 describe("fund in the README and --help", () => {
   it("say what happens to the rest without --stake, and that only what the run brought is bridged", () => {
     expect(flat(readme)).toContain("Without `--stake` it spends only that gas amount and the rest stays on Solana");
-    expect(flat(help)).toContain("without it, the rest stays on Solana");
+    expect(flat(help)).toContain("without it, the rest stays where it is");
     expect(flat(readme)).toContain("What the wallet already held on Robinhood Chain stays there");
     expect(flat(help)).toContain("what the wallet already held stays");
   });

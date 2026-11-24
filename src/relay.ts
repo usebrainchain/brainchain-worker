@@ -1,6 +1,6 @@
-// Relay (relay.link) moves value between Solana and Robinhood Chain in about a second. `fund` uses it to bring USDC
-// from Solana; every quote is checked against what goes in before anything is signed, so a bad price stops the move
-// instead of costing the worker.
+// Relay (relay.link) moves value between Solana, Base and Robinhood Chain in seconds. `fund` uses it to bring USDC from
+// Solana or Base, and `exit --to-base` to take USDG on to Base; every quote is checked against what goes in before
+// anything is signed, so a bad price stops the move instead of costing the worker.
 
 import type { Address, Hex } from "viem";
 
@@ -40,6 +40,10 @@ export interface RelayQuote {
   recipient?: string;
   outCurrency?: string;
   outChainId?: number;
+  /** What goes in, as its details name it. */
+  inAmount?: bigint;
+  inCurrency?: string;
+  inChainId?: number;
 }
 
 export interface QuoteRequest {
@@ -50,6 +54,10 @@ export interface QuoteRequest {
   originCurrency: string;
   destinationCurrency: string;
   amount: bigint;
+  /** Who gets the input back if the move fails. */
+  refundTo?: string;
+  /** Asks for a signed authorization instead of transactions, on a token that takes one. */
+  usePermit?: boolean;
 }
 
 export class RelayError extends Error {}
@@ -68,6 +76,7 @@ export async function relayQuote(request: QuoteRequest, fetchImpl: typeof fetch 
   const requestId = body.steps.find((s: { requestId?: string }) => s.requestId)?.requestId;
   if (!requestId) throw new RelayError("Relay's quote carries no request id to follow");
   const out = body.details.currencyOut;
+  const into = body.details.currencyIn;
   return {
     requestId,
     steps: body.steps,
@@ -78,6 +87,9 @@ export async function relayQuote(request: QuoteRequest, fetchImpl: typeof fetch 
     recipient: body.details.recipient,
     outCurrency: out?.currency?.address,
     outChainId: out?.currency?.chainId,
+    ...(/^\d+$/.test(String(into?.amount)) ? { inAmount: BigInt(into.amount) } : {}),
+    inCurrency: into?.currency?.address,
+    inChainId: into?.currency?.chainId,
   };
 }
 

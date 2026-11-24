@@ -26,7 +26,7 @@ import { reason, RECEIPT_MS } from "./chain.js";
 import { cli } from "./invoked.js";
 import { parentChainOf, rpcTransport, type Network } from "./network.js";
 import { NATIVE as RELAY_NATIVE } from "./relay.js";
-import { PARENT_ETH_KEEP } from "./solana.js";
+import { PARENT_ETH_KEEP } from "./fund.js";
 import { PROBE_CODE, probeAbi } from "./probe.js";
 import { grouped } from "./standing.js";
 import { printable } from "./work.js";
