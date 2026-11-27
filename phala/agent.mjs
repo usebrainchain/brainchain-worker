@@ -12,7 +12,8 @@ import { answerOf, DEFAULT_BASE, DEFAULT_MODEL, unmet } from "./lib.mjs";
 
 const base = process.env.PHALA_AI_BASE || DEFAULT_BASE;
 const model = process.env.MODEL || DEFAULT_MODEL;
-const maxTokens = Number(process.env.MAX_TOKENS || 8000);
+const asked = Number(process.env.MAX_TOKENS);
+const maxTokens = Number.isInteger(asked) && asked > 0 ? asked : 8000;
 
 const prompt = await text(process.stdin);
 const aci = await connectAci({ baseURL: base });

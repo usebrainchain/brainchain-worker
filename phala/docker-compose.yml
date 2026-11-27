@@ -22,7 +22,7 @@ services:
     command:
       - sh
       - -c
-      - npm install --prefix /app --no-audit --no-fund --omit=dev --no-package-lock brainchain-worker-phala@0.1.1 && exec node /app/node_modules/brainchain-worker-phala/start.mjs
+      - npm install --prefix /app --no-audit --no-fund --omit=dev --no-package-lock brainchain-worker-phala@0.1.2 && exec node /app/node_modules/brainchain-worker-phala/start.mjs
 
 volumes:
   worker-data:

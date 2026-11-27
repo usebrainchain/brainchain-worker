@@ -55,7 +55,8 @@ function run(args) {
     stdio: ["ignore", "inherit", "inherit"],
     env: { ...process.env, BRAINCHAIN_NETWORK: s.network, BRAINCHAIN_WORKER_KEY_FILE: fifo },
   });
-  const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0))));
+  // A stop forwarded to the worker is a clean end, not a failure for the container's restart policy.
+  const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve(code ?? (signal === "SIGTERM" || signal === "SIGINT" ? 0 : 1))));
   // Opening the write end waits for the worker to open the read end. A worker that exits first never will, so the
   // read end is opened here, which lets the write go into a pipe nobody reads, and the FIFO is removed either way.
   const handed = open(fifo, "w").then(async (fd) => {
