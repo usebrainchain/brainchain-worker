@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Runs a BrainChain worker inside a Phala Cloud CVM. The wallet key is derived by the enclave and handed to the worker
-// on a pipe, so it is in no file, no environment and no log. On first start it asks the testnet gas drip for gas
-// (testnet only) and joins once; then it runs, doing each task it is hired for with agent.mjs.
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+// through a named pipe, so it is in no file, no environment and no log. On testnet it asks the gas drip for gas until
+// it has had some, and it joins once; then it runs, doing each task it is hired for with agent.mjs.
+import { execFileSync, spawn } from "node:child_process";
+import { constants, existsSync, mkdirSync, openSync, closeSync, unlinkSync, writeFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -44,32 +45,53 @@ const state = join(homedir(), ".brainchain-worker-phala");
 mkdirSync(state, { recursive: true, mode: 0o700 });
 const marker = (name) => join(state, `${name}-${s.network}-${address.toLowerCase()}`);
 
-// The worker reads the key from its stdin and keeps it out of the command it runs.
+// The worker reads the key from a named pipe and keeps it out of the command it runs. Node gives a child a socket, not
+// a pipe, for its stdin, and a socket cannot be opened by path, so the key goes through a FIFO only the worker reads.
+let pipes = 0;
 function run(args) {
+  const fifo = join(existsSync("/dev/shm") ? "/dev/shm" : state, `key-${process.pid}-${(pipes += 1)}`);
+  execFileSync("mkfifo", ["-m", "600", fifo]);
   const child = spawn(process.execPath, [worker, ...args], {
-    stdio: ["pipe", "inherit", "inherit"],
-    env: { ...process.env, BRAINCHAIN_NETWORK: s.network, BRAINCHAIN_WORKER_KEY_FILE: "/dev/stdin" },
+    stdio: ["ignore", "inherit", "inherit"],
+    env: { ...process.env, BRAINCHAIN_NETWORK: s.network, BRAINCHAIN_WORKER_KEY_FILE: fifo },
   });
-  child.stdin.end(`${key}\n`);
+  const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0))));
+  // Opening the write end waits for the worker to open the read end. A worker that exits first never will, so the
+  // read end is opened here, which lets the write go into a pipe nobody reads, and the FIFO is removed either way.
+  const handed = open(fifo, "w").then(async (fd) => {
+    await fd.writeFile(`${key}\n`).catch(() => {});
+    await fd.close();
+  });
+  exited.then(() => {
+    try {
+      closeSync(openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK));
+    } catch {
+      // Gone already: the key was handed over and the FIFO removed.
+    }
+  });
+  handed.finally(() => {
+    try {
+      unlinkSync(fifo);
+    } catch {
+      // Removed by the other path.
+    }
+  });
   const forward = (signal) => child.kill(signal);
   process.on("SIGTERM", forward).on("SIGINT", forward);
-  return new Promise((resolve) => {
-    child.on("exit", (code, signal) => {
-      process.off("SIGTERM", forward).off("SIGINT", forward);
-      resolve(code ?? (signal ? 1 : 0));
-    });
-  });
+  return exited.finally(() => process.off("SIGTERM", forward).off("SIGINT", forward));
 }
 
-// The drip serves each address once, so it is asked once.
-if (s.network === "testnet" && !existsSync(marker("drip"))) {
+// The drip serves each address once: a 200 sent it, a 409 says it was sent before or the address holds enough. Anything
+// else, such as a paused drip, is asked again before the next try at joining.
+async function drip() {
+  if (s.network !== "testnet" || existsSync(marker("drip"))) return;
   const response = await fetch("https://brain.testnet.usebrainchain.com/testnet/gas", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ address }),
-  }).catch((error) => ({ status: error.message, text: async () => "" }));
+  }).catch((error) => ({ status: 0, text: async () => error.message }));
   console.log(`Testnet gas drip: ${response.status} ${(await response.text()).slice(0, 200)}`);
-  writeFileSync(marker("drip"), new Date().toISOString());
+  if (response.status === 200 || response.status === 409) writeFileSync(marker("drip"), new Date().toISOString());
 }
 
 // At most once per amount: running it again after a partial move could buy the stake twice.
@@ -82,6 +104,7 @@ if (s.fundUsdc && !existsSync(marker(`fund-${s.fundUsdc}`))) {
 
 // Joined once. A worker BrainChain refused is not sent in again by a restart: on mainnet that would forfeit another bond.
 while (!existsSync(marker("joined"))) {
+  await drip();
   const code = await run(joinArgs(s));
   if (code === 0) {
     writeFileSync(marker("joined"), new Date().toISOString());

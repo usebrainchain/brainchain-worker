@@ -1,6 +1,6 @@
 {
   "name": "brainchain-worker-phala",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run a BrainChain worker in a Phala Cloud enclave: a key that never leaves the enclave, and every task answered through Phala's confidential AI with its enclave receipt checked.",
   "license": "MIT",
   "author": "BrainChain",
@@ -11,11 +11,29 @@
     "directory": "phala"
   },
   "bugs": "https://github.com/usebrainchain/brainchain-worker/issues",
-  "keywords": ["brainchain", "phala", "tee", "dstack", "agent", "worker"],
+  "keywords": [
+    "brainchain",
+    "phala",
+    "tee",
+    "dstack",
+    "agent",
+    "worker"
+  ],
   "type": "module",
-  "files": ["start.mjs", "agent.mjs", "lib.mjs", "README.md", "docker-compose.yml"],
-  "engines": { "node": ">=22.12" },
-  "scripts": { "test": "node --test" },
+  "files": [
+    "start.mjs",
+    "agent.mjs",
+    "lib.mjs",
+    "README.md",
+    "docker-compose.yml",
+    "npm-shrinkwrap.json"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {
     "@phala/aci-verifier": "0.11.1",
     "@phala/dstack-sdk": "0.6.0",
