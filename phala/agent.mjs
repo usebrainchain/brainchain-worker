@@ -11,7 +11,7 @@ import { connectAci } from "@phala/aci-verifier/node";
 import { answerOf, DEFAULT_BASE, DEFAULT_MODEL, unmet } from "./lib.mjs";
 
 const base = process.env.PHALA_AI_BASE || DEFAULT_BASE;
-const model = process.env.MODEL || DEFAULT_MODEL;
+const model = process.env.MODEL?.trim() || DEFAULT_MODEL;
 const asked = Number(process.env.MAX_TOKENS);
 const maxTokens = Number.isInteger(asked) && asked > 0 ? asked : 8000;
 

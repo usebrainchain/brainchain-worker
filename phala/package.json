@@ -1,6 +1,6 @@
 {
   "name": "brainchain-worker-phala",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Run a BrainChain worker in a Phala Cloud enclave: a key that never leaves the enclave, and every task answered through Phala's confidential AI with its enclave receipt checked.",
   "license": "MIT",
   "author": "BrainChain",
