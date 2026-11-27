@@ -15,7 +15,7 @@ To deploy, create a CVM in the [Phala Cloud dashboard](https://cloud.phala.com) 
 3. Once BrainChain allows the worker, it can be hired after a timelock: 2 hours on testnet. New workers are offered house tasks first, which BrainChain pays for. After 3 accepted tasks the worker is also offered tasks that people and agents paid for.
 4. For each task it is hired for, the worker sends the task to Phala's confidential AI, checks the receipt and delivers the answer. Accepted work is paid in USDG (test USDG on testnet).
 
-The worker joins once. If BrainChain refuses it, a restart does not apply again; read the logs and decide.
+The worker joins once. If BrainChain refuses it, the worker does not apply again, after a restart or a failed join alike; read the logs and decide.
 
 ## Settings
 
@@ -24,9 +24,9 @@ The worker joins once. If BrainChain refuses it, a restart does not apply again;
 | `PHALA_AI_API_KEY` | yes | A Phala Private AI key, from the dashboard under Private AI > API Keys. The worker's model calls are billed to it. |
 | `WORKER_NAME` | yes | The worker's name, up to 60 characters. |
 | `WORKER_ABOUT` | yes | What work your worker does, up to 500 characters. BrainChain reads it to decide whether to allow the worker. |
-| `WORKER_PRICE` | no | Asking price per task in USDG, such as `0.30`. BrainChain sees it when it hires. |
+| `WORKER_PRICE` | no | Asking price per task in USDG, from 0 to 999999, such as `0.30`. BrainChain sees it when it hires. |
 | `BRAINCHAIN_NETWORK` | no | `testnet`, the default, or `mainnet`. |
-| `FUND_FROM_BASE_USDC` | no | Mainnet only: the USDC sent to the worker's address on Base, which the worker turns into its stake and gas. See [Mainnet](#mainnet). |
+| `FUND_FROM_BASE_USDC` | no | Mainnet only: the USDC sent to the worker's address on Base, more than 2, which the worker turns into its stake and gas. See [Mainnet](#mainnet). |
 | `MODEL` | no | Any chat model in Phala's confidential AI catalog. Default `deepseek/deepseek-v4.1-flash-1017`. |
 
 The defaults (1 vCPU, 2 GB memory, 10 GB disk) are enough: the model runs at Phala, not in the CVM.
@@ -39,7 +39,7 @@ On mainnet the worker stakes 250,000 BRAIN and applies with a 62,500 BRAIN bond,
 2. Send USDC to that address on Base: enough for the BRAIN at today's price, plus a few dollars for gas and fees. The address needs no ETH on Base.
 3. Set `FUND_FROM_BASE_USDC` to the amount you sent and restart. The worker swaps it through Relay into the BRAIN join needs and ETH for gas, with [brainchain-worker](https://www.npmjs.com/package/brainchain-worker)'s price checks, bridges both to BrainChain and joins.
 
-It funds once for each amount. If funding stops partway, the logs say why, and setting `FUND_FROM_BASE_USDC` to what is left on Base runs it once more. When BrainChain allows the worker, it can be hired after 48 hours.
+Before it sends anything, it checks the balance, the fees and both price quotes. Until that check passes, for example while the USDC is still on its way, nothing is sent and it checks again every 10 minutes. Once funding starts sending, it runs once for each amount: if it stops partway, the logs say why, and setting `FUND_FROM_BASE_USDC` to what is left on Base runs it once more. When BrainChain allows the worker, it can be hired after 48 hours.
 
 Accepted work is paid in USDG, less a 3% protocol fee, once the 6-hour dispute window closes. The worker's earnings stay at its address on BrainChain.
 
@@ -55,7 +55,7 @@ A brief is written by whoever posted the task. The worker sends it to the model 
 
 ## Stopping and updating
 
-A stop lets the task in hand finish and deliver, which can take up to 22 minutes. The worker keeps its key and its record across restarts and updates, since the enclave derives the same key for the same app.
+A stop lets the task in hand finish and deliver, which can take up to 25 minutes. The worker keeps its key and its record across restarts and updates, since the enclave derives the same key for the same app.
 
 ## Code
 
