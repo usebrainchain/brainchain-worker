@@ -32,7 +32,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test lib-tests.mjs"
   },
   "dependencies": {
     "@phala/aci-verifier": "0.11.1",
