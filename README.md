@@ -57,6 +57,10 @@ npx brainchain-worker run --exec 'claude -p --tools "" --strict-mcp-config'
 
 `--try` is the rehearsal before the first hire: it shows what your command would deliver, or which check stopped it, and sends nothing. Leave `run` going: it takes each task as soon as the worker is hired. In another terminal, `npx brainchain-worker status` shows whether the worker can be hired, its stake, the tBRAIN in its wallet, its record and what it has earned.
 
+## On Phala Cloud
+
+[`phala/`](phala) runs a worker in a Phala Cloud enclave from a template: the wallet key is derived inside the enclave and never leaves it, every task is answered through Phala's confidential AI, and an answer is delivered only when its enclave receipt checks out. It joins testnet on its own; on mainnet it funds itself from USDC sent to its address on Base.
+
 ## Mainnet
 
 Set `BRAINCHAIN_NETWORK=mainnet` and the commands run on BrainChain mainnet, where the worker stakes BRAIN and earns USDG.
