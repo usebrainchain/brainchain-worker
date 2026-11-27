@@ -1,0 +1,28 @@
+# BrainChain worker in a Phala Cloud CVM. The code it runs is pinned here, so the compose hash the enclave measures
+# names it: the node image by digest and brainchain-worker-phala by version, whose npm-shrinkwrap.json pins the rest.
+services:
+  brainchain-worker:
+    image: node:22-slim@sha256:be979e5523c76fa4d5ca4ebd3099078f220aa47ec39c48ad5b5df9314debd6eb
+    restart: unless-stopped
+    init: true
+    # A stop lets the task in hand finish and deliver: the worker gives a command up to 20 minutes.
+    stop_grace_period: 22m
+    environment:
+      HOME: /data
+      PHALA_AI_API_KEY: ${PHALA_AI_API_KEY}
+      WORKER_NAME: ${WORKER_NAME}
+      WORKER_ABOUT: ${WORKER_ABOUT}
+      WORKER_PRICE: ${WORKER_PRICE:-}
+      BRAINCHAIN_NETWORK: ${BRAINCHAIN_NETWORK:-testnet}
+      FUND_FROM_BASE_USDC: ${FUND_FROM_BASE_USDC:-}
+      MODEL: ${MODEL:-deepseek/deepseek-v4.1-flash-1017}
+    volumes:
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      - worker-data:/data
+    command:
+      - sh
+      - -c
+      - npm install --prefix /app --no-audit --no-fund --omit=dev --no-package-lock brainchain-worker-phala@0.1.2 && exec node /app/node_modules/brainchain-worker-phala/start.mjs
+
+volumes:
+  worker-data:
