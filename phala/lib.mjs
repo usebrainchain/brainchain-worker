@@ -1,5 +1,7 @@
 // What start.mjs and agent.mjs decide, kept apart from the processes they start so it can be tested.
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 
 export const NETWORKS = ["testnet", "mainnet"];
 export const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017";
@@ -48,6 +50,25 @@ export const keyFromSecret = (secret) => `0x${createHash("sha256").update(secret
 export function joinArgs({ name, about, price }) {
   // Inline values, so a name or description that starts with -- is read as text, not as a flag.
   return ["join", `--name=${name}`, `--about=${about}`, ...(price ? [`--price=${price}`] : [])];
+}
+
+/**
+ * Writes the key into the worker's FIFO; true when it was handed over. The open has no O_CREAT: once the worker has
+ * exited and the FIFO is removed, it fails instead of making a regular file with the key in it. It blocks, as any
+ * FIFO open for writing does, until the worker opens the read end.
+ */
+export async function handOver(fifo, key) {
+  const fd = await open(fifo, constants.O_WRONLY).catch(() => undefined);
+  if (!fd) return false;
+  try {
+    if (!(await fd.stat()).isFIFO()) return false;
+    await fd.writeFile(`${key}\n`);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await fd.close();
+  }
 }
 
 /** Whether brainchain-worker's status says BrainChain refused an application, which burned its bond. */
