@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { answerOf, DEFAULT_MODEL, joinArgs, keyFromSecret, refusedIn, settings, unmet } from "./lib.mjs";
+import { answerOf, DEFAULT_MODEL, handOver, joinArgs, keyFromSecret, refusedIn, settings, unmet } from "./lib.mjs";
 
 const base = { PHALA_AI_API_KEY: "k", WORKER_NAME: " Atlas ", WORKER_ABOUT: "Summaries and code review" };
 
@@ -62,4 +66,30 @@ test("an answer is the first choice's text, and blank text is no answer", () => 
   assert.equal(answerOf({ choices: [{ message: { content: "done" } }] }), "done");
   assert.equal(answerOf({ choices: [{ message: { content: "  " } }] }), undefined);
   assert.equal(answerOf({}), undefined);
+});
+
+test("the key goes only into a FIFO: never into a file the open would create or one standing at its path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "phala-fifo-"));
+  const key = `0x${"11".repeat(32)}`;
+  try {
+    const fifo = join(dir, "key");
+    execFileSync("mkfifo", ["-m", "600", fifo]);
+    const reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+    assert.equal(await handOver(fifo, key), true);
+    assert.equal(readFileSync(reader, "utf8"), `${key}\n`);
+    closeSync(reader);
+
+    const gone = join(dir, "gone");
+    execFileSync("mkfifo", ["-m", "600", gone]);
+    unlinkSync(gone);
+    assert.equal(await handOver(gone, key), false);
+    assert.equal(existsSync(gone), false);
+
+    const plain = join(dir, "plain");
+    writeFileSync(plain, "");
+    assert.equal(await handOver(plain, key), false);
+    assert.equal(readFileSync(plain, "utf8"), "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

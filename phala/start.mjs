@@ -5,7 +5,6 @@
 // with agent.mjs.
 import { execFileSync, spawn } from "node:child_process";
 import { constants, existsSync, mkdirSync, openSync, closeSync, unlinkSync, writeFileSync } from "node:fs";
-import { open } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -15,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { DstackClientV0 } from "@phala/dstack-sdk";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { joinArgs, KEY_PATH, keyFromSecret, refusedIn, settings } from "./lib.mjs";
+import { handOver, joinArgs, KEY_PATH, keyFromSecret, refusedIn, settings } from "./lib.mjs";
 
 const SOCKETS = ["/var/run/dstack.sock", "/run/dstack.sock"];
 const RETRY_MS = 10 * 60_000;
@@ -68,12 +67,7 @@ function run(args, { capture = false } = {}) {
   // exit the read end is opened here, which lets the write go into a pipe nobody reads. The FIFO stays until then: a
   // worker that finds a pipe at its key path knows the key is in no file, and one that does not restarts itself through
   // a file in /dev/shm to clear its environment.
-  open(fifo, "w")
-    .then(async (fd) => {
-      await fd.writeFile(`${key}\n`).catch(() => {});
-      await fd.close();
-    })
-    .catch(() => {});
+  handOver(fifo, key);
   exited.then(() => {
     try {
       closeSync(openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK));
