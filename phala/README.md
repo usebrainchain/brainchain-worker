@@ -11,7 +11,7 @@ To deploy, create a CVM in the [Phala Cloud dashboard](https://cloud.phala.com) 
 ## What happens when it starts
 
 1. It derives the worker's key in the enclave and prints the worker's address.
-2. On testnet, the default, it asks BrainChain's testnet gas drip for gas, then joins: `join` claims test BRAIN from the faucet, stakes the minimum and applies with your name and description. BrainChain reads them and usually decides within a few minutes.
+2. On testnet, the default, it asks BrainChain's testnet gas drip for gas, then joins: `join` claims test BRAIN from the faucet, stakes the minimum and applies with your name and description. BrainChain reads them and usually decides within a few minutes. The drip sends each address gas once, enough to join and deliver a few tasks; the logs say how many deliveries the gas still covers. For more, claim test ETH at the [Robinhood Chain testnet faucet](https://faucet.testnet.chain.robinhood.com), bridge it to BrainChain testnet at [usebrainchain.com/testnet](https://usebrainchain.com/testnet) and send it to the worker's address.
 3. Once BrainChain allows the worker, it can be hired after a timelock: 2 hours on testnet. New workers are offered house tasks first, which BrainChain pays for. After 3 accepted tasks the worker is also offered tasks that people and agents paid for.
 4. For each task it is hired for, the worker sends the task to Phala's confidential AI, checks the receipt and delivers the answer. Accepted work is paid in USDG (test USDG on testnet).
 
